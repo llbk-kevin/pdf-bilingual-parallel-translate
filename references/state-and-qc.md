@@ -1,0 +1,137 @@
+# Recovery state and review lifecycle
+
+## Format and coordinates
+
+Use UTF-8 without BOM JSON, schema_version 1. Paths resolve relative to state.json unless absolute. Hashes are lowercase SHA-256 of actual bytes. The following one-page example illustrates fields; placeholder hashes must be replaced, and it does not claim final review.
+
+~~~json
+{
+  "schema_version": 1,
+  "source": {
+    "path": "original.pdf",
+    "sha256": "<actual SHA-256>"
+  },
+  "output": {
+    "path": "bilingual.pdf",
+    "sha256": "<actual SHA-256>"
+  },
+  "layout": {
+    "builder": {
+      "path": "build.py",
+      "sha256": "<actual SHA-256>"
+    },
+    "fonts": [
+      {
+        "name": "Chosen font",
+        "sha256": "<actual font SHA-256>",
+        "source": "Permitted local/source location",
+        "purpose": "Chinese regular text"
+      }
+    ],
+    "pane_width_pt": 240,
+    "body_size_pt": 10
+  },
+  "glossary": [
+    {
+      "source": "supply voltage",
+      "target": "电源电压",
+      "context": "device input"
+    }
+  ],
+  "pages": [
+    {
+      "source_page": 1,
+      "output_page": 1,
+      "source_rect": [
+        0,
+        0,
+        240,
+        300
+      ],
+      "kind": "translated",
+      "inventory_reviewed": true,
+      "expected_blocks": [
+        "p001-body01"
+      ],
+      "blocks": [
+        {
+          "id": "p001-body01",
+          "kind": "paragraph",
+          "source_bbox": [
+            20,
+            30,
+            220,
+            70
+          ],
+          "target_bbox": [
+            260,
+            30,
+            460,
+            80
+          ],
+          "source_text": "Supply voltage: 5 V.",
+          "translation": "电源电压：5 V。",
+          "status": "translated"
+        }
+      ]
+    }
+  ],
+  "issues": [],
+  "qc": {}
+}
+~~~
+
+source_rect is the original pane rectangle in the output's visible top-left coordinate system, in PDF points. It must match the original visible dimensions at 1:1 scale. source_bbox uses the source visible top-left system. target_bbox uses the output visible top-left system. Rotation and crop are already accounted for in these coordinates; raw PDF bottom-left coordinates must be converted. All page numbers are one-based.
+
+## Block and page records
+
+Every original page must appear once, and every output page maps once. expected_blocks is the independently reviewed source inventory; blocks must contain exactly these IDs, unique throughout the document. Use kinds such as heading, paragraph, list-item, table, formula, caption and figure-label.
+
+A block keeps source_text and a nonempty translation. status is translated, verbatim or pending. verbatim requires reason and the retained text as translation. pending is a draft warning and final error. A page with no translatable material uses kind no-translation-needed plus reason; do not use this to skip untranslated text.
+
+A table block additionally requires table.source_rows and table.translated_rows: arrays of rows of strings, with the same cell counts per corresponding row. Nonempty source cells need nonempty target cells. Preserve merged-cell spans, header roles and footnote anchors in extra table metadata. caption and figure-label require figure_id. Optional target_bbox validates the declared destination rectangle; it does not prove where the builder actually drew text.
+
+Keep context, original expressions, reading order and anchors as additional fields where useful. Layout includes a SHA-bound builder and a font registry (name, sha256, source and purpose) for final readiness. Optional layout.inputs is a list of {path, sha256} records for external layout/translation data; declared files are checked against disk and changes invalidate the state. Builder contents are checked against disk; font records are required metadata, not proof that those fonts were embedded or are currently installed.
+
+## Content fingerprint and invalidation
+
+The content fingerprint hashes source, layout, glossary, pages and issues using sorted-key UTF-8 JSON with compact separators. Use the helper directly rather than reproducing the serialization:
+
+~~~python
+import sys
+sys.path.insert(0, "<skill-dir>/scripts")
+import pdf_tools
+state = pdf_tools.read_json("state.json")
+fingerprint = pdf_tools.content_hash(state)
+~~~
+
+output and qc are excluded from that fingerprint to avoid a circular hash. They have separate byte fingerprints. Any edit to translation, mapping, glossary, layout, issues, source or builder invalidates prior acceptance. For a new build, clear qc, update source/output/builder hashes, run draft check-state and rebuild as necessary. Do not “repair” a stale review just by replacing hashes.
+
+## Final review record
+
+After final saving, subsetting and cleanup, audit the exact delivery file and render every page. Actually inspect each page and perform semantic checks before recording reviewed page lists. Then populate qc:
+
+~~~json
+{
+  "content_sha256": "<pdf_tools.content_hash(state)>",
+  "source_sha256": "<actual original SHA-256>",
+  "output_sha256": "<actual final PDF SHA-256>",
+  "translation_pages": [1],
+  "visual_pages": [1],
+  "reviewer": "<actual reviewer/session>",
+  "reviewed_at": "<ISO 8601 with timezone>",
+  "structure": "passed",
+  "audit_path": "audit.json",
+  "structure_notes": "<specific warning resolutions, or no warnings>"
+}
+~~~
+
+For final readiness, audit must mechanically pass and match the actual source/output hashes. Warning explanations are required when warnings exist. issues must be resolved, or retained with a note that explains the preserved uncertainty and what the user needs to know. Retained issues are disclosed, not silently treated as accurate translation.
+
+The final check requires both page lists to cover every source page exactly, the reviewer/time, valid builder metadata, output fingerprint and audit. It checks consistency of recorded attestations, not their truth: do not create acceptance records from mere rendering or passing tests. A synthetic test may exercise accepted-state validation with explicitly labeled fixture attestations; it is not a real document review.
+
+## Recovery and failure handling
+
+check-state without --final validates draft consistency. Missing files, changed source/output/builder bytes, incomplete inventories or stale nonempty qc are errors. Finish pending blocks and inventory review before --final. Inspect JSON errors by code/page/block, correct the underlying cause and rerun.
+
+Save state after completed batches and keep the builder beside it. On resume, verify source hash first, then restore glossary, translations, mappings and layout decisions. Do not extract the previous Chinese PDF and treat it as the authoritative recovery source. Keep disposable renders outside the compact recovery package.

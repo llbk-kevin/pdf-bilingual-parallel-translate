@@ -1,0 +1,24 @@
+# Python 缓存与虚拟环境：避免提交本机依赖和编译缓存
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# 翻译任务输入输出与恢复记录：仅保留可重建测试代码，用户资料不进入技能仓库
+work/
+outputs/
+*.pdf
+*.png
+*.jpg
+*.jpeg
+state.json
+baseline.json
+audit.json
+
+# 本机凭据、日志与临时文件：与可分发技能内容无关
+.env
+.env.*
+*.log
+*.tmp
+.DS_Store
+Thumbs.db

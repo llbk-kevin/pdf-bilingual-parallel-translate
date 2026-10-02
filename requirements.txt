@@ -1,0 +1,4 @@
+# Runtime diagnostics; tested versions are recorded in references/maintenance.md.
+pypdf>=6.10,<7
+pypdfium2>=5.13,<6
+Pillow>=12,<13

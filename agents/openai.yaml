@@ -1,0 +1,6 @@
+interface:
+  display_name: "PDF 双语左右对照翻译"
+  short_description: "保留原文并生成对应中文，检查翻译、版式、资源复用与文件体积"
+  default_prompt: "使用 $pdf-bilingual-parallel-translate 将这份 PDF 制作为便于核对的中文左右对照译本。"
+policy:
+  allow_implicit_invocation: true

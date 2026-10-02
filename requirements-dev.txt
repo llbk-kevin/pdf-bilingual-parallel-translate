@@ -1,0 +1,3 @@
+# Reproducible synthetic PDF fixtures only.
+-r requirements.txt
+reportlab>=4.4,<5
