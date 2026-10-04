@@ -21,7 +21,7 @@ def source_pdf(dest, crop_rotate=False, duplicates=False):
     c=canvas.Canvas(buf,pagesize=(240,300),invariant=1)
     im=Image.new("RGB",(12,12),(180,30,40))
     for n in range(2):
-        c.drawString(30,260,f"Source {n+1}: 12 V, condition <= 5 A.")
+        c.drawString(30,260,f"Source {n+1}: 12 km if time <= 5 h.")
         c.beginForm("diagram"+str(n),0,0,100,100)
         c.drawImage(ImageReader(im),30,35,width=40,height=40)
         c.endForm()
@@ -114,8 +114,8 @@ class Diagnostics(unittest.TestCase):
             pages.append({"source_page":n,"output_page":n,"source_rect":[0,0,240,300],
                           "kind":"translated","inventory_reviewed":True,
                           "expected_blocks":[bid],"blocks":[{"id":bid,"kind":"paragraph",
-                          "source_bbox":[30,30,220,60],"source_text":f"Source {n}: 12 V, condition <= 5 A.",
-                          "translation":f"原文 {n}：12 V，条件 ≤ 5 A。","status":"translated"}]})
+                          "source_bbox":[30,30,220,60],"source_text":f"Source {n}: 12 km if time <= 5 h.",
+                          "translation":f"原文 {n}：时间 ≤ 5 h 时为 12 km。","status":"translated"}]})
         return {"schema_version":1,"source":{"path":"source.pdf","sha256":t.sha256_file(self.src)},
                 "output":{"path":"output.pdf","sha256":t.sha256_file(self.out)},
                 "layout":{"builder":{"path":"build.py","sha256":t.sha256_file(builder)},
@@ -216,8 +216,8 @@ class Diagnostics(unittest.TestCase):
         b.update(kind="table",translation="A | B")
         r=t.check_state(self.write_state(s))
         self.assertIn("table_structure_missing_or_changed",{x["code"] for x in r["errors"]})
-        b["table"]={"source_rows":[["Parameter","Value"],["Voltage","12 V"]],
-                    "translated_rows":[["参数","数值"],["电压","12 V"]]}
+        b["table"]={"source_rows":[["Item","Value"],["Distance","12 km"]],
+                    "translated_rows":[["项目","数值"],["距离","12 km"]]}
         self.assertTrue(t.check_state(self.write_state(s))["valid"])
         b["translation"]=""
         s["pages"][1]["blocks"]=[]
@@ -282,7 +282,7 @@ class Diagnostics(unittest.TestCase):
         pdfmetrics.registerFont(UnicodeCIDFont("STSong-Light"))
         buf=io.BytesIO()
         c=canvas.Canvas(buf,pagesize=(240,300),invariant=1)
-        c.drawString(30,40,"Figure 5.1 Circuit")
+        c.drawString(30,40,"Figure 5.1 Overview")
         c.save()
         w=PdfWriter(clone_from=self.src)
         w.pages[0].merge_page(PdfReader(buf).pages[0])
@@ -291,8 +291,8 @@ class Diagnostics(unittest.TestCase):
         buf=io.BytesIO()
         c=canvas.Canvas(buf,pagesize=(480,300),invariant=1)
         c.setFont("STSong-Light",10)
-        c.drawString(255,250,"图5.1 电路")
-        c.drawString(255,200,"参数|数值|条件|单位|下限|上限|备注|A|B|C|D|E|F|G")
+        c.drawString(255,250,"图5.1 概览")
+        c.drawString(255,200,"项目|数值|条件|单位|下限|上限|备注|A|B|C|D|E|F|G")
         c.save()
         w=PdfWriter(clone_from=self.out)
         w.pages[0].merge_page(PdfReader(buf).pages[0])

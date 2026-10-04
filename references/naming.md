@@ -1,5 +1,7 @@
 # Document identity and TI naming
 
+Read and apply this reference only after confirming that the current document is from TI.
+
 ## Identify before naming
 
 Inspect the first pages and footer for this publication's number (for example SLUP339, SLVA317B, SNVA168E), retaining revision letters and lowercasing the identifier. Read the visible cover title; metadata and filenames are hints only. Do not use a cited publication, device or reference-design number. Continue through relevant pages if the number is absent; omit unconfirmed fields rather than guessing. Keep full title, selected title, Chinese title, number, vendor, source_kind and page/evidence notes in state.document.naming. Long subtitles may be omitted; preserve main-title meaning and English capitalization.

@@ -7,7 +7,7 @@ Use UTF-8 without BOM JSON, schema_version 2 for new tasks; version 1 remains re
 ~~~json
 {
   "schema_version": 2,
-  "document": {"source_kind": "english-original", "vendor": "example"},
+  "document": {"source_kind": "english-original"},
   "source": {
     "path": "original.pdf",
     "sha256": "<actual SHA-256>"
@@ -34,9 +34,9 @@ Use UTF-8 without BOM JSON, schema_version 2 for new tasks; version 1 remains re
   },
   "glossary": [
     {
-      "source": "supply voltage",
-      "target": "电源电压",
-      "context": "device input"
+      "source": "opening hours",
+      "target": "开放时间",
+      "context": "visitor information"
     }
   ],
   "pages": [
@@ -72,8 +72,8 @@ Use UTF-8 without BOM JSON, schema_version 2 for new tasks; version 1 remains re
             460,
             80
           ],
-          "source_text": "Supply voltage: 5 V.",
-          "translation": "电源电压：5 V。",
+          "source_text": "The reading room opens at 9 a.m.",
+          "translation": "阅览室上午 9 点开放。",
           "status": "translated"
         }
       ]

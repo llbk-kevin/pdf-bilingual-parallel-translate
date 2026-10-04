@@ -1,5 +1,7 @@
 # 技能维护与验证范围
 
+本参考用于技能维护。历史验证记录中的文档名称和主题仅说明曾经执行的检查，不用于推定新翻译任务的领域或偏好风格。
+
 ## 仓库与安装
 
 维护仓库为 llbk-kevin/pdf-bilingual-parallel-translate，保持私有，默认分支 main。全局入口为 <CODEX_HOME>/skills/pdf-bilingual-parallel-translate。新建的普通目录在 CC Switch 接管前留在原处，不手动迁移。

@@ -7,7 +7,7 @@
 ~~~json
 {
   "schema_version": 2,
-  "document": {"source_kind": "english-original", "vendor": "example"},
+  "document": {"source_kind": "english-original"},
   "source": {
     "path": "original.pdf",
     "sha256": "<actual SHA-256>"
@@ -34,9 +34,9 @@
   },
   "glossary": [
     {
-      "source": "supply voltage",
-      "target": "电源电压",
-      "context": "device input"
+      "source": "opening hours",
+      "target": "开放时间",
+      "context": "visitor information"
     }
   ],
   "pages": [
@@ -72,8 +72,8 @@
             460,
             80
           ],
-          "source_text": "Supply voltage: 5 V.",
-          "translation": "电源电压：5 V。",
+          "source_text": "The reading room opens at 9 a.m.",
+          "translation": "阅览室上午 9 点开放。",
           "status": "translated"
         }
       ]

@@ -19,7 +19,7 @@ from reportlab.pdfgen import canvas
 
 
 def make_font(dest, symbols=False):
-    chars = set(range(32,127)) | {ord(x) for x in '中文参数数值电压条件页脚'}
+    chars = set(range(32,127)) | {ord(x) for x in '中文项目数值距离条件页脚'}
     if symbols:
         chars |= {0x2243,0x2095,0x00B1,0x2212,0x03B1}
     names = ['.notdef'] + [f'u{x:04X}' for x in sorted(chars)]
@@ -46,7 +46,7 @@ class Upgrade(unittest.TestCase):
         self.temp=tempfile.TemporaryDirectory();self.root=Path(self.temp.name)
         self.source=self.root/'source.pdf';source_pdf(self.source)
         for name in ('Body','Symbols'):make_font(self.root/(name+'.ttf'),name=='Symbols')
-        self.state={'schema_version':2,'document':{'source_kind':'english-original','vendor':'fixture'},
+        self.state={'schema_version':2,'document':{'source_kind':'english-original'},
             'source':{'path':'source.pdf','sha256':w.digest(self.source)},
             'layout':{'pane_width_pt':240,'fonts':[{'name':n,'source':n+'.ttf','sha256':w.digest(self.root/(n+'.ttf')),'purpose':'Synthetic fixture'}for n in ('Body','Symbols')]},
             'glossary':[],'issues':[],'qc':{},'pages':[]}
@@ -56,7 +56,7 @@ class Upgrade(unittest.TestCase):
                 'kind':'translated','inventory_reviewed':True,'expected_blocks':[bid],'reading_order':[bid],
                 'context_reviewed':True,'context_pages':[n],
                 'blocks':[{'id':bid,'kind':'paragraph','source_bbox':[20,20,220,70],
-                    'target_bbox':[260,20,460,90],'source_text':'condition 12 V','translation':'中文 ≃ 12 V <sub>h</sub>',
+                    'target_bbox':[260,20,460,90],'source_text':'distance approximately 12 km','translation':'距离 ≃ 12 km <sub>h</sub>',
                     'font_size':10,'status':'translated'}]})
         self.sp=self.root/'state.json';self.save(self.state)
     def tearDown(self):self.temp.cleanup()
@@ -89,16 +89,16 @@ class Upgrade(unittest.TestCase):
         before=self.sp.read_bytes();r,s=self.built('first')
         self.assertEqual(before,self.sp.read_bytes())
         same,_=self.built('same');self.assertEqual(r['sha256'],same['sha256'])
-        self.state['pages'][0]['blocks'][0]['translation']='中文 24 V';self.save(self.state)
+        self.state['pages'][0]['blocks'][0]['translation']='距离 24 km';self.save(self.state)
         newer,_=self.built('second');self.assertNotEqual(r['sha256'],newer['sha256'])
-        self.assertIn('24 V',PdfReader(newer['output']).pages[0].extract_text())
-        self.assertIn('24 V',w.load(self.sp)['pages'][0]['blocks'][0]['translation'])
+        self.assertIn('24 km',PdfReader(newer['output']).pages[0].extract_text())
+        self.assertIn('24 km',w.load(self.sp)['pages'][0]['blocks'][0]['translation'])
     def test_table_reads_full_cells_and_overflow(self):
         b=self.state['pages'][0]['blocks'][0]
         b.update(kind='table',translation='Table summary',target_bbox=[260,20,460,160],
-                 table={'source_rows':[['A','B'],['C','D']],'translated_rows':[['参数','数值'],['电压','73 V']]})
+                 table={'source_rows':[['A','B'],['C','D']],'translated_rows':[['项目','数值'],['距离','73 km']]})
         self.save(self.state);r,s=self.built()
-        self.assertIn('73 V',PdfReader(r['output']).pages[0].extract_text())
+        self.assertIn('73 km',PdfReader(r['output']).pages[0].extract_text())
         self.assertTrue(w.check_fonts(r['state'],r['assignments'])['mechanical_pass'])
         b['target_bbox']=[260,20,270,22];self.save(self.state)
         with self.assertRaisesRegex(ValueError,'overflow'):self.built('overflow')

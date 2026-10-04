@@ -1,5 +1,7 @@
 # Skill maintenance and verified scope
 
+This reference is for skill maintenance. Document names and subjects in historical validation records describe past checks only; do not use them to infer a new translation task's domain or preferred style.
+
 ## Repository and installation
 
 The maintained repository is llbk-kevin/pdf-bilingual-parallel-translate, private, with main as its default branch. The global entry is <CODEX_HOME>/skills/pdf-bilingual-parallel-translate. A newly created ordinary directory stays there until CC Switch manages it. Do not manually migrate it.
