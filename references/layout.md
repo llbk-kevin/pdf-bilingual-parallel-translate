@@ -8,6 +8,10 @@ Treat body text, parameter tables, multi-figure pages and landscape slides as se
 
 ## Build and translate semantic blocks
 
+Record reading_order and cross-page sentence/table continuations. Merge extraction fragments only with a retained source-fragment map; never collapse a whole page into one unreviewable block. Inventory image-only words, duplicate extraction and invisible text separately, explaining inclusion or exclusion. A figure-label list is distinct from a caption or a prose reference.
+
+Review sign, ±, comparisons, negation, conditions, typical versus guaranteed values, proportional versus inverse relationships, units and indices explicitly. Preserve fractions and superscripts/subscripts; see [math.md](math.md). For suspected source errors, record the exact quote, page/block, concern and treatment. Add a short nearby note for meaning-changing uncertainty; supported suggested corrections remain separate from the translation.
+
 Use stable IDs such as p006-table01 and p014-fig12-caption. Obtain source bounds from extraction and confirm them against the rendered page. Multi-column extraction order is not necessarily reading order. Associate footnotes with the correct table, references with their section, and definitions with later occurrences.
 
 Keep the glossary small and specific: source term, chosen Chinese term, definition/context and any intentionally preserved acronym. Preserve vendor names and part numbers; vendor-specific wording only applies to relevant source documents. Translate conditions as conditions, not unconditional specifications. Distinguish maximum ratings from recommended operating conditions and typical values from guaranteed limits.

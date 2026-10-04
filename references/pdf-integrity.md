@@ -8,11 +8,17 @@ Prefer cloning the original document and expanding each page's visible region to
 
 Preserve bookmarks, URI/internal links and their clickable areas. Opening the file successfully does not prove these work. Audit compares link target and raw rectangle conservatively; normalized equivalent coordinates may need manual confirmation. It compares bookmark titles/destination pages, not the full hierarchy or destination zoom. Click representative link types and every flagged destination. Forms, signatures, layers, tags, portfolios, multimedia and JavaScript are outside automatic equivalence checking; inspect any relevant features before claiming preservation. Editing invalidates digital signatures; retain the signed original separately.
 
+Empty-user-password files are opened consistently by inspect, audit, render and state checks. If a password is required, accept only a user-supplied value through --password-env; never guess it or store it in state/logs.
+
+Source and expanded pages use the same explicit PDFium matrix at dpi/72, with a common pixel origin and source-sized crop. This avoids noninteger-size sampling drift when the right pane changes page width. Record renderer/settings and investigate real differences; do not relax tolerances to mask drift.
+
 ## Images, fonts and repeatable generation
 
 Reuse original image streams instead of rasterizing pages or decoding/re-encoding images. Preserve masks, color spaces, Decode arrays and rendering intent. The audit hashes original encoded image payloads and semantic metadata; it compares decoded palette/profile streams to allow equivalent lossless recompression. Equal compressed bytes alone do not establish equivalent display semantics.
 
 Add Chinese as real Unicode-capable text. Use font coverage appropriate to the document, share each font across pages, and subset using the final glyph set. Verify glyph appearance, selection, copying and extraction; an embedded font or ToUnicode map alone is insufficient. The diagnostic dependencies do not perform font subsetting. Choose a builder that subsets fonts (for example a suitable ReportLab TrueType workflow) or a separately available optimizer and validate its result. Never claim cleanup merely because a save call ran.
+
+Run check-fonts against the builder’s actual per-run font assignments, including fallback fonts, before visual review. A union of registered font coverage is insufficient. Unsupported font formats stay unverified.
 
 Regenerate from source plus state after edits. Avoid importing independent page overlays with a fresh full Chinese font on every page. One whole-document overlay can share resources, but inspect the resulting object graph to verify sharing. After any optimizer, save, subset or cleanup, invalidate all old output-bound checks.
 
@@ -23,6 +29,8 @@ Inventory follows the reachable object graph, including nested Forms. It counts 
 The report separates encoded font binaries, image streams, Form streams and other reachable streams. The residual is file size minus these streams; it includes dictionaries, cross-reference/object-stream packaging, unused objects or old incremental history and other container overhead. It is an accounting residual, not proof of waste or exact physical byte ownership. The deltas sum to total size change.
 
 Compare duplicate suspects against source hashes and copy counts so existing duplication is not called newly introduced. Same-byte image resources can have different masks or metadata; never delete solely by hash. A new font payload above 5 MiB triggers investigation, not automatic rejection. There is no universal growth-percentage gate. Explain measured changes, investigate large residuals, and maintain legibility and fidelity.
+
+Page content streams are counted by unique referenced objects, separately reporting newly uncompressed streams versus the source baseline. Merging may expand formerly compressed instructions: losslessly compress after merging, then repeat audit and rendering. This is a size diagnosis, not permission to re-encode source images.
 
 ## What each check establishes
 
@@ -35,6 +43,6 @@ Compare duplicate suspects against source hashes and copy counts so existing dup
 | Block/state checks | Internal inventory completeness, table shape and review freshness | Inventory correctness and actual semantic/visual review |
 | Render index | Which pages were rendered and the file fingerprint | Which pages were actually opened and checked |
 
-The audit also flags twelve or more right-pane pipe separators as a possible flattened table, and uniquely matched figure numbers displaced vertically by more than max(36 pt, 10% of source height). These are review cues, not semantic judgments; references within prose may also match.
+The audit flags twelve or more right-pane pipe separators as a possible flattened table. With a state inventory, only explicit caption blocks participate in figure displacement checks; figure-labels and prose references do not. Without state, unique-figure-number matching remains a heuristic. The displacement cue remains max(36 pt, 10% of source height). Small Chinese is classified by declared block type and actual character position: header/footer-only findings are informational, while other or unknown roles remain warnings. These classifications require a correct inventory and do not establish readability.
 
 Any audit warning needs a page/resource-specific resolution or retained limitation. Mechanical pass alone is never the final acceptance claim.

@@ -22,3 +22,12 @@ audit.json
 *.tmp
 .DS_Store
 Thumbs.db
+
+# 外部字体及任务恢复包：授权资源和用户资料不随技能分发
+*.ttf
+*.ttc
+*.otf
+*.woff
+*.woff2
+recovery/
+*.zip

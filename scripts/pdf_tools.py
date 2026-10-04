@@ -8,6 +8,7 @@ import ctypes
 import hashlib
 import json
 import math
+import os
 import re
 import sys
 from pathlib import Path
@@ -18,7 +19,11 @@ import pypdfium2 as pdfium
 import pypdfium2.raw as pdfium_c
 from PIL import ImageChops
 
-SCHEMA_VERSION = 1
+from workflow import check_fonts, page_fingerprint, validate_reviews, validate_relocation
+
+SCHEMA_VERSION = 2
+_PASSWORD = None
+RENDER_METHOD = "pdfium-uniform-matrix-v1"
 
 
 def sha256_file(path):
@@ -54,10 +59,17 @@ def write_json(value, path=None, overwrite=False):
 
 def checked_reader(path):
     r = PdfReader(path)
-    if r.is_encrypted:
-        raise ValueError("Encrypted PDF: provide an authorized decrypted working copy.")
+    if r.is_encrypted and not r.decrypt(""):
+        if not _PASSWORD or not r.decrypt(_PASSWORD):
+            raise ValueError("PDF requires a valid user-provided password; use --password-env. No guessing.")
     return r
 
+
+def open_document(path):
+    try:
+        return pdfium.PdfDocument(str(path), password=_PASSWORD or "")
+    except pdfium.PdfiumError as exc:
+        raise ValueError("Cannot open PDF; check file and supplied password.") from exc
 
 def deref(value):
     return value.get_object() if isinstance(value, IndirectObject) else value
@@ -282,7 +294,7 @@ def link_target(reader, annot):
 
 def pdf_metadata(path, reader=None, with_char_summary=True):
     reader = reader or checked_reader(path)
-    doc = pdfium.PdfDocument(str(path))
+    doc = open_document(path)
     pages, findings = [], []
     try:
         for i, page in enumerate(reader.pages):
@@ -358,7 +370,13 @@ def render_image(page, dpi=144, max_pixels=40000000):
     scale = dpi/72
     if math.ceil(width*scale)*math.ceil(height*scale) > max_pixels:
         raise ValueError("Render exceeds --max-pixels; use a suitable DPI or larger explicit limit.")
-    bitmap = page.render(scale=scale)
+    bitmap = pdfium.PdfBitmap.new_native(math.ceil(width*scale), math.ceil(height*scale),
+                                         pdfium_c.FPDFBitmap_BGRA)
+    bitmap.fill_rect((255, 255, 255, 255), 0, 0, bitmap.width, bitmap.height)
+    matrix = pdfium_c.FS_MATRIX(scale, 0, 0, scale, 0, 0)
+    clip = pdfium_c.FS_RECTF(0, 0, bitmap.width, bitmap.height)
+    pdfium_c.FPDF_RenderPageBitmapWithMatrix(bitmap, page, ctypes.byref(matrix),
+                                           ctypes.byref(clip), pdfium_c.FPDF_ANNOT)
     try:
         return bitmap.to_pil().convert("RGB").copy()
     finally:
@@ -378,7 +396,9 @@ def region_for(mapping, source_page):
 
 def compare_images(source_img, output_img, rect, dpi, pixel_tolerance, max_changed_ratio):
     scale = dpi/72
-    box = tuple(round(x*scale) for x in rect)
+    # Match the ceil-sized source bitmap, not a second independently rounded extent.
+    left, top = round(rect[0]*scale), round(rect[1]*scale)
+    box = (left, top, left + source_img.width, top + source_img.height)
     if (box[0] < 0 or box[1] < 0 or box[2] > output_img.width or
             box[3] > output_img.height or box[2] <= box[0] or box[3] <= box[1]):
         return {"passed": False, "reason": "source_region_outside_output"}, None
@@ -407,6 +427,63 @@ def caption_positions(chars):
         positions[match.group(1)].append((c["bbox"][1]+c["bbox"][3])/2)
     return positions
 
+def content_streams(reader):
+    unique = {}
+    for n, page in enumerate(reader.pages, 1):
+        raw = page.get('/Contents')
+        if raw is None:
+            continue
+        obj = deref(raw)
+        items = list(obj) if isinstance(obj, (list, tuple)) else [raw]
+        for item in items:
+            stream = deref(item)
+            if not isinstance(stream, StreamObject):
+                continue
+            key = object_key(item)
+            if key not in unique:
+                payload = stream_bytes(stream)
+                unique[key] = {'object': key, 'pages': [], 'encoded_bytes': len(payload),
+                               'sha256': hashlib.sha256(payload).hexdigest(),
+                               'compressed': bool(stream.get('/Filter'))}
+            unique[key]['pages'].append(n)
+    return list(unique.values())
+
+
+def caption_findings(srcchars, rightchars, mapping, rect, height):
+    findings = []
+    if 'blocks' in mapping:
+        for block in mapping['blocks']:
+            if block.get('kind') != 'caption' or not block.get('target_bbox'):
+                continue
+            sc = [c for c in srcchars if in_rect(c, block['source_bbox'])]
+            oc = [c for c in rightchars if in_rect(c, block['target_bbox'])]
+            a, b = caption_positions(sc), caption_positions(oc)
+            for label in a.keys() & b.keys():
+                if len(a[label]) == len(b[label]) == 1:
+                    delta = abs(b[label][0] - rect[1] - a[label][0])
+                    if delta > max(36, height*.1):
+                        findings.append({'figure': block['figure_id'], 'block': block['id'],
+                                         'vertical_displacement_pt': round(delta, 2)})
+    else:
+        a, b = caption_positions(srcchars), caption_positions(rightchars)
+        for label in a.keys() & b.keys():
+            if len(a[label]) == len(b[label]) == 1:
+                delta = abs(b[label][0] - rect[1] - a[label][0])
+                if delta > max(36, height*.1):
+                    findings.append({'figure': label, 'vertical_displacement_pt': round(delta, 2),
+                                     'note': 'Unclassified text match; may be a prose reference.'})
+    return findings
+
+
+def small_text_roles(chars, mapping):
+    roles = collections.Counter()
+    for char in chars:
+        matched = [b['kind'] for b in mapping.get('blocks', [])
+                   if b.get('target_bbox') and in_rect(char, b['target_bbox'])]
+        roles[matched[0] if len(set(matched)) == 1 else 'unclassified'] += 1
+    return dict(roles)
+
+
 def audit(source, output, state=None, dpi=144, pixel_tolerance=16,
           max_changed_ratio=0.001, max_pixels=40000000):
     sr, outreader = checked_reader(source), checked_reader(output)
@@ -432,6 +509,14 @@ def audit(source, output, state=None, dpi=144, pixel_tolerance=16,
         for group in om["resources"][category]:
             if group["copies"] > before.get(group["fingerprint"], 1):
                 issue("warning", "new_"+category, **group)
+    sc_streams, oc_streams = content_streams(sr), content_streams(outreader)
+    old_uncompressed = {x["sha256"] for x in sc_streams if not x["compressed"]}
+    new_uncompressed = [x for x in oc_streams if not x["compressed"] and x["sha256"] not in old_uncompressed]
+    if new_uncompressed:
+        issue("warning", "new_uncompressed_page_contents",
+              objects=len(new_uncompressed), bytes=sum(x["encoded_bytes"] for x in new_uncompressed),
+              affected_pages=sorted({n for x in new_uncompressed for n in x["pages"]}),
+              note="New or expanded uncompressed page contents; inspect final lossless compression.")
     source_fonts = {x["sha256"] for x in sm["resources"]["font_streams"]}
     new_font_bytes = sum(x["encoded_bytes"] for x in om["resources"]["font_streams"]
                          if x["sha256"] not in source_fonts)
@@ -439,7 +524,7 @@ def audit(source, output, state=None, dpi=144, pixel_tolerance=16,
         issue("warning", "large_added_font_payload", bytes=new_font_bytes,
               note="Investigation trigger only; inspect used glyphs and subset lifecycle.")
     mapping = page_mapping(state, sm["page_count"])
-    source_doc, result_doc = pdfium.PdfDocument(str(source)), pdfium.PdfDocument(str(output))
+    source_doc, result_doc = open_document(source), open_document(output)
     try:
         for i in range(len(source_doc)):
             m = mapping.get(i)
@@ -476,18 +561,16 @@ def audit(source, output, state=None, dpi=144, pixel_tolerance=16,
             if pipes >= 12 and cjk:
                 issue("warning", "possible_flattened_table", i+1, separators=pipes,
                       note="Many pipe separators; inspect whether table rows/columns became prose.")
-            scaps, ocaps = caption_positions(srcchars), caption_positions(rightchars)
-            for label in sorted(scaps.keys() & ocaps.keys()):
-                if len(scaps[label]) == len(ocaps[label]) == 1:
-                    displacement = abs(ocaps[label][0] - rect[1] - scaps[label][0])
-                    if displacement > max(36, sh * 0.10):
-                        issue("warning", "caption_anchor_displaced", i+1,
-                              figure=label, vertical_displacement_pt=round(displacement,2),
-                              note="Unique figure-number match moved substantially; inspect correspondence.")
+            for finding in caption_findings(srcchars, rightchars, m, rect, sh):
+                issue("warning", "caption_anchor_displaced", i+1, **finding)
             small = [c for c in cjk if c["font_size"] < 8]
             if small:
-                issue("warning", "small_chinese_text", i+1, count=len(small),
-                      note="Below 8 pt; distinguish approved footnotes from body/table text.")
+                roles = small_text_roles(small, m)
+                marginal = set(roles) <= {'header', 'footer'}
+                issue('info' if marginal else 'warning',
+                      'small_marginal_text' if marginal else 'small_chinese_text', i+1,
+                      count=len(small), roles=roles,
+                      note='Role/location classification is not visual acceptance; inspect legibility.')
             if any(c["bbox"][2] > ow+0.5 or c["bbox"][3] > oh+0.5 for c in rightchars):
                 issue("warning", "text_crosses_output_boundary", i+1)
             si, oi = render_image(sp,dpi,max_pixels), render_image(op,dpi,max_pixels)
@@ -533,7 +616,9 @@ def audit(source, output, state=None, dpi=144, pixel_tolerance=16,
             "output": {"sha256": om["sha256"], "bytes": om["bytes"], "pages": om["page_count"]},
             "size_delta_bytes": om["bytes"]-sm["bytes"], "classified_delta_bytes": delta,
             "source_resources": sm["resources"], "output_resources": om["resources"],
-            "render_dpi": dpi, "pages": pages, "findings": findings,
+            "render_dpi": dpi, "render_method":RENDER_METHOD, "pages": pages, "findings": findings,
+            "page_content_streams":{"source":sc_streams,"output":oc_streams},
+            "finding_summary":dict(collections.Counter(x["code"] for x in findings)),
             "mechanical_pass": not any(x["severity"]=="error" for x in findings),
             "semantic_review_required": True, "visual_review_required": True,
             "limitations": ["Does not prove translation correctness, reading order, table semantics or label alignment.",
@@ -543,7 +628,10 @@ def audit(source, output, state=None, dpi=144, pixel_tolerance=16,
 
 
 def content_hash(state):
-    return canonical_hash({k: state.get(k) for k in ("source","layout","glossary","pages","issues")})
+    keys = ["source", "layout", "glossary", "pages", "issues"]
+    if state.get("schema_version") == 2:
+        keys.append("document")
+    return canonical_hash({k: state.get(k) for k in keys})
 
 
 def resolve_state_file(base, value):
@@ -564,7 +652,7 @@ def check_state(state_path, final=False):
     def error(code, **extra):
         errors.append({"code": code, **extra})
 
-    if state.get("schema_version") != 1:
+    if state.get("schema_version") not in (1, 2):
         error("unsupported_state_schema")
     if not isinstance(state.get("layout"), dict):
         error("missing_layout")
@@ -693,6 +781,16 @@ def check_state(state_path, final=False):
         error("source_page_coverage_incomplete")
     if sorted(n for n in output_numbers if type(n) is int) != list(range(1,count+1)):
         error("output_page_mapping_not_one_to_one")
+    if state.get("schema_version") == 2:
+        if not isinstance(state.get("document"), dict) or state["document"].get("source_kind") not in ('original', 'english-original', 'official-chinese', 'generated-translation'):
+            error("missing_document_identity")
+        for page in pages:
+            block_ids = [b.get("id") for b in page.get("blocks", []) if isinstance(b, dict)]
+            if page.get("reading_order") != block_ids:
+                error("reading_order_missing_or_inconsistent", page=page.get("source_page"))
+            ctx = page.get("context_pages", [])
+            if not isinstance(ctx, list) or any(type(n) is not int or not 1 <= n <= count for n in ctx):
+                error("invalid_context_pages", page=page.get("source_page"))
     computed_hash = content_hash(state)
     output = state.get("output", {})
     actual_output_sha = None
@@ -713,7 +811,11 @@ def check_state(state_path, final=False):
         error("invalid_qc"); qc = {}
     if qc:
         if qc.get("content_sha256") != computed_hash:
-            error("stale_qc_content")
+            if validate_relocation(state, state_path, content_hash):
+                warnings.append({"code":"verified_path_only_migration",
+                                 "note":"Original review retained; no claim of new semantic review."})
+            else:
+                error("stale_qc_content")
         if qc.get("source_sha256") != actual_source_sha:
             error("stale_qc_source")
         if qc.get("output_sha256") != actual_output_sha or actual_output_sha is None:
@@ -742,7 +844,22 @@ def check_state(state_path, final=False):
                 error("unresolved_issue",detail=issue)
             elif issue.get("status")=="retained" and not issue.get("note"):
                 error("retained_issue_without_explanation",detail=issue)
-    return {"schema_version":1,"tool":"pdf-bilingual-parallel-translate/check-state",
+    if final and state.get("schema_version") == 2:
+        errors.extend(validate_reviews(state, state_path))
+        try:
+            font_report_path = resolve_state_file(base, qc["font_report"]["path"])
+            if sha256_file(font_report_path) != qc["font_report"]["sha256"]:
+                error("font_report_changed")
+            fr = read_json(font_report_path)
+            fresh = check_fonts(state_path, resolve_state_file(base, qc["font_assignments"]))
+            if fr != fresh or not fresh["mechanical_pass"]:
+                error("font_check_not_passed_or_stale")
+        except (KeyError, ValueError, OSError) as exc:
+            error("font_check_unavailable", detail=str(exc))
+    return {"schema_version":2,"tool":"pdf-bilingual-parallel-translate/check-state",
+            "state_version":state.get("schema_version"),
+            "review_evidence_level":"page-bound-v2" if state.get("schema_version")==2 else "legacy-attestation-v1",
+            "quality_certified":False, "mechanical_checks_passed":not errors,
             "computed_content_sha256":computed_hash, "errors":errors,"warnings":warnings,
             "valid":not errors,"final_checks":final,"ready_for_delivery":final and not errors,
             "note":"Checks consistency and recorded review coverage. It cannot attest that a "
@@ -760,8 +877,8 @@ def save_png(image, path, overwrite=False):
 
 
 def render_command(args):
-    doc = pdfium.PdfDocument(str(args.pdf))
-    source = pdfium.PdfDocument(str(args.source)) if args.source else None
+    doc = open_document(args.pdf)
+    source = open_document(args.source) if args.source else None
     state = read_json(args.state) if args.state else None
     mapping = page_mapping(state,len(source)) if source else {}
     by_output = {int(v["output_page"])-1:v for v in mapping.values()}
@@ -771,7 +888,11 @@ def render_command(args):
             page=doc[i]; im=render_image(page,args.dpi,args.max_pixels)
             name=f"page-{i+1:04d}.png"
             save_png(im,Path(args.out)/name,args.overwrite)
-            row={"output_page":i+1,"image":name,"pixels":list(im.size)}
+            row={"output_page":i+1,"image":name,"pixels":list(im.size),
+                 "image_sha256":sha256_file(Path(args.out)/name),
+                 "pixel_sha256":hashlib.sha256(im.tobytes()).hexdigest()}
+            if state and i in by_output:
+                row["page_content_sha256"] = page_fingerprint(state, by_output[i]["source_page"])
             if source:
                 m=by_output.get(i)
                 if m is None:
@@ -795,6 +916,10 @@ def render_command(args):
     report={"schema_version":1,"tool":"pdf-bilingual-parallel-translate/render",
             "output_sha256":sha256_file(args.pdf),"dpi":args.dpi,"pages":rows,
             "visual_review_completed":False}
+    report["settings"] = {"method":RENDER_METHOD, "dpi":args.dpi,
+                          "pdfium_version":str(pdfium.PDFIUM_INFO), "annotations":True,
+                          "color":"RGB", "background":"white"}
+    report["settings_sha256"] = canonical_hash(report["settings"])
     if args.source:report["source_sha256"]=sha256_file(args.source)
     write_json(report,Path(args.out)/"index.json",args.overwrite)
     return report
@@ -819,7 +944,11 @@ def main(argv=None):
     check=subs.add_parser("check-state",help="Validate recovery data and version-bound review records.")
     check.add_argument("state",type=Path);check.add_argument("--final",action="store_true")
     check.add_argument("--out",type=Path)
-    for p in (inspect,audit_parser,render,check):
+    font_check=subs.add_parser("check-fonts",help="Check actual assigned fonts against draw-time text runs.")
+    font_check.add_argument("state",type=Path);font_check.add_argument("--assignments",type=Path,required=True)
+    font_check.add_argument("--out",type=Path)
+    for p in (inspect,audit_parser,render,check,font_check):
+        p.add_argument("--password-env",help="Name of an environment variable holding an explicitly supplied password")
         p.add_argument("--overwrite",action="store_true",help="Replace explicitly selected reports/renders only.")
     for p in (audit_parser,render):
         p.add_argument("--dpi",type=int,default=144)
@@ -827,12 +956,16 @@ def main(argv=None):
         p.add_argument("--pixel-tolerance",type=int,default=16)
         p.add_argument("--max-changed-ratio",type=float,default=0.001)
     args=parser.parse_args(argv)
+    global _PASSWORD
+    _PASSWORD = os.environ.get(args.password_env) if args.password_env else None
     try:
+        if args.password_env and _PASSWORD is None:
+            raise ValueError("The named password environment variable is unavailable.")
         if args.command in ("audit","render"):
             if not 36<=args.dpi<=600 or not 0<=args.pixel_tolerance<=255 or not 0<=args.max_changed_ratio<=1 or args.max_pixels<1:
                 raise ValueError("Invalid rendering/comparison limits.")
         # Never let --out overwrite an input, even when --overwrite was supplied.
-        inputs=[getattr(args,k,None) for k in ("pdf","source","output","state")]
+        inputs=[getattr(args,k,None) for k in ("pdf","source","output","state","assignments")]
         dest=getattr(args,"out",None)
         if dest and any(p and Path(p).resolve()==Path(dest).resolve() for p in inputs):
             raise ValueError("Report/render output must not replace an input.")
@@ -866,6 +999,9 @@ def main(argv=None):
             print(json.dumps({"index":str(args.out/"index.json"),"pages":len(report["pages"]),
                               "visual_review_completed":False},ensure_ascii=False))
             return 0
+        elif args.command=="check-fonts":
+            report=check_fonts(args.state,args.assignments)
+            failed=not report["mechanical_pass"]
         else:
             report=check_state(args.state,args.final)
             failed=not report["valid"]

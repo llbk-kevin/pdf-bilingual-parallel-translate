@@ -2,11 +2,12 @@
 
 ## Format and coordinates
 
-Use UTF-8 without BOM JSON, schema_version 1. Paths resolve relative to state.json unless absolute. Hashes are lowercase SHA-256 of actual bytes. The following one-page example illustrates fields; placeholder hashes must be replaced, and it does not claim final review.
+Use UTF-8 without BOM JSON, schema_version 2 for new tasks; version 1 remains readable for historical packages. Paths resolve relative to state.json unless absolute. Hashes are lowercase SHA-256 of actual bytes. The following one-page example illustrates fields; placeholder hashes must be replaced, and it does not claim final review.
 
 ~~~json
 {
-  "schema_version": 1,
+  "schema_version": 2,
+  "document": {"source_kind": "english-original", "vendor": "example"},
   "source": {
     "path": "original.pdf",
     "sha256": "<actual SHA-256>"
@@ -53,6 +54,8 @@ Use UTF-8 without BOM JSON, schema_version 1. Paths resolve relative to state.js
       "expected_blocks": [
         "p001-body01"
       ],
+      "reading_order": ["p001-body01"],
+      "context_reviewed": false,
       "blocks": [
         {
           "id": "p001-body01",
@@ -135,3 +138,36 @@ The final check requires both page lists to cover every source page exactly, the
 check-state without --final validates draft consistency. Missing files, changed source/output/builder bytes, incomplete inventories or stale nonempty qc are errors. Finish pending blocks and inventory review before --final. Inspect JSON errors by code/page/block, correct the underlying cause and rerun.
 
 Save state after completed batches and keep the builder beside it. On resume, verify source hash first, then restore glossary, translations, mappings and layout decisions. Do not extract the previous Chinese PDF and treat it as the authoritative recovery source. Keep disposable renders outside the compact recovery package.
+
+
+## Version 2: actual review evidence
+
+New tasks use schema_version 2; the core example above is a draft and needs the final evidence below. Add document.source_kind (original for other source languages, english-original, official-chinese, or generated-translation), vendor and naming evidence as applicable. Every page's reading_order must equal its ordered blocks IDs. Record context_pages and context_reviewed:true only after checking semantic dependencies; otherwise the fingerprint conservatively includes the whole book. Layout, glossary and issues are always dependencies. Issues affecting meaning include page, block, source_quote, concern and treatment; an optional suggested_correction needs evidence. Keep the original expression near the translated note.
+
+Run the builder, check-fonts, audit and full render on a frozen candidate before review. The output state must reference the frozen output and actual builder inputs. Use a new render directory for a new version; do not overwrite an index already cited by a review. The render index includes exact output/source fingerprints, renderer version/settings, PNG file hash, RGB pixel hash, and page_content_sha256. Changing PNG metadata alone does not change the pixel hash, but the current file hash still has to match its own current index.
+
+In addition to the version 1 qc fields, version 2 requires font_assignments (path to the actual run report), font_report {path, sha256}, and page_reviews covering every source page. A viewed record has:
+
+~~~json
+{
+  "page": 1,
+  "mode": "viewed",
+  "output_sha256": "<actual PDF hash>",
+  "render_index": {"path": "../work/render-v1/index.json", "sha256": "<actual index hash>"},
+  "settings_sha256": "<index settings hash>",
+  "image_sha256": "<page PNG file hash>",
+  "pixel_sha256": "<rendered RGB pixel hash>",
+  "page_content_sha256": "<index content hash>",
+  "reviewer": "<actual session/reviewer>",
+  "reviewed_at": "<ISO timestamp with timezone>",
+  "evidence": "<actual image-open tool event or review notes reference>"
+}
+~~~
+
+Record mode viewed only after opening that full page and doing the checks. For mode reused, retain the current render's hashes and add previous (the original complete viewed record) and reuse_reason. Both render indices and image files must remain available. Only identical settings, pixels and semantic dependency fingerprints allow reuse. Changes to glossary, shared layout, issues or relevant context invalidate it. Reuse is a consistency check, not proof that an earlier observer understood the page; no tool automatically fills review attestations.
+
+The v2 content fingerprint additionally includes document. check-state --final rechecks actual font assignments, font file hashes, render evidence and source/output bindings. It reports mechanical_checks_passed, review_evidence_level and quality_certified:false. The old ready_for_delivery field remains for compatibility and cannot certify translation. Version 1 reports legacy-attestation-v1; do not add invented v2 evidence when migrating old work.
+
+## Path-only relocation
+
+Before an approved rename, copy the original state bytes to a historical snapshot and preserve its qc unchanged. Update only current source/output paths. Add migration with kind:path-only, performed_at, reason, previous_state:{path,sha256}, old_source and new_source. Keep original audit/review reports. The validator verifies the historical content fingerprint, identical qc, unchanged PDF fingerprints and content equality after reversing only source.path. It then emits verified_path_only_migration instead of stale_qc_content; this preserves an old acceptance, not a new review. Builder/translation/layout edits cannot use this exception. Other metadata changes use ordinary invalidation; regeneration tests run in independent copies.

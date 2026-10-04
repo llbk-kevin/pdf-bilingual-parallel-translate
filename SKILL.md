@@ -1,81 +1,80 @@
 ---
 name: pdf-bilingual-parallel-translate
-description: Create or revise a Chinese side-by-side bilingual PDF with the original page on the left and corresponding translation on the right. Use for PDF translation that needs source verification, preserved images and links, structured tables, resumable work, and resource/size auditing.
+description: Create or revise a Chinese side-by-side bilingual PDF with the original on the left and corresponding translation on the right. Use for source verification, structured tables and formulas, TI document naming, resumable translation, and resource/size auditing.
 ---
 
-# PDF bilingual translation
+# PDF bilingual parallel translation
 
 ## Working conventions
 
-Generate the translation with the current session model; do not use an external machine translation service. Detect the source language, subject and page types from the document. Electronics terminology is a common case, not a scope restriction. Follow the user's explicit choices.
+Translate with the current session model, without external machine translation. Detect the language, subject and page types; electronics is a common case, not a restriction. Follow explicit user choices.
 
-Use UTF-8 without BOM for every text file. When using the skill, read only the English SKILL.md; do not read the Chinese README.md. When modifying any skill document, update the other document in sync.
+Use UTF-8 without BOM. When using the skill, read only the English SKILL.md and relevant English references; do not read the Chinese README.md. When modifying documents, synchronize both languages. Keep task files outside this repository. Resolve the installed directory; preserve a CC Switch link and maintain its target without moving it yourself.
 
-Keep task files outside this skill's repository. Resolve the installed skill directory before accessing scripts. Preserve a CC Switch link entry and maintain its resolved target; do not move the skill yourself.
+Default task layout (honor user-specified destinations):
 
-Suggested task tree (paths are examples, not fixed machine locations):
-
-~~~
-work/bilingual/<document>/
-  state.json         # Recoverable text, mapping, glossary, layout and review records
-  baseline.json      # Source inspection
-  audit.json         # Final mechanical audit
-  build.py           # Task-specific deterministic layout builder
-  renders/           # Full pages, source pages, differences; disposable
-outputs/
-  <stem>_双语对照翻译.pdf
-  <stem>_recovery/    # State, builder and required metadata; no redundant render cache
+~~~text
+<source-directory>/
+|-- <source-stem>.pdf
++-- <source-stem>/
+    |-- <delivery-name>.pdf       # Accepted output only
+    |-- 交付说明.md
+    |-- recovery/                # State, builder, glossary and regeneration instructions
+    +-- work/                    # Drafts, extraction, renders, audits and checkpoints
 ~~~
 
-Keep the original filename unchanged. Use relative paths within a recovery package where possible; record the external original's location and SHA-256. Record font names, hashes, permitted acquisition sources, dependencies and builder parameters so the work can be regenerated. Do not redistribute font files without permission.
+Identify document roles from content, not Chinese filenames or translation suffixes. For TI English documents, original and bilingual output intentionally use the same filename pattern in different directories. Read [naming.md](references/naming.md), identify this document's number/title, and proactively present an exact before/after table. In normal mode rename after confirmation; an accepted Plan's table requires no second confirmation. Never overwrite the source or a colliding target. Omit missing number fields; preserve old translations unless deletion was explicitly requested.
+
+Prefer relative recovery paths. Record the external original's SHA-256, font names/hashes/acquisition sources, dependencies and builder parameters. State is the authoritative translation/layout input, not an appendix to hardcoded Python translations. Copy the example and its helper into task recovery before adapting it.
 
 ## Required result
 
-1. Completeness, accuracy, source fidelity and legibility are delivery conditions. Optimize positional correspondence next, then typographic consistency and decoration. Never omit qualifications, merge distinct content or shrink text excessively to make it fit.
-2. Produce one bilingual output page for each source page, retaining the original visible area at its original scale on the left. The Chinese area defaults to the same width and height. Maintain major regions and columns; align semantic blocks rather than individual lines.
-3. Translate titles, paragraphs, list items, table cells, formula explanations, captions and relevant figure labels with chapter and cross-page context. Preserve numbers, units, part numbers, variables, subscripts, superscripts, equation numbers, conditions and negation. Preserve uncertain source wording and record the uncertainty; do not silently guess.
-4. Keep graphics on the left. Near the corresponding right-side position, place the figure number, translated caption and necessary translated labels, legends and axis explanations. Disambiguate by figure number, source label or position. Retain useful empty space; do not add empty colored panels, invented diagrams or a page-top caption dump.
-5. Preserve real table rows, columns, headers, values and footnotes. Do not flatten tables into pipe-separated paragraphs. Repeat repeated formulas when the source repeats them. Content containing only numbers, identifiers or symbols may remain verbatim with a recorded reason.
-6. Resolve overflow with line wrapping, column widths and internal spacing, then nearby blank space and local reflow, then moderate right-pane widening. Keep the source pane unchanged. If complete, readable same-page correspondence still cannot be achieved, identify the exact pages and unresolved constraint before claiming completion.
-7. Preserve original image encodings and quality. Use real searchable/copyable Chinese and light vector rules. Share fonts across the document, subset them to the final glyph set and remove obsolete resources after revision. Additional fallback fonts need a specific glyph coverage purpose.
-8. Regenerate revisions from the original PDF and recovery data, never by repeatedly overlaying the previous bilingual output.
+1. Completeness, accuracy, source fidelity and legibility are delivery conditions; optimize spatial correspondence next, then typography. Never omit qualifications, merge distinct meanings or excessively shrink text to fit.
+2. Map every source page to one output page. Keep its visible original at 1:1 on the left; default the Chinese pane to the same dimensions. Align semantic blocks and columns rather than individual lines.
+3. Inventory headings, paragraphs, lists, table cells, formulas, captions and meaningful figure labels. Preserve reading order and cross-page context. Join extraction fragments with source mappings; distinguish image-only labels, duplicate extraction and invisible text. Check inventory against the visible original.
+4. Explicitly check signs, comparison operators, negation, conditions, typical/guaranteed limits, proportional/inverse relationships, numbers, units and subscripts/superscripts. Preserve repeated equations and genuine table structure. Prefer readable mathematical structure over ASCII substitutes. See [layout.md](references/layout.md) and [math.md](references/math.md).
+5. Keep graphics on the left. Place corresponding captions and keyed label/legend/axis translations nearby on the right. Disambiguate with figure numbers, source labels or precise positions. Useful blank space is valid; no empty colored panels, invented diagrams or page-top caption dumps.
+6. Fit by improving wrapping, column widths and spacing, then nearby reflow, then moderate right-pane widening. Preserve the source pane. Report exact unresolved pages if full readable same-page correspondence remains impossible.
+7. Preserve uncertain source meaning. Record page, block, original wording, concern and treatment; optional suggested corrections need evidence. Put short notes beside meaning-affecting contradictions and full issues in recovery/delivery notes. Never silently correct a source or present guesses as facts.
+8. Reuse original image encodings/quality. Add searchable/copyable Chinese and light vectors; share and subset fonts across the document. Assign fallback fonts to specific missing glyphs. Check the font actually used for each run, then inspect final rendered glyphs.
+9. Regenerate from original plus state, never by overlaying an old bilingual PDF. Builders must read translations, complete table cells and layout from state without overwriting authoring edits. Keep clearly named drafts under work/.
 
-Read [layout.md](references/layout.md) when designing page styles or resolving density. Read [pdf-integrity.md](references/pdf-integrity.md) before PDF composition, resource handling and structural acceptance.
+Read [pdf-integrity.md](references/pdf-integrity.md) before composition/structural acceptance and [state-and-qc.md](references/state-and-qc.md) before creating or migrating recovery data.
 
-## Diagnostic tools
+## Tools and build interface
 
-Python 3.10+ is required. Install requirements.txt in an existing suitable environment or an isolated environment. Do not hardcode this computer's runtime path into task scripts.
+Use Python 3.10+ and requirements.txt for diagnostics; the optional example also needs requirements-dev.txt. Discover an available interpreter first. Prefer a suitable existing or isolated environment; do not install into shared Python merely to bypass a failing shell. Call the interpreter directly when needed, without hardcoding machine runtime paths into the skill.
 
-~~~
+~~~text
 python -m venv work/pdf-skill-env
-<venv-python> -m pip install -r "<skill-dir>/requirements.txt"
+<venv-python> -m pip install -r "<skill-dir>/requirements-dev.txt"
 <venv-python> "<skill-dir>/scripts/pdf_tools.py" --help
 ~~~
 
-The tools inspect and render; they do not translate, create layouts, optimize PDFs or certify semantic accuracy.
-
-| Command | Inputs | Output and use |
+| Entry | Inputs | Output and purpose |
 | --- | --- | --- |
-| inspect SOURCE --out baseline.json | Original PDF | Page geometry, rotation/crop, extraction hints, links/bookmarks, unique reachable resource baseline. |
-| audit SOURCE FINAL --state state.json --out audit.json | Original, final PDF; optional state | Original-pane raster/text comparison, image signatures, link/bookmark checks, new resources and size deltas. |
-| render FINAL --source SOURCE --state state.json --pages all --out renders | PDF; optional source and mapping | Individual PNGs plus index.json; with a source, source and difference images. |
-| check-state state.json --final --out state-check.json | Recovery JSON, referenced files | Missing translations/mapping, changed fingerprints, stale reviews and incomplete final coverage. Omit --final during work. |
+| inspect SOURCE --out baseline.json | Original | Geometry, extraction, links/bookmarks and reachable resources. |
+| audit SOURCE FINAL --state state.json --out audit.json | Original, final, optional mapping | Uniform-scale original comparison, resources, links, size and content-stream findings. |
+| render FINAL --source SOURCE --state state.json --pages all --out renders | Final, optional original/mapping | PNGs and immutable index with file/pixel/content/settings hashes; never records viewing. |
+| check-fonts state.json --assignments final.font-runs.json --out fonts.json | State and actual draw-time runs | Assigned-font coverage, missing glyphs, fallback use and unverified fonts. |
+| check-state state.json --final --out state-check.json | State and referenced evidence | Consistency, fingerprints, coverage and review records; omit --final during work. |
+| scripts/example_build.py --source SOURCE --state state.json --output work/draft.pdf | Explicit boxes, registered fonts and complete state | Deterministic PDF, draft.state.json and draft.font-runs.json; input state is read-only. |
 
-Paths with spaces must be quoted. Reports/renders refuse replacement unless --overwrite is specified; input PDFs are never edited. --pages accepts all or one-based selections such as 1,3-5. Audit and render default to 144 DPI, a 40-million-pixel page limit, RGB difference tolerance 16 and changed-pixel ratio 0.001. These are comparison settings, not translation quality thresholds. Use --dpi for close checks; deliberately change --max-pixels only when memory permits. Record any relaxed comparison tolerances and inspect differences; do not hide errors by increasing thresholds.
+The example is a building pattern, not a universal layout engine. It requires unrotated, uncropped, zero-origin pages and fails on unsupported geometry/overflow. Adapt deliberately; [building.md](references/building.md) explains fonts, tables and independent-copy rebuilding.
 
-Exit codes: 0 = requested mechanical checks completed without errors (warnings may remain); 2 = reported audit/state errors; 1 = operational failure. Render success explicitly leaves visual_review_completed false.
+Quote paths with spaces. Reports/renders and the example refuse overwrite without --overwrite; originals remain protected. --pages accepts all or one-based selections such as 1,3-5. Default comparisons use 144 DPI, 40 million pixels, RGB tolerance 16 and changed ratio 0.001, not translation-quality thresholds. Investigate differences instead of relaxing thresholds to hide them. Empty-user-password PDFs work directly; required passwords use --password-env with an explicitly supplied environment variable, never saved or logged.
 
-Read [state-and-qc.md](references/state-and-qc.md) when creating recovery data. It defines the schema, coordinates, review lifecycle and a minimal example. The source block inventory must itself be checked visually: a tool cannot discover content omitted from both the inventory and translation.
+Diagnostic exit codes: 0 = mechanical completion without errors (warnings may remain); 2 = reported check failure; 1 = operational failure. ready_for_delivery is a compatibility consistency field, not semantic certification; quality_certified stays false. Version 1 states are labeled legacy attestations, not silently upgraded to version 2 evidence.
 
 ## Workflow
 
-1. Inspect the source; save its hash and resource baseline. Render representative body, dense-table, multi-figure, formula, landscape and rotated/cropped pages as applicable. Inspect extraction against the visible original; use local OCR only when needed and verify its numbers/symbols. Choose document-specific fonts, body/caption sizes, header safe zones and restrained color.
-2. Inventory every page's semantic blocks and assign stable IDs and source bounding boxes. Record source text, relevant cross-page context, table structure, figure anchors and translation status. Build a glossary from definitions and actual context. Activate vendor naming rules only for that vendor.
-3. Translate a chapter/context group, then lay out representative difficult pages. Review those samples for full content, real table structure, caption position and readable size. Resolve the design before scaling up. Persist translations and layout parameters after each batch.
-4. Build from the original using a task-specific script. Prefer extending the original page's visible region and adding right-side text, after normalizing or explicitly accounting for crop and rotation. Preserve interactive objects and their destinations. Run check-state during work; use render for individual pages and fix layout failures.
-5. Finish all saving, font subsetting and resource cleanup. Freeze the final file, clear obsolete review records, compute its hash and run audit against the original. Explain every warning and investigate incremental images/fonts or unexplained size growth. A file-size percentage alone is not a pass/fail rule.
-6. Perform three separate acceptances on that final version: (a) block-by-block translation coverage, accuracy, terminology, conditions, negation, numbers, units, tables and formulas; (b) visually open every final page, enlarging dense tables and fine captions; (c) source-pane fidelity, original images, font/resource increments, working links/bookmarks and searchable/copyable Chinese. A contact sheet is a navigation aid, not full-page inspection. Programmatic success and rendering do not replace these reviews.
-7. Record actual reviewed page lists and reviewer/time, source/output/content hashes, audit path and warning resolutions. Run check-state --final. If anything changes, rebuild as needed and repeat affected semantic review plus final-file full visual/structural review; never carry stale acceptance forward.
-8. Deliver the PDF and recovery data with page count, source/output sizes, absolute and percentage growth, resource deltas, validation coverage and retained uncertainties. State limitations candidly. Do not describe unviewed pages or unresolved translation as fully accepted.
+1. Identify roles, naming and paths; inspect source and preserve its hash/resource baseline. Render representative difficult pages, verify extraction/OCR including numbers/symbols, and choose document-specific fonts, sizes, colors and safe margins.
+2. Inventory blocks in reading order with cross-page dependencies and contextual terminology. Translate a chapter/context group; trial difficult pages before scaling. Persist state after every batch.
+3. Build from source/state, check glyphs during construction and run check-fonts on actual draw-time runs. Check draft state; render samples and fix overflow, table geometry and math. Save exact batch/queue checkpoints without embedding account balances or temporary quota policies in the skill.
+4. Verify recovery in an independent copy: rebuild, edit one translation and one table cell, and confirm output changes while authoring edits survive. Repeated generation must not accumulate resources. Byte-identical rebuilding is useful; explain metadata-only differences when applicable.
+5. Finish saving, font subsetting, lossless content compression and resource cleanup. Freeze/hash the candidate and audit it. Investigate warnings by page/resource and preserve original reports; demonstrated tool defects need explicitly bound alternative evidence, not edited pass flags.
+6. Perform separate translation, visual and structural acceptance. Initially view every full page and enlarge dense details; contact sheets only aid navigation. After repair, rerender the whole book and repeat structure checks. Re-view changed pages; reuse prior viewed pages only with matching pixels, renderer settings, text/layout and semantic dependencies plus traceable original records. Otherwise view again.
+7. Record only actual reviews: page, viewer/time/evidence, PDF/render/content hashes and reuse reason. check-state --final validates records, not whether the model understood the page. Rendering or mechanical success never proves accuracy.
+8. Deliver PDF/recovery with page count, original/output sizes, absolute/percentage growth, resource deltas, coverage and retained issues. State incomplete work honestly. Path-only renames preserve old acceptance and a verified migration chain; do not replace old hashes and call it a new review.
 
-For explicitly requested maintenance of this skill itself, follow AGENTS.md and [maintenance.md](references/maintenance.md). Ordinary translation jobs never enter the skill repository.
+Explicit skill maintenance follows AGENTS.md and [maintenance.md](references/maintenance.md). Ordinary translation files never enter this repository.

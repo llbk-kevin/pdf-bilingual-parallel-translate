@@ -2,11 +2,12 @@
 
 ## 格式与坐标
 
-使用 UTF-8 无 BOM JSON，schema_version 为 1。除绝对路径外，路径相对于 state.json 解析。指纹为实际字节的、小写 SHA-256。以下单页示例说明字段，占位指纹必须替换，不代表完成最终验收。
+使用 UTF-8 无 BOM JSON，新任务的 schema_version 为 2；历史包继续支持版本 1。除绝对路径外，路径相对于 state.json 解析。指纹为实际字节的、小写 SHA-256。以下单页示例说明字段，占位指纹必须替换，不代表完成最终验收。
 
 ~~~json
 {
-  "schema_version": 1,
+  "schema_version": 2,
+  "document": {"source_kind": "english-original", "vendor": "example"},
   "source": {
     "path": "original.pdf",
     "sha256": "<actual SHA-256>"
@@ -53,6 +54,8 @@
       "expected_blocks": [
         "p001-body01"
       ],
+      "reading_order": ["p001-body01"],
+      "context_reviewed": false,
       "blocks": [
         {
           "id": "p001-body01",
@@ -135,3 +138,36 @@ output 和 qc 不参与该指纹，避免循环依赖；二者由独立字节指
 不带 --final 的 check-state 检查草稿一致性。文件缺失、原文/输出/生成脚本字节变化、清单缺项或非空 qc 失效均为错误。完成待译块和原文清单审阅后再运行 --final。根据 JSON 的 code/page/block 定位错误，修复根因后重跑。
 
 每完成一批保存状态，生成脚本与其放在一起。恢复时先验证原文指纹，再读取术语、译文、映射及布局决策。不要从旧中文 PDF 提取内容并将其作为权威恢复来源。可清理的渲染图放在紧凑恢复包之外。
+
+
+## 版本 2：实际审阅证据
+
+新任务使用 schema_version 2；上文基本示例是草稿，最终验收需补充下列证据。增加 document.source_kind（其他原文语言使用 original，或 english-original、official-chinese、generated-translation），以及适用的 vendor 和命名证据。每页 reading_order 必须等于 blocks 的顺序 ID。只有核对语义依赖后才能声明 context_pages 和 context_reviewed:true；否则指纹保守包含全书。layout、glossary 和 issues 始终为依赖。影响含义的疑点包括 page、block、source_quote、concern、treatment；可选 suggested_correction 必须有 evidence。译注附近保留原表达。
+
+在冻结候选版本上执行构建、check-fonts、audit 和全书渲染后再审阅。输出状态引用该版本及实际构建输入。新版本使用新渲染目录，不覆盖已被审阅引用的索引。索引含准确的输出/原文指纹、渲染器版本和设置、PNG 文件哈希、RGB 像素哈希及 page_content_sha256。仅 PNG 元数据变化不影响像素哈希，但当前文件哈希仍须匹配它自己的当前索引。
+
+除版本 1 qc 字段，版本 2 还要求 font_assignments（实际片段报告路径）、font_report {path,sha256}，以及覆盖全部原文页的 page_reviews。viewed 记录如下：
+
+~~~json
+{
+  "page": 1,
+  "mode": "viewed",
+  "output_sha256": "<实际 PDF 哈希>",
+  "render_index": {"path": "../work/render-v1/index.json", "sha256": "<实际索引哈希>"},
+  "settings_sha256": "<索引设置哈希>",
+  "image_sha256": "<PNG 文件哈希>",
+  "pixel_sha256": "<RGB 像素哈希>",
+  "page_content_sha256": "<索引内容哈希>",
+  "reviewer": "<实际会话或审阅者>",
+  "reviewed_at": "<含时区的 ISO 时间>",
+  "evidence": "<实际打开图片的工具事件或审阅笔记引用>"
+}
+~~~
+
+只有实际打开完整页面并完成检查后才能写 mode viewed。mode reused 保留当前渲染哈希，增加 previous（完整的原始 viewed 记录）及 reuse_reason。两个渲染索引和图片必须保留。只有设置、像素及语义依赖指纹一致才能复用。术语、共享布局、问题或相关上下文变化会使之失效。复用只是记录一致性检查，不证明此前查看者理解了页面；工具不会自动填写审阅声明。
+
+v2 内容指纹额外包含 document。check-state --final 重新核对实际字体分配、字体文件指纹、渲染证据及原文/输出绑定，报告 mechanical_checks_passed、review_evidence_level 和 quality_certified:false。旧 ready_for_delivery 保留兼容，不能认证翻译。版本 1 报告 legacy-attestation-v1，迁移旧包时不能虚构 v2 证据。
+
+## 仅路径迁移
+
+执行已批准改名前，将原状态字节保存为历史快照并保持 qc 不变。只更新当前 source/output 路径，增加 migration，其中包含 kind:path-only、performed_at、reason、previous_state:{path,sha256}、old_source 和 new_source。保留原审计和审阅报告。校验器验证历史内容指纹、qc 相同、PDF 指纹不变，并仅反向替换 source.path 后比较内容相等，然后报告 verified_path_only_migration 而非 stale_qc_content；这是保留旧验收，不是新审阅。构建器、译文或布局改动不能使用例外。其他元数据变化按普通失效处理；重建测试在独立副本进行。
