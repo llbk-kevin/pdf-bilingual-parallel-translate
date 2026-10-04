@@ -23,7 +23,7 @@ Default task layout (honor user-specified destinations):
     +-- work/                    # Drafts, extraction, renders, audits and checkpoints
 ~~~
 
-Identify document roles from content, not Chinese filenames or translation suffixes. Present an exact before/after table for source renaming; in normal mode rename after confirmation, while an accepted Plan's table requires no second confirmation. Never overwrite the source or a colliding target; preserve old translations unless deletion was explicitly requested. Only after confirming that the current document is from TI, read and apply [naming.md](references/naming.md).
+Identify document roles from content, not Chinese filenames or translation suffixes. Present an exact before/after table for source renaming; in normal mode rename after confirmation, while an accepted Plan's table requires no second confirmation. Never overwrite the source or a colliding target; preserve old translations unless deletion was explicitly requested. Read [naming.md](references/naming.md) for every document: originals use a confirmed number (when available), the actual original-language title and Chinese title; only generated bilingual output receives the translation suffix. Apply TI additions only to confirmed TI documents.
 
 Prefer relative recovery paths. Record the external original's SHA-256, font names/hashes/acquisition sources, dependencies and builder parameters. State is the authoritative translation/layout input, not an appendix to hardcoded Python translations.
 

@@ -50,29 +50,64 @@ def safe_title(text):
     return text
 
 
-def ti_filename(english_title=None, chinese_title=None, document_id=None,
-                official_chinese=False, english_document_id=None):
-    """IDs must have been identified from this document, never reference matches."""
-    def number(v):
-        if not v:
+TRANSLATION_SUFFIX = '_双语左右对照翻译'
+
+
+def document_filename(source_title=None, chinese_title=None, document_id=None, *,
+                      role, version=None, source_is_chinese=False, paper=False,
+                      vendor=None, english_document_id=None):
+    """Format agent-confirmed identity only; never infer roles, IDs or move files."""
+    if role not in ('original', 'generated-translation', 'official-chinese'):
+        raise ValueError('Explicit original, generated-translation or official-chinese role required')
+    ti = isinstance(vendor, str) and vendor.casefold() == 'ti'
+    def number(value):
+        if value is None or not str(value).strip():
             return None
-        v = v.strip().lower()
-        if not re.fullmatch(r'[a-z]+\d+[a-z]*', v):
-            raise ValueError('Invalid document number')
-        return v
-    if official_chinese:
-        fields = [number(english_document_id), number(document_id), safe_title(chinese_title or '')]
-    else:
-        fields = [number(document_id), safe_title(english_title or ''), safe_title(chinese_title or '')]
+        text = str(value).strip()
+        if ti:
+            text = text.lower()
+            if not re.fullmatch(r'[a-z]+\d+[a-z]*', text):
+                raise ValueError('Invalid TI document number')
+        return safe_title(text)
+    def title(value):
+        text = safe_title(value or '')
+        while text.endswith(TRANSLATION_SUFFIX):
+            text = text[:-len(TRANSLATION_SUFFIX)].rstrip()
+        if not text:
+            raise ValueError('Missing actual title')
+        return text
+    chinese = source_is_chinese or role == 'official-chinese'
+    translated = title((source_title or chinese_title) if chinese else chinese_title)
+    if version is not None and str(version).strip():
+        revision = '（' + safe_title(str(version).strip().strip('（）()')) + '）'
+        while translated.endswith(revision):
+            translated = translated[:-len(revision)]
+        translated += revision
+    fields = []
+    if not paper:
+        if ti and role == 'official-chinese':
+            fields.append(number(english_document_id))
+        fields.append(number(document_id))
+    if not chinese:
+        fields.append(title(source_title))
+    fields.append(translated)
     stem = '_'.join(x for x in fields if x)
-    if not official_chinese:
-        suffix = '_双语左右对照翻译'
-        while stem.endswith(suffix):
-            stem = stem[:-len(suffix)]
-        stem += suffix
-    if len(stem + '.pdf') > 255:
-        raise ValueError('Filename too long; shorten the subtitle in the approved naming table')
-    return stem + '.pdf'
+    if role == 'generated-translation':
+        stem += TRANSLATION_SUFFIX
+    filename = stem + '.pdf'
+    if len(filename.encode('utf-16-le')) // 2 > 255:
+        raise ValueError('Filename too long; propose a shorter subtitle before renaming')
+    if re.fullmatch(r'(?i:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])', stem.split('.')[0]):
+        raise ValueError('Reserved Windows filename')
+    return filename
+
+
+def ti_filename(english_title=None, chinese_title=None, document_id=None, *,
+                role, english_document_id=None, version=None):
+    """TI wrapper; callers must now specify the actual file role explicitly."""
+    return document_filename(english_title, chinese_title, document_id, role=role,
+                             version=version, vendor='TI',
+                             english_document_id=english_document_id)
 
 
 def page_fingerprint(state, page_number):
@@ -260,25 +295,41 @@ def validate_reviews(state, state_path):
 
 
 def validate_relocation(state, state_path, content_hash):
-    """Retain an old review only for byte-identical PDFs and a path-only source move."""
+    """Verify each path-only hop back to an unchanged original acceptance."""
     try:
-        migration = state['migration']
-        previous_path = resolve(Path(state_path).parent, migration['previous_state']['path'])
-        if digest(previous_path) != migration['previous_state']['sha256']:
-            return False
-        previous = load(previous_path)
-        if previous['qc']['content_sha256'] != content_hash(previous):
-            return False
-        if state['qc'] != previous['qc']:
-            return False
-        if state['source']['sha256'] != previous['source']['sha256'] or state['output']['sha256'] != previous['output']['sha256']:
-            return False
-        normalized = copy.deepcopy(state)
-        normalized['source']['path'] = previous['source']['path']
-        if content_hash(normalized) != content_hash(previous):
-            return False
-        if not migration.get('performed_at') or not migration.get('reason'):
-            return False
-        return migration['kind'] == 'path-only' and migration['old_source'] == previous['source']['path'] and migration['new_source'] == state['source']['path']
-    except (KeyError, ValueError, TypeError, OSError):
+        current = state
+        base = Path(state_path).resolve().parent
+        seen = {Path(state_path).resolve()}
+        traversed = False
+        while 'migration' in current:
+            migration = current['migration']
+            if (migration['kind'] != 'path-only' or not migration.get('performed_at') or
+                    not migration.get('reason')):
+                return False
+            ref = migration['previous_state']
+            previous_path = resolve(base, ref['path']).resolve()
+            if previous_path in seen or digest(previous_path) != ref['sha256']:
+                return False
+            seen.add(previous_path)
+            previous = load(previous_path)
+            if (current['qc'] != previous['qc'] or
+                    current['source']['sha256'] != previous['source']['sha256'] or
+                    current['output']['sha256'] != previous['output']['sha256'] or
+                    migration['old_source'] != previous['source']['path'] or
+                    migration['new_source'] != current['source']['path']):
+                return False
+            normalized = copy.deepcopy(current)
+            normalized['source']['path'] = previous['source']['path']
+            if content_hash(normalized) != content_hash(previous):
+                return False
+            # A snapshot may retain references relative to its former authoring directory.
+            # Resolve that explicitly without rewriting any historical snapshot bytes.
+            base = (resolve(base, ref['base_path']).resolve() if 'base_path' in ref
+                    else previous_path.parent)
+            if not base.is_dir():
+                return False
+            current = previous
+            traversed = True
+        return traversed and current['qc']['content_sha256'] == content_hash(current)
+    except (KeyError, ValueError, TypeError, OSError, RuntimeError):
         return False

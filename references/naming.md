@@ -1,35 +1,62 @@
-# Document identity and TI naming
+# Document identity and naming
 
-Read and apply this reference only after confirming that the current document is from TI.
+Read this reference before naming any source, bilingual output or task directory. Apply the TI additions only to confirmed TI documents.
 
 ## Identify before naming
 
-Inspect the first pages and footer for this publication's number (for example SLUP339, SLVA317B, SNVA168E), retaining revision letters and lowercasing the identifier. Read the visible cover title; metadata and filenames are hints only. Do not use a cited publication, device or reference-design number. Continue through relevant pages if the number is absent; omit unconfirmed fields rather than guessing. Keep full title, selected title, Chinese title, number, vendor, source_kind and page/evidence notes in state.document.naming. Long subtitles may be omitted; preserve main-title meaning and English capitalization.
+Inspect the cover, opening pages, footer and publication/colophon pages for the actual title, publication number and version. Metadata and downloaded filenames are hints only. Retain full title, selected title, Chinese title, identifiers, version, language, vendor when relevant, file role and page/evidence notes in state.document.naming or the task naming manifest. For historical accepted states, keep new naming evidence in the migration manifest instead of changing fingerprinted content.
 
-TI English originals AND generated bilingual outputs:
+Use the actual original-language title, including non-English titles; do not manufacture an English intermediate title. Preserve capitalization and model names that belong to the title. Join line breaks and confirmed line-break hyphenation. An overlong subtitle may be omitted, with the complete title retained as evidence; do not silently remove main-title meaning.
+
+A publication number must identify this document. Do not substitute a device model, cited publication, reference design, date or numbers concatenated in a download filename. Non-TI identifiers retain official spelling, including digits and hyphens. Missing unconfirmed numbers are omitted with their separators. Papers omit the number field even when an article number or DOI exists; keep those identifiers in the evidence.
+
+## Formats and file roles
+
+| Role | Filename |
+| --- | --- |
+| Non-Chinese original | `<number>_<original title>_<Chinese title><optional version>.pdf` |
+| Generated bilingual translation | `<number>_<original title>_<Chinese title><optional version>_双语左右对照翻译.pdf` |
+| Chinese original or general official Chinese document | `<number>_<Chinese original title><optional version>.pdf` |
+| Official Chinese TI document | `<English number>_<Chinese number>_<official Chinese title><optional version>.pdf` |
+
+Omit absent number fields. Chinese originals contain the title only once. Append a confirmed version to the Chinese title in fullwidth parentheses, such as （Rev1.7） or （V3.5）; dates do not automatically become versions. Keep an already present identical version once. Only generated bilingual output receives the translation suffix, once. Establish roles from actual content and provenance before correcting misleading old suffixes.
+
+The source sits beside its task directory; the directory has the source filename stem. The generated PDF inside it has that stem plus the translation suffix. Honor explicitly selected destination directories. Never overwrite the source or an existing target.
+
+## TI additions
+
+Lowercase confirmed TI publication numbers while retaining revision letters, for example SLVA317B becomes slva317b. Read the number from the document, not a reference list. Official Chinese TI documents use an explicit English Document reference for the English number; omit only unavailable number fields. Official Chinese documents do not receive a generated-translation suffix or need retranslation merely for naming.
 
 ~~~text
-<number>_<English title>_<Chinese title>_双语左右对照翻译.pdf
-snva168e_Designing A SEPIC Converter_设计 SEPIC 转换器_双语左右对照翻译.pdf
+Original: snva168e_Designing A SEPIC Converter_设计 SEPIC 转换器.pdf
+Translation: snva168e_Designing A SEPIC Converter_设计 SEPIC 转换器_双语左右对照翻译.pdf
+Official Chinese: snvaa43_zhcace2_耦合电感器SEPIC功率级的基本计算.pdf
 ~~~
 
-They have the same basename but different paths: original beside the task folder, translated PDF inside it. source/output identity is established by content and hashes, never that suffix. Append the suffix once. No number means English title + Chinese title + suffix.
+## Formatting helper
 
-Official Chinese TI documents:
+scripts/workflow.py provides document_filename(source_title, chinese_title, document_id=None, *, role, version=None, source_is_chinese=False, paper=False, vendor=None, english_document_id=None). role is required: original, generated-translation or official-chinese. For Chinese originals set source_is_chinese=True; for papers set paper=True. vendor='TI' enables TI number normalization. The function formats confirmed metadata and returns one filename; it neither identifies documents nor renames files.
 
-~~~text
-<English number>_<Chinese number>_<official Chinese title>.pdf
-snvaa43_zhcace2_耦合电感器SEPIC功率级的基本计算.pdf
+The TI wrapper ti_filename(english_title, chinese_title, document_id=None, *, role, english_document_id=None, version=None) now also requires role. Replace old implicit-role calls and the former official_chinese boolean with an explicit role. A missing role fails rather than choosing a suffix silently.
+
+~~~python
+from workflow import document_filename
+original = document_filename('Eight Hints for Better Scope Probing',
+    '改善示波器探测的八项提示', '5989-7894EN', role='original')
+translated = document_filename('Eight Hints for Better Scope Probing',
+    '改善示波器探测的八项提示', '5989-7894EN', role='generated-translation')
 ~~~
 
-Use an explicit English Document reference for the English number. Omit only missing fields. Do not append a generated-translation suffix or retranslate an official Chinese document merely because of naming work.
+Normalize whitespace and replace Windows-forbidden characters minimally: an English colon becomes a spaced hyphen, and a slash becomes a fullwidth slash. Remove trailing spaces/dots. The helper rejects reserved Windows filenames and components longer than 255 UTF-16 code units without truncation. The agent must additionally check full-path lengths, actual tool support and collisions.
 
-## Propose and apply
+Windows process launch may reject a long working directory even when file I/O supports long paths. Start from a shorter working directory and pass explicit paths for the builder, state, source and output instead of silently shortening confirmed titles.
 
-Proactively present old path, new path, role and reason for TI naming changes. Normal mode requires user confirmation of the actual table before renaming. In Plan mode include the exact table; executing the accepted plan needs no second confirmation. Translation can continue independently while a naming decision is pending. New outputs use the chosen naming rule without another approval flow.
+## Propose, clarify and apply
 
-Normalize title line breaks and confirmed line-break hyphenation. Retain the complete title as metadata. Replace Windows-forbidden characters minimally (colon becomes spaced hyphen, slash becomes fullwidth slash); remove trailing spaces/dots. scripts/workflow.py ti_filename implements formatting of already verified metadata; it does not discover authoritative IDs or rename files. Check full-path length in the target environment. Do not silently truncate a title or append a random counter when a target collides: show a corrected table.
+For every document, proactively check names before translation and present an exact before/after table for the source, any existing output being renamed, and the task directory, with roles and reasons. Normal mode requires confirmation of that table. An accepted Plan containing the table needs no second confirmation. Translation may continue independently while naming is pending. New outputs follow the selected format without another rename approval.
 
-Apply exact paths, never broad rename patterns. Check source/output hashes, collisions and actual resolved directory boundaries before moves. Rename the task folder to the original's stem and update active recovery paths, instructions, queue and index. Preserve immutable historical reports and old review evidence. A path-only migration may retain old acceptance using a fingerprinted previous-state snapshot and a migration record; any content or builder change requires ordinary invalidation. Old states stay version 1 unless the new evidence is actually collected.
+When a proposed name contradicts the actual file role, an identifier's source or version is ambiguous, or a main title would have to be shortened, explain the concrete conflict and ask before deciding the name. Once resolved, use the answer within its stated scope. Do not promote a one-task exception into a standing skill rule without an explicit request.
 
-The default is to preserve existing translations. Deletion requires a concrete user instruction and exact targets; a one-time cleanup must not become a universal skill rule. Non-TI naming follows user preference without applying TI numbering.
+Before moves, save exact paths and fingerprints, check collisions and resolved directory boundaries, and verify long-path support in an isolated fixture where needed. Move one group at a time with a durable checkpoint; do not use broad wildcard renames or silently overwrite targets. Update current recovery paths, regeneration instructions, queue and delivery index. Preserve original audit/review bytes and each earlier migration snapshot, following [state-and-qc.md](state-and-qc.md). Verify PDFs remain byte-identical and test rebuilding only in independent copies. Keep clearly identified historical records out of bulk path replacements.
+
+Preserve existing translations unless their exact deletion was explicitly requested. This naming rule does not authorize deleting old translations.

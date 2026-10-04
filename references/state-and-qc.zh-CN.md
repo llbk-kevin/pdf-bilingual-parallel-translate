@@ -181,3 +181,7 @@ v2 内容指纹额外包含 document。check-state --final 重新核对实际字
 ## 仅路径迁移
 
 执行已批准改名前，将原状态字节保存为历史快照并保持 qc 不变。只更新当前 source/output 路径，增加 migration，其中包含 kind:path-only、performed_at、reason、previous_state:{path,sha256}、old_source 和 new_source。保留原审计和审阅报告。校验器验证历史内容指纹、qc 相同、PDF 指纹不变，并仅反向替换 source.path 后比较内容相等，然后报告 verified_path_only_migration 而非 stale_qc_content；这是保留旧验收，不是新审阅。构建器、译文或布局改动不能使用例外。其他元数据变化按普通失效处理；重建测试在独立副本进行。
+
+连续改名时，每一步都保留改名前快照。校验器逐级追溯带指纹的 previous_state，直到原始验收状态；每一步检查 qc、PDF 指纹保持一致，以及只反向替换 source.path 后内容一致。缺失或被修改的快照、循环引用、内容或布局变化均拒绝，即使最新路径恰好回到最初验收时的路径也必须验证。已有单次迁移记录继续可读。
+
+历史快照内的引用默认相对其所在目录解析。如果原状态的引用相对任务 recovery 目录，而字节完全相同的快照被放入 history/，在新迁移记录中增加 previous_state.base_path；它相对引用该快照的状态基准目录解析。例如 previous_state:{path:'history/before-second-rename.json',sha256:'<实际 SHA-256>',base_path:'.'} 保留上一快照原先以 recovery 为基准的引用语义。不得为修复链接改写历史快照。历史证据仍是历史证据；新增命名资料放入任务迁移清单，不修改内容指纹或审阅声明。

@@ -65,13 +65,15 @@ class Upgrade(unittest.TestCase):
         result=builder.build(self.source,self.sp,self.root/(name+'.pdf'))
         return result,w.load(result['state'])
     def test_ti_names_and_missing_numbers(self):
-        self.assertEqual(w.ti_filename('Designing A SEPIC Converter','设计 SEPIC 转换器','SNVA168E'),
+        self.assertEqual(w.ti_filename('Designing A SEPIC Converter','设计 SEPIC 转换器','SNVA168E',role='original'),
+            'snva168e_Designing A SEPIC Converter_设计 SEPIC 转换器.pdf')
+        self.assertEqual(w.ti_filename('Designing A SEPIC Converter','设计 SEPIC 转换器','SNVA168E',role='generated-translation'),
             'snva168e_Designing A SEPIC Converter_设计 SEPIC 转换器_双语左右对照翻译.pdf')
-        self.assertEqual(w.ti_filename(chinese_title='耦合电感器SEPIC功率级的基本计算',document_id='ZHCACE2',english_document_id='SNVAA43',official_chinese=True),
+        self.assertEqual(w.ti_filename(chinese_title='耦合电感器SEPIC功率级的基本计算',document_id='ZHCACE2',english_document_id='SNVAA43',role='official-chinese'),
             'snvaa43_zhcace2_耦合电感器SEPIC功率级的基本计算.pdf')
-        self.assertEqual(w.ti_filename('Multiple\nOutput: Title','中文'),'Multiple Output - Title_中文_双语左右对照翻译.pdf')
-        self.assertEqual(w.ti_filename('Title','中文_双语左右对照翻译'),'Title_中文_双语左右对照翻译.pdf')
-        self.assertNotIn('slup261',w.ti_filename('Title','中文'))
+        self.assertEqual(w.ti_filename('Multiple\nOutput: Title','中文',role='original'),'Multiple Output - Title_中文.pdf')
+        self.assertEqual(w.ti_filename('Title','中文_双语左右对照翻译',role='generated-translation'),'Title_中文_双语左右对照翻译.pdf')
+        self.assertNotIn('slup261',w.ti_filename('Title','中文',role='original'))
     def test_assigned_font_not_union(self):
         r,s=self.built();fr=w.check_fonts(r['state'],r['assignments'])
         self.assertTrue(fr['mechanical_pass'],fr)
@@ -248,6 +250,14 @@ class Upgrade(unittest.TestCase):
         self.assertTrue(result['ready_for_delivery'],result)
         self.assertIn('verified_path_only_migration',{x['code']for x in result['warnings']})
         s['pages'][0]['blocks'][0]['translation']='changed'
+        Path(r['state']).write_text(json.dumps(s),encoding='utf-8')
+        self.assertIn('stale_qc_content',{x['code']for x in t.check_state(r['state'],True)['errors']})
+
+    def test_invalid_migration_is_checked_even_when_content_hash_matches(self):
+        r,s=self.accepted_v2()
+        s['migration']={'kind':'path-only','performed_at':'2000-01-01T00:00:00Z','reason':'Synthetic invalid chain',
+                        'previous_state':{'path':'missing.json','sha256':'0'*64},
+                        'old_source':s['source']['path'],'new_source':s['source']['path']}
         Path(r['state']).write_text(json.dumps(s),encoding='utf-8')
         self.assertIn('stale_qc_content',{x['code']for x in t.check_state(r['state'],True)['errors']})
 

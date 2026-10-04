@@ -824,7 +824,7 @@ def check_state(state_path, final=False):
     if not isinstance(qc,dict):
         error("invalid_qc"); qc = {}
     if qc:
-        if qc.get("content_sha256") != computed_hash:
+        if "migration" in state or qc.get("content_sha256") != computed_hash:
             if validate_relocation(state, state_path, content_hash):
                 warnings.append({"code":"verified_path_only_migration",
                                  "note":"Original review retained; no claim of new semantic review."})
