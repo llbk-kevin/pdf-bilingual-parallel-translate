@@ -4,13 +4,15 @@
 
 inspect reports MediaBox, CropBox, rotation, UserUnit and PDFium's visible dimensions. State coordinates are visible, top-left points after crop/rotation. Raw PDF link rectangles use PDF coordinates; do not mix the two systems.
 
-Prefer cloning the original document and expanding each page's visible region to the right. Normalize rotation/crop only with explicit coordinate transforms. Normalize contents, annotations and destinations consistently; changing page boxes alone can reveal formerly clipped material or move content. For nonzero crop origins, test both corners and the left-pane raster against the original. Prevent previously cropped content from leaking into the new right pane. Preserve the original visible clipping region for its content.
+Prefer cloning the original document and adding an equally sized visible Chinese pane to the right: each source W × H becomes exactly 2W × H. The original pane occupies [0,0,W,H] in visible top-left coordinates. Normalize rotation/crop only with explicit coordinate transforms. Normalize contents, annotations and destinations consistently; changing page boxes alone can reveal formerly clipped material or move content. For nonzero crop origins, test both corners and the left-pane raster against the original. Prevent previously cropped content from leaking into the new right pane. Preserve the original visible clipping region for its content.
 
 Preserve bookmarks, URI/internal links and their clickable areas. Opening the file successfully does not prove these work. Audit compares link target and raw rectangle conservatively; normalized equivalent coordinates may need manual confirmation. It compares bookmark titles/destination pages, not the full hierarchy or destination zoom. Click representative link types and every flagged destination. Forms, signatures, layers, tags, portfolios, multimedia and JavaScript are outside automatic equivalence checking; inspect any relevant features before claiming preservation. Editing invalidates digital signatures; retain the signed original separately.
 
 Empty-user-password files are opened consistently by inspect, audit, render and state checks. If a password is required, accept only a user-supplied value through --password-env; never guess it or store it in state/logs.
 
-Source and expanded pages use the same explicit PDFium matrix at dpi/72, with a common pixel origin and source-sized crop. This avoids noninteger-size sampling drift when the right pane changes page width. Record renderer/settings and investigate real differences; do not relax tolerances to mask drift.
+Source and bilingual pages use the same explicit PDFium matrix at dpi/72, with a common pixel origin and source-sized crop. This avoids noninteger-size sampling drift when adding the equally sized right pane. Record renderer/settings and investigate real differences; do not relax tolerances to mask drift.
+
+audit checks the output size against [2W,H] and the source rectangle against [0,0,W,H], with the existing 0.1 pt geometry tolerance. Unequal width/height or a displaced original is an error, with expected and actual geometry reported. Old packages remain readable; rerunning audit applies current geometry rules without rewriting historical acceptance.
 
 ## Images, fonts and repeatable generation
 

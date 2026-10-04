@@ -86,6 +86,16 @@
 
 source_rect 是输出页中原文区域的矩形，采用可见页面左上角为原点、PDF 点为单位的坐标，必须以 1:1 比例匹配原页可见尺寸。source_bbox 使用原页可见坐标，target_bbox 使用输出页可见坐标。这些坐标已考虑旋转及裁切，PDF 原始左下角坐标需转换后使用。页码均从 1 开始。
 
+## 等大区域与显示页码
+
+每页可见原文 W × H 决定左右两个区域，输出为 2W × H，source_rect 为 [0,0,W,H]。混合页宽省略旧 layout.pane_width_pt；存在时必须匹配各页源宽。状态记录实际块 font_size、leading、target_bbox 及重排原因，确保重建还原局部排版。
+
+用 layout.pagination_strategy 记录 Agent 确认的文档编号策略：preserve-source 或 physical-total。指定后，每页都有 pagination，其中 source_label 为原页可见字符串或 null，text 为最终显示字符串，无编号页使用空字符串。preserve-source 要求 text 等于 source_label，无编号封面保持空白。physical-total 要求原页码均为空，text 等于从 1 开始的 source_page 物理页码、斜杠及输入总页数。可见的罗马数字或分节编号不替代物理索引。无法辨认的原页码放在 issues，检查工具不验证 Agent 识别是否正确。
+
+非空页码另有唯一 id、输出可见左上坐标的 target_bbox、font_size 及可选的登记 font。例如，全文无编号的三页文档第 1 页可以记录 pagination: {"id":"p001-page-number","source_label":null,"text":"1/3","target_bbox":[420,10,460,25],"font_size":8}。根据实际页面确认边界，并在排版前预留空间。页码独立于原文语义 blocks 和 expected_blocks，原页码不能在两处重复记录。构建器和字体检查包含其 ID 及实际绘制片段。边界和遮挡仍需最终视觉检查。
+
+这些可选记录沿用当前状态版本，进入 layout/page 指纹；页码文字、位置或字号修改后，旧审阅失效。缺少记录的历史状态仍可读，不虚构已完成页码检查。重新审计应用当前等大区域规则，保留历史记录。
+
 ## 块与页面记录
 
 每个原页出现一次，每个输出页映射一次。expected_blocks 是经过独立核查的原文清单，blocks 的 ID 必须与其完全一致，且在全文唯一。块类型可用 heading、paragraph、list-item、table、formula、caption、figure-label。

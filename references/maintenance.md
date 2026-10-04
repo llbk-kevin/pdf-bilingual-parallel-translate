@@ -43,6 +43,14 @@ Local regression audited Sensors (15), Moog (40) and TDK (107), totaling 162 pag
 
 The task-local migration records and independent rebuild evidence stay outside the skill repository. Existing version 1 packages retain their original review history; a rename is not an invented version 2 acceptance. Do not claim all previous translations were re-reviewed during this maintenance.
 
+## Equal panes and confirmed page numbering
+
+42 synthetic tests cover the previous behavior plus equal-pane construction on mixed/fractional pages, rejection of wider/narrower legacy widths, output geometry and source placement errors with unchanged 0.1 pt tolerance, explicit original/physical page labels, unnumbered covers, actual page-label font runs and invalidation. Rotation/crop fixtures also assert equal visible panes. The optional numbering fields do not identify printed labels automatically.
+
+Generate visual fixtures outside the repository with tests/generate_layout_samples.py --out <task-dir>/samples --font <permitted-Chinese-TrueType-font>, adding --face-index if needed. The font and outputs stay local. Three documents totaling seven pages cover an unnumbered cover plus iv/A-3 labels, wholly unnumbered pages including a blank page, and a locally reduced table with nearby margin use. All seven pages and the enlarged table were actually inspected; source panes were pixel-identical, image/Form byte deltas were zero, font checks and state checks passed, and repeated builds were byte-identical. Keeping the table at the 11.5 pt body size overflowed; 8.5 pt fit while body text stayed 11.5 pt. These are small fixtures, not evidence that all future layouts fit.
+
+Read-only regression on Sensors (15), Moog (40) and TDK (107) again found zero source-pane pixel changes. The new geometry check reported all 55 Sensors/Moog pages as wider than the equal-pane rule, consistent with their earlier permitted layout; all 107 TDK pages had equal panes. Original PDFs, translations and recovery states retained their fingerprints. Historical acceptance was not rewritten or presented as compliance with the new rule.
+
 ## Limits and future changes
 
 There is no automatic translation or universal layout engine. Translation, inventory coverage and page inspection remain model tasks. The tool cannot reliably detect every omitted sentence, flattened table, misplaced caption, clipped glyph, missing ToUnicode mapping or bad reading order. Heuristics are deliberately warnings. With a state inventory, figure hints use explicit caption blocks; without one they match unique extractable figure numbers. Incorrect inventory, repeated references and image-only captions can still evade or mislead the check. Font coverage validates declared draw-time runs and source fonts, not every final PDF glyph program. Review evidence checks consistency, not the observer’s understanding.

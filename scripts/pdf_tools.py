@@ -19,7 +19,7 @@ import pypdfium2 as pdfium
 import pypdfium2.raw as pdfium_c
 from PIL import ImageChops
 
-from workflow import check_fonts, page_fingerprint, validate_reviews, validate_relocation
+from workflow import check_fonts, page_fingerprint, validate_reviews, validate_relocation, pagination_items
 
 SCHEMA_VERSION = 2
 _PASSWORD = None
@@ -541,6 +541,16 @@ def audit(source, output, state=None, dpi=144, pixel_tolerance=16,
             ow, oh = op.get_size()
             if abs(rect[2]-rect[0]-sw)>0.1 or abs(rect[3]-rect[1]-sh)>0.1:
                 issue("error", "source_region_scaled", i+1)
+            expected_size, expected_rect = [2*sw, sh], [0, 0, sw, sh]
+            geometry = {"expected_output_size_pt": expected_size, "actual_output_size_pt": [ow, oh],
+                        "expected_source_rect": expected_rect, "actual_source_rect": rect,
+                        "tolerance_pt": 0.1}
+            geometry["passed"] = (abs(ow-2*sw) <= 0.1 and abs(oh-sh) <= 0.1 and
+                                   all(abs(a-b) <= 0.1 for a,b in zip(rect, expected_rect)))
+            if abs(ow-2*sw) > 0.1 or abs(oh-sh) > 0.1:
+                issue("error", "unequal_pane_geometry", i+1, **geometry)
+            if any(abs(a-b) > 0.1 for a,b in zip(rect, expected_rect)):
+                issue("error", "source_region_misplaced", i+1, **geometry)
             if ow <= rect[2]+1:
                 issue("error", "no_right_translation_region", i+1)
             srcchars = displayed_chars(sp)
@@ -596,7 +606,7 @@ def audit(source, output, state=None, dpi=144, pixel_tolerance=16,
             if om["pages"][j]["annotation_count"] < sm["pages"][i]["annotation_count"]:
                 issue("warning", "annotations_removed", i+1)
             pages.append({"source_page": i+1, "output_page": j+1,
-                          "source_rect": rect, "source_visual": pixels,
+                          "source_rect": rect, "source_visual": pixels, "pane_geometry": geometry,
                           "searchable_chinese_characters": len(cjk),
                           "small_chinese_characters": len(small)})
             sp.close(); op.close()
@@ -791,6 +801,10 @@ def check_state(state_path, final=False):
             ctx = page.get("context_pages", [])
             if not isinstance(ctx, list) or any(type(n) is not int or not 1 <= n <= count for n in ctx):
                 error("invalid_context_pages", page=page.get("source_page"))
+    try:
+        pagination_items(state)
+    except (AttributeError, KeyError, TypeError, ValueError) as exc:
+        error("invalid_pagination", detail=str(exc))
     computed_hash = content_hash(state)
     output = state.get("output", {})
     actual_output_sha = None

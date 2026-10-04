@@ -2,6 +2,7 @@
 import hashlib
 import copy
 import json
+import math
 import re
 from html import unescape
 from pathlib import Path
@@ -86,6 +87,49 @@ def page_fingerprint(state, page_number):
                       'pages': [p for p in state['pages'] if p['source_page'] in nums]})
 
 
+def pagination_items(state):
+    """Validate optional, agent-confirmed page labels; never infer numbering from a PDF."""
+    strategy = state.get('layout', {}).get('pagination_strategy')
+    pages = state.get('pages', [])
+    if strategy is None:
+        if any('pagination' in p for p in pages):
+            raise ValueError('Page labels require layout.pagination_strategy')
+        return []
+    if strategy not in ('preserve-source', 'physical-total'):
+        raise ValueError('Unknown pagination strategy')
+    ids = {b['id'] for p in pages for b in p.get('blocks', [])}
+    items = []
+    for page in pages:
+        label = page.get('pagination')
+        n = page['source_page']
+        if not isinstance(label, dict) or 'source_label' not in label or 'text' not in label:
+            raise ValueError('Missing confirmed pagination record for page %s' % n)
+        original, text = label['source_label'], label['text']
+        if original is not None and (not isinstance(original, str) or not original.strip()):
+            raise ValueError('Invalid source page label')
+        if not isinstance(text, str):
+            raise ValueError('Page label text must be a string')
+        expected = (original or '') if strategy == 'preserve-source' else '%s/%s' % (n, len(pages))
+        if text != expected or (strategy == 'physical-total' and original is not None):
+            raise ValueError('Page label conflicts with confirmed numbering strategy')
+        if not text:
+            continue
+        bid = label.get('id')
+        box = label.get('target_bbox')
+        size = label.get('font_size')
+        if not isinstance(bid, str) or not bid or bid in ids:
+            raise ValueError('Invalid or duplicate page-label ID')
+        if (not isinstance(box, list) or len(box) != 4 or
+                not all(type(v) in (int, float) and math.isfinite(v) for v in box) or
+                box[2] <= box[0] or box[3] <= box[1]):
+            raise ValueError('Invalid page-label target box')
+        if type(size) not in (int, float) or not math.isfinite(size) or size <= 0:
+            raise ValueError('Invalid page-label font size')
+        ids.add(bid)
+        items.append((n, {**label, 'kind': 'header', 'translation': text}))
+    return items
+
+
 def check_fonts(state_path, assignments_path):
     from fontTools.ttLib import TTFont
     state_path, assignments_path = Path(state_path), Path(assignments_path)
@@ -115,6 +159,10 @@ def check_fonts(state_path, assignments_path):
         errors.append({'code': 'missing_font_runs'})
         runs = []
     blocks = {b['id']: (p['source_page'], b) for p in state['pages'] for b in p['blocks']}
+    try:
+        blocks.update({b['id']: (n, b) for n, b in pagination_items(state)})
+    except (KeyError, TypeError, ValueError) as exc:
+        errors.append({'code': 'invalid_pagination', 'detail': str(exc)})
     texts = {}
     fallback_count = 0
     for run in runs:

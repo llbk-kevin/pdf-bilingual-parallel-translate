@@ -86,6 +86,16 @@ Use UTF-8 without BOM JSON, schema_version 2 for new tasks; version 1 remains re
 
 source_rect is the original pane rectangle in the output's visible top-left coordinate system, in PDF points. It must match the original visible dimensions at 1:1 scale. source_bbox uses the source visible top-left system. target_bbox uses the output visible top-left system. Rotation and crop are already accounted for in these coordinates; raw PDF bottom-left coordinates must be converted. All page numbers are one-based.
 
+## Equal panes and display page labels
+
+Source W × H visible dimensions determine both panes per page; output is 2W × H and source_rect is [0,0,W,H]. Omit the legacy layout.pane_width_pt for mixed widths; when present it must match each source width. Keep actual block font_size, leading, target_bbox and reflow reasons in state so rebuilding reproduces local fitting.
+
+Record the agent-confirmed document numbering policy as layout.pagination_strategy: preserve-source or physical-total. When supplied, every page has pagination with source_label (the visible original string, or null) and text (the displayed string, or an empty string for an unnumbered page). Preserve-source requires text to equal source_label, leaving unlabeled covers blank. Physical-total requires no source labels and text equal to the one-based physical source_page followed by / and the total input page count. Visible Roman/section labels never replace physical indices. Keep unreadable-source concerns in issues; the checker cannot verify the agent's identification.
+
+A nonempty page label also has a unique id, target_bbox in output visible top-left points, font_size and optional registered font. For example, page 1 of a wholly unnumbered three-page document can use pagination: {"id":"p001-page-number","source_label":null,"text":"1/3","target_bbox":[420,10,460,25],"font_size":8}. Confirm this box against the actual page and reserve it before layout. Page labels are separate from source semantic blocks and expected_blocks; never duplicate an original page number in both places. The builder/font checker includes their IDs and actual font runs. Bounds and collisions still need final visual review.
+
+These optional records use the current schema and are included in layout/page fingerprints, so changing labels, positions or font sizes invalidates earlier reviews. Historical states without them remain readable and do not acquire a fabricated numbering check. A fresh audit applies current equal-pane rules while preserving old records.
+
 ## Block and page records
 
 Every original page must appear once, and every output page maps once. expected_blocks is the independently reviewed source inventory; blocks must contain exactly these IDs, unique throughout the document. Use kinds such as heading, paragraph, list-item, table, formula, caption and figure-label.

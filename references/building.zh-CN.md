@@ -6,6 +6,10 @@
 
 范例支持未旋转、未裁切、零原点页面上的段落、sub/sup 标记及真实表格。遇到 pending 块、无效映射、覆盖原文、缺字和溢出就停止。通过全书单一 overlay 共享字体，由 ReportLab 子集化，压缩内容流并清理废弃对象。复杂数学、图形布局、旋转/裁切标准化及重叠设计由任务构建器处理，输出必须查看。
 
+中文区始终匹配每页原文，输出为 2W × H。已有 layout.pane_width_pt 仅在与该页源宽相差不超过 0.1 pt 时接受，不能用于加宽；混合页宽应省略该字段。范例使用明确的 block.font_size 和 leading，不自动缩字或重排；查看可用空间后，在输入状态调整 target_bbox/font_size，再重新构建。
+
+可选的显式页码使用 layout.pagination_strategy 和逐页 pagination，见 [state-and-qc.zh-CN.md](state-and-qc.zh-CN.md)。范例在 target_bbox 内右对齐绘制已确认文字，并纳入实际字体片段。不识别原页码，也不自动选择位置。原页码文字归入此记录，不再同时作为正文/页脚翻译块；新增页码是版面补充，不伪造原文文字。
+
 执行 check-fonts OUTPUT.state.json --assignments OUTPUT.font-runs.json --out fonts.json。自定义构建器输出同样结构：schema_version:1、output_sha256，以及包含 page、block、font、text、可选 fallback_from 的 runs。片段须来自实际绘制，按顺序覆盖每块渲染文字和完整表格单元格，字体名称对应登记表。声明片段覆盖通过不证明 PDF 嵌入或字形显示正确。
 
 恢复验证时将状态、构建器及辅助模块复制到独立目录，标明外部原文和字体依赖并在那里重建。修改副本中一个实际存在的译文块；有表格时再修改一个单元格，确认提取/渲染结果变化且输入没有被重置。纯文字文档无需为此检查新增表格。不改数据重复构建两次，对比字节/资源，不能累积资源。恢复说明记录依赖和命令，不为了测试而修改已验收包。

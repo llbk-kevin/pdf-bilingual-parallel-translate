@@ -161,6 +161,7 @@ class Diagnostics(unittest.TestCase):
         self.assertEqual(m["pages"][0]["visible_size_pt"],[270,220])
         self.assertEqual({x["code"] for x in m["findings"]},{"rotated_page","crop_differs_from_media"})
         a=t.audit(self.src,self.out,dpi=72)
+        self.assertTrue(all(p["pane_geometry"]["passed"] for p in a["pages"]))
         self.assertNotIn("source_visual_changed",self.codes(a))
         self.assertNotIn("source_text_changed",self.codes(a))
     def test_source_corruption_detected(self):

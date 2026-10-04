@@ -4,6 +4,7 @@ import argparse
 import copy
 import io
 import json
+import math
 import os
 import re
 import platform
@@ -17,7 +18,7 @@ from reportlab.lib.styles import ParagraphStyle
 from reportlab.platypus import Paragraph, Table, TableStyle
 from reportlab.lib import colors
 from pypdf import PdfReader, PdfWriter
-from workflow import digest, resolve
+from workflow import digest, resolve, pagination_items
 
 
 def build(source, state_path, output, overwrite=False, password=None):
@@ -49,6 +50,7 @@ def build(source, state_path, output, overwrite=False, password=None):
         font_map[reg['name']] = alias
     if not font_map:
         raise ValueError('At least one font is required')
+    labels = dict(pagination_items(s))
     primary = next(iter(font_map))
     runs = []
     current = {}
@@ -80,7 +82,8 @@ def build(source, state_path, output, overwrite=False, password=None):
     def paragraph(text, block):
         size = block.get('font_size', s['layout'].get('body_size_pt', 10))
         style = ParagraphStyle('block', fontName=font_map[primary], fontSize=size,
-                               leading=block.get('leading', size*1.3), wordWrap='CJK')
+                               leading=block.get('leading', size*1.3), wordWrap='CJK',
+                               alignment=block.get('alignment', 0))
         return Paragraph(rich(text), style)
     reader = PdfReader(source)
     if reader.is_encrypted and not reader.decrypt('') and (not password or not reader.decrypt(password)):
@@ -96,8 +99,12 @@ def build(source, state_path, output, overwrite=False, password=None):
         w, h = float(original.mediabox.width), float(original.mediabox.height)
         if page['source_rect'] != [0,0,w,h]:
             raise ValueError('Source pane mapping must be 1:1')
-        pane = s['layout'].get('pane_width_pt', w)
-        c.setPageSize((w+pane, h))
+        declared_pane = s['layout'].get('pane_width_pt', w)
+        if (type(declared_pane) not in (int, float) or not math.isfinite(declared_pane)
+                or abs(declared_pane-w) > 0.1):
+            raise ValueError('Chinese pane width must equal source width on page %s' % page['source_page'])
+        pane = w
+        c.setPageSize((2*w, h))
         blocks = {b['id']: b for b in page['blocks']}
         order = page.get('reading_order', list(blocks))
         if len(order) != len(blocks) or set(order) != set(blocks):
@@ -133,6 +140,18 @@ def build(source, state_path, output, overwrite=False, password=None):
                 raise ValueError('Block overflow: ' + bid)
             obj.drawOn(c, x, h-y-drawn_h)
             b['target_bbox'] = [x,y,x+drawn_w,y+drawn_h]
+        if page['source_page'] in labels:
+            label = labels[page['source_page']]
+            current.clear(); current.update(label, page=page['source_page'])
+            x, y, x1, y1 = label['target_bbox']
+            if x < w or x1 > 2*w or y < 0 or y1 > h:
+                raise ValueError('Page label is outside Chinese pane')
+            obj = paragraph(label['translation'], {**label, 'alignment': 2})
+            drawn_w, drawn_h = obj.wrap(x1-x, h)
+            if drawn_w > x1-x+.01 or drawn_h > y1-y+.01:
+                raise ValueError('Page label overflow')
+            obj.drawOn(c, x, h-y-drawn_h)
+            page['pagination']['target_bbox'] = [x,y,x+drawn_w,y+drawn_h]
         c.showPage()
     c.save(); buf.seek(0)
     overlay = PdfReader(buf)
