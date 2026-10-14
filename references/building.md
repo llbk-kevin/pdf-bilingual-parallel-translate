@@ -2,6 +2,20 @@
 
 Copy scripts/example_build.py and scripts/workflow.py beside the task's authoring state. Install requirements-dev.txt in a suitable environment. Use --source, --state and --output explicitly. The example reads authoring state without modification, and writes the PDF plus <output>.state.json and <output>.font-runs.json; the output state contains actual drawn boxes and cleared qc. Use that output state for audit/render, not the authoring state with old boxes.
 
+## Working files and publication
+
+Use <source-stem>/recovery/ for authoring state and builders, and <source-stem>/work/ for candidate PDFs, generated sidecars, extraction, renders and audit reports. Always build inside the working folder: the example emits sidecars beside its PDF. Do not build directly to the outer delivery path. Keep 交付说明.md inside <source-stem>/.
+
+After the frozen candidate has passed translation, visual and structural acceptance:
+
+1. Check that the outer <source-stem>_双语左右对照翻译.pdf target does not collide with the original or an existing file. Copy only the accepted PDF, preserving its bytes, and verify its SHA-256 matches the frozen candidate. An unresolved draft stays under work/.
+2. Keep current state in recovery/ and supporting reports/evidence within the same working folder. Establish their locations before review when practical; if relocating current state, resolve each relative reference against its old base and re-express it against its new base. Change only paths needed for relocation, preserve semantic data and numeric types, and follow the state-and-qc relocation rules where fingerprinted paths are affected. Do not rewrite historical snapshots or immutable render indices.
+3. Point current output.path to the outer PDF, preferably relative to the state file. Keep output hashes and qc unchanged because the PDF bytes are unchanged. Run check-state --final on the current state against the published PDF and retained evidence; record the publication paths and matching hashes in the working folder. Do not claim a new review merely from copying or updating output.path.
+
+The accepted PDF must embed fonts and resources needed for independent reading, rendering, searching and copying. Recovery files are for editing and verification, not runtime dependencies of the PDF. For a delivery-layout check, use a disposable copy, remove only its verified working-folder path, and confirm both PDFs still render and extract the same text. Never delete the user's working folder automatically.
+
+## Layout and recovery
+
 Each block needs target_bbox in output top-left points, complete translation and status; a table uses table.translated_rows, with optional col_proportions and spans [x0,y0,x1,y1]. Provide equally shaped source_rows. reading_order lists block IDs. Fonts use name, source path, sha256, purpose and optional face_index; block.font chooses the preferred font. The builder chooses a verified fallback per missing glyph and records the font actually used, including fallback_from. It does not assume that a union of fonts proves the chosen font covers a character. Unsupported font formats remain unverified or fail explicitly.
 
 The example supports ordinary paragraphs, sub/sup markup and real tables on unrotated, uncropped zero-origin pages. It stops on pending blocks, invalid mappings, source overwrite, missing glyphs and overflow. It shares fonts through one document overlay, subsets through ReportLab, compresses content streams and removes unused objects. It deliberately leaves complex math, figure layout, rotation/crop normalization and overlap design to the task builder. Always inspect its output.

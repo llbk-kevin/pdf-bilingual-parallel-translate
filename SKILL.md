@@ -16,12 +16,14 @@ Default task layout (honor user-specified destinations):
 ~~~text
 <source-directory>/
 |-- <source-stem>.pdf
-+-- <source-stem>/
-    |-- <delivery-name>.pdf       # Accepted output only
+|-- <source-stem>_双语左右对照翻译.pdf  # Accepted output only
++-- <source-stem>/                    # Disposable working folder
     |-- 交付说明.md
     |-- recovery/                # State, builder, glossary and regeneration instructions
     +-- work/                    # Drafts, extraction, renders, audits and checkpoints
 ~~~
+
+Keep only the original and accepted translation at the outer level by default. Put all per-document notes, state, builders, font reports, review evidence and temporary files inside the same-stem working folder, without adding a working-folder suffix. Build drafts inside its work/ directory; publish only the accepted PDF as described in [building.md](references/building.md). Reading, rendering, searching and copying PDF text must not depend on the working folder; embed resources needed by the generated PDF. Do not automatically delete the folder. At delivery, briefly explain that the user may delete it after review, losing the saved translation/layout state, review evidence and ability to rebuild or resume from that state.
 
 Identify document roles from content, not Chinese filenames or translation suffixes. Present an exact before/after table for source renaming; in normal mode rename after confirmation, while an accepted Plan's table requires no second confirmation. Never overwrite the source or a colliding target; preserve old translations unless deletion was explicitly requested. Read [naming.md](references/naming.md) for every document: originals use a confirmed number (when available), the actual original-language title and Chinese title; only generated bilingual output receives the translation suffix. Apply TI additions only to confirmed TI documents.
 
@@ -39,7 +41,7 @@ Prefer relative recovery paths. Record the external original's SHA-256, font nam
 Use Python 3.10+ and requirements.txt for diagnostics; the optional example also needs requirements-dev.txt. Discover an available interpreter first. Prefer a suitable existing or isolated environment; do not install into shared Python merely to bypass a failing shell. Call the interpreter directly when needed, without hardcoding machine runtime paths into the skill.
 
 ~~~text
-python -m venv work/pdf-skill-env
+python -m venv "<source-directory>/<source-stem>/work/pdf-skill-env"
 <venv-python> -m pip install -r "<skill-dir>/requirements-dev.txt"
 <venv-python> "<skill-dir>/scripts/pdf_tools.py" --help
 ~~~
@@ -52,6 +54,8 @@ python -m venv work/pdf-skill-env
 | check-fonts state.json --assignments final.font-runs.json --out fonts.json | State and actual draw-time runs | Assigned-font coverage, missing glyphs, fallback use and unverified fonts. |
 | check-state state.json --final --out state-check.json | State and referenced evidence | Consistency, fingerprints, coverage and review records; omit --final during work. |
 | scripts/example_build.py --source SOURCE --state state.json --output work/draft.pdf | Explicit boxes, registered fonts and complete state | Deterministic PDF, draft.state.json and draft.font-runs.json; input state is read-only. |
+
+Resolve relative work/ and report paths inside the document’s working folder, never beside the outer PDFs.
 
 The example is a building pattern, not a universal layout engine. It requires unrotated, uncropped, zero-origin pages and fails on unsupported geometry/overflow. Adapt deliberately; [building.md](references/building.md) explains fonts, tables and independent-copy rebuilding.
 
@@ -72,4 +76,4 @@ Diagnostic exit codes: 0 = mechanical completion without errors (warnings may re
 5. Finish saving, font subsetting, lossless content compression and resource cleanup. Freeze/hash the candidate and audit it. Investigate warnings by page/resource and preserve original reports; demonstrated tool defects need explicitly bound alternative evidence, not edited pass flags.
 6. Perform separate translation, visual and structural acceptance. Check completeness, meaning, tone, negation, conditions, qualifications and proper names; where present, also verify numbers, units, signs, comparison operators, proportional/inverse relationships, subscripts/superscripts, table correspondence and repeated equations. Initially view every full page, inspect final rendered glyphs, equal pane geometry, page-label values/positions and any overlap, and enlarge dense details; contact sheets only aid navigation. Apply the PDF integrity reference to structural acceptance. After repair, rerender the whole book and repeat structure checks. Re-view changed pages; reuse prior viewed pages only with matching pixels, renderer settings, text/layout and semantic dependencies plus traceable original records. Otherwise view again.
 7. Record only actual reviews: page, viewer/time/evidence, PDF/render/content hashes and reuse reason. check-state --final validates records, not whether the model understood the page. Rendering or mechanical success never proves accuracy.
-8. Deliver PDF/recovery with page count, original/output sizes, absolute/percentage growth, resource deltas, coverage and full retained-issue notes. State incomplete work and exact unresolved pages honestly. Before an approved recovery relocation, follow the path-only migration procedure in [state-and-qc.md](references/state-and-qc.md); preserve old acceptance and a verified migration chain, never replace old hashes and call it a new review.
+8. Publish the accepted PDF beside the original using the hash-verified procedure in [building.md](references/building.md); keep recovery and all supporting files in the working folder. Deliver with page count, original/output sizes, absolute/percentage growth, resource deltas, coverage and full retained-issue notes. State incomplete work and exact unresolved pages honestly. Before an approved recovery relocation, follow the path-only migration procedure in [state-and-qc.md](references/state-and-qc.md); preserve old acceptance and a verified migration chain, never replace old hashes and call it a new review.

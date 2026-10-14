@@ -2,7 +2,7 @@
 
 ## 格式与坐标
 
-使用 UTF-8 无 BOM JSON，新任务的 schema_version 为 2；历史包继续支持版本 1。除绝对路径外，路径相对于 state.json 解析。指纹为实际字节的、小写 SHA-256。以下单页示例说明字段，占位指纹必须替换，不代表完成最终验收。
+使用 UTF-8 无 BOM JSON，新任务的 schema_version 为 2；历史包继续支持版本 1。除绝对路径外，路径相对于 state.json 解析。默认目录中，当前状态位于 <source-stem>/recovery/；source.path 和发布后的 output.path 通常向上两级指向并排存放的 PDF，审核证据仍在工作文件夹内。指纹为实际字节的、小写 SHA-256。以下单页示例说明字段，占位指纹必须替换，不代表完成最终验收。
 
 ~~~json
 {
@@ -177,6 +177,12 @@ output 和 qc 不参与该指纹，避免循环依赖；二者由独立字节指
 只有实际打开完整页面并完成检查后才能写 mode viewed。mode reused 保留当前渲染哈希，增加 previous（完整的原始 viewed 记录）及 reuse_reason。两个渲染索引和图片必须保留。只有设置、像素及语义依赖指纹一致才能复用。术语、共享布局、问题或相关上下文变化会使之失效。复用只是记录一致性检查，不证明此前查看者理解了页面；工具不会自动填写审阅声明。
 
 v2 内容指纹额外包含 document。check-state --final 重新核对实际字体分配、字体文件指纹、渲染证据及原文/输出绑定，报告 mechanical_checks_passed、review_evidence_level 和 quality_certified:false。旧 ready_for_delivery 保留兼容，不能认证翻译。版本 1 报告 legacy-attestation-v1，迁移旧包时不能虚构 v2 证据。
+
+## 发布与可选的工作文件夹清理
+
+将已验收候选按相同字节发布到外层交付路径，只需修改当前 output.path；output 和 qc 不包含在内容指纹中。保留哈希和原审阅记录，并按 [building.zh-CN.md](building.zh-CN.md) 在交付路径重新执行最终一致性检查。这不是原文改名，也不构成新审阅。涉及指纹中的原文或布局路径变化时，仍按下述迁移或失效规则处理。
+
+恢复资料、报告及审核证据全部保留在同名工作文件夹内。用户审核后可以删除该文件夹，同时保留两个独立 PDF。此举会有意删除恢复状态和证据，此后无法依靠该包执行 check-state、复用证据或按状态重建。不得声称这些检查仍然通过，不从 PDF 反推丢失的验收记录，也不自动删除该文件夹。
 
 ## 仅路径迁移
 

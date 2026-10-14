@@ -21,7 +21,7 @@ A publication number must identify this document. Do not substitute a device mod
 
 Omit absent number fields. Chinese originals contain the title only once. Append a confirmed version to the Chinese title in fullwidth parentheses, such as （Rev1.7） or （V3.5）; dates do not automatically become versions. Keep an already present identical version once. Only generated bilingual output receives the translation suffix, once. Establish roles from actual content and provenance before correcting misleading old suffixes.
 
-The source sits beside its task directory; the directory has the source filename stem. The generated PDF inside it has that stem plus the translation suffix. Honor explicitly selected destination directories. Never overwrite the source or an existing target.
+The original, accepted translation and working folder sit beside one another. The working folder uses the complete source filename stem without an extra suffix; the accepted PDF uses that stem plus the translation suffix. All per-document supporting files and drafts remain inside the working folder. Honor explicitly selected destination directories. Never overwrite the source or an existing target.
 
 ## TI additions
 

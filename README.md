@@ -16,12 +16,14 @@ description: 将 PDF 翻译为中文左右对照版本，左侧保留原文，�
 ~~~text
 <source-directory>/
 |-- <source-stem>.pdf
-+-- <source-stem>/
-    |-- <delivery-name>.pdf       # 仅放已验收输出
+|-- <source-stem>_双语左右对照翻译.pdf  # 仅放已验收输出
++-- <source-stem>/                    # 可单独删除的工作文件夹
     |-- 交付说明.md
     |-- recovery/                # 状态、构建器、术语及重新生成说明
     +-- work/                    # 草稿、提取、渲染、审计与断点
 ~~~
+
+默认外层仅放原文和已验收译文。每份文档的说明、状态、构建器、字体报告、审核证据及临时文件全部放进同名工作文件夹，不额外添加工作文件夹后缀。在该文件夹的 work/ 内构建草稿，按 [building.zh-CN.md](references/building.zh-CN.md) 的流程仅发布已验收 PDF。PDF 的阅读、渲染、文字搜索和复制不得依赖工作文件夹；生成的 PDF 应嵌入所需资源。不自动删除工作文件夹。交付时简要说明，用户审核后可以删除该文件夹，同时会失去保存的译文及布局状态、审核证据，以及按该状态重建或继续编辑的能力。
 
 根据内容识别角色，不以中文文件名或翻译后缀判断。源文件重命名前展示具体新旧名称对照表；普通模式确认后改名，已接受的 Plan 中有对照表时无需二次确认。不得覆盖原文或冲突目标；除非明确要求删除，否则保留旧译稿。每份文档均读取 [naming.zh-CN.md](references/naming.zh-CN.md)：原文使用已确认的编号（如有）、实际原文语言标题和中文标题，仅生成的双语译本添加翻译后缀。只有确认属于 TI 才应用 TI 补充规则。
 
@@ -39,7 +41,7 @@ description: 将 PDF 翻译为中文左右对照版本，左侧保留原文，�
 诊断使用 Python 3.10+ 和 requirements.txt；可选范例另需 requirements-dev.txt。先发现解释器，优先使用合适的现有或隔离环境；不能只为绕过 Shell 故障就安装到共享 Python。必要时直接调用解释器，不在技能中写死本机运行时路径。
 
 ~~~text
-python -m venv work/pdf-skill-env
+python -m venv "<source-directory>/<source-stem>/work/pdf-skill-env"
 <venv-python> -m pip install -r "<skill-dir>/requirements-dev.txt"
 <venv-python> "<skill-dir>/scripts/pdf_tools.py" --help
 ~~~
@@ -52,6 +54,8 @@ python -m venv work/pdf-skill-env
 | check-fonts state.json --assignments final.font-runs.json --out fonts.json | 状态及实际绘制片段 | 分配字体覆盖、缺字、回退使用及未验证字体。 |
 | check-state state.json --final --out state-check.json | 状态及引用证据 | 一致性、指纹、覆盖和审阅记录；处理中省略 --final。 |
 | scripts/example_build.py --source SOURCE --state state.json --output work/draft.pdf | 显式边界、登记字体及完整状态 | 确定性 PDF、draft.state.json 和 draft.font-runs.json；输入状态只读。 |
+
+相对 work/ 和报告路径均定位在该文档的工作文件夹内，不放到外层 PDF 旁。
 
 范例是构建模式，不是通用排版引擎。要求未旋转、未裁切、零原点页面，遇不支持的几何或溢出会失败。其他情况需明确适配；[building.zh-CN.md](references/building.zh-CN.md) 说明字体、表格及独立副本重建。
 
@@ -72,4 +76,4 @@ python -m venv work/pdf-skill-env
 5. 完成保存、字体子集化、无损内容压缩及资源清理。冻结候选版本、计算指纹并审计。逐页/逐资源调查警告并保留原报告；已证明的工具缺陷需明确绑定的替代证据，不能编辑通过标记。
 6. 分别进行翻译、视觉和结构验收。核对完整性、含义、语气、否定、条件、限定和专有名称；原文包含相关内容时，再核对数字、单位、正负号、比较符号、正比/反比、上下标、表格对应及重复公式。首次实际查看所有完整页面，检查最终渲染字形、区域等大、页码数值与位置及遮挡，并放大密集细节；拼图只作导航。依据 PDF 结构保真参考执行结构验收。返修后全书重渲染及结构检查，变化页重新看；只有像素、渲染设置、文字/布局、语义依赖一致且原记录可追溯时才能复用，否则重新查看。
 7. 仅记录实际审阅：页码、查看者/时间/证据、PDF/渲染/内容指纹及复用理由。check-state --final 验证记录，不能证明模型理解了页面。渲染或机械成功不能证明准确。
-8. 交付 PDF/恢复资料，说明页数、原文及译本大小、绝对/比例增长、资源增量、覆盖及完整的保留疑点说明。如实说明未完成工作及具体未解决页。执行已获批准的恢复资料迁移前，遵循 [state-and-qc.zh-CN.md](references/state-and-qc.zh-CN.md) 中仅路径迁移的流程，保留旧验收和已验证迁移链，不替换旧哈希冒充新审阅。
+8. 按 [building.zh-CN.md](references/building.zh-CN.md) 的哈希核验流程，将已验收 PDF 发布到原文旁，恢复资料和所有辅助文件留在工作文件夹内。交付时说明页数、原文及译本大小、绝对/比例增长、资源增量、覆盖及完整的保留疑点说明。如实说明未完成工作及具体未解决页。执行已获批准的恢复资料迁移前，遵循 [state-and-qc.zh-CN.md](references/state-and-qc.zh-CN.md) 中仅路径迁移的流程，保留旧验收和已验证迁移链，不替换旧哈希冒充新审阅。

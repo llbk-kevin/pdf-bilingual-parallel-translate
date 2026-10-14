@@ -2,7 +2,7 @@
 
 ## Format and coordinates
 
-Use UTF-8 without BOM JSON, schema_version 2 for new tasks; version 1 remains readable for historical packages. Paths resolve relative to state.json unless absolute. Hashes are lowercase SHA-256 of actual bytes. The following one-page example illustrates fields; placeholder hashes must be replaced, and it does not claim final review.
+Use UTF-8 without BOM JSON, schema_version 2 for new tasks; version 1 remains readable for historical packages. Paths resolve relative to state.json unless absolute. In the default layout, current state is in <source-stem>/recovery/; source.path and published output.path normally point two levels up to the sibling PDFs, while review evidence stays inside the working folder. Hashes are lowercase SHA-256 of actual bytes. The following one-page example illustrates fields; placeholder hashes must be replaced, and it does not claim final review.
 
 ~~~json
 {
@@ -177,6 +177,12 @@ In addition to the version 1 qc fields, version 2 requires font_assignments (pat
 Record mode viewed only after opening that full page and doing the checks. For mode reused, retain the current render's hashes and add previous (the original complete viewed record) and reuse_reason. Both render indices and image files must remain available. Only identical settings, pixels and semantic dependency fingerprints allow reuse. Changes to glossary, shared layout, issues or relevant context invalidate it. Reuse is a consistency check, not proof that an earlier observer understood the page; no tool automatically fills review attestations.
 
 The v2 content fingerprint additionally includes document. check-state --final rechecks actual font assignments, font file hashes, render evidence and source/output bindings. It reports mechanical_checks_passed, review_evidence_level and quality_certified:false. The old ready_for_delivery field remains for compatibility and cannot certify translation. Version 1 reports legacy-attestation-v1; do not add invented v2 evidence when migrating old work.
+
+## Publishing and optional working-folder cleanup
+
+Publishing a byte-identical accepted candidate to the outer delivery path only changes current output.path; output and qc are excluded from the content fingerprint. Retain hashes and original review records, and rerun final consistency checks at the delivery path as described in [building.md](building.md). This is not a source rename or a new review. Changes to fingerprinted source/layout paths still follow the relocation or invalidation rules below.
+
+Keep all recovery, reports and review evidence inside the same-stem working folder. The user may delete this folder after review while retaining the two independent PDFs. Such deletion intentionally removes recovery state and evidence: later check-state, evidence reuse and state-driven rebuilding are no longer available from that package. Do not claim those checks still pass, reconstruct lost acceptance from the PDFs, or automatically delete the folder.
 
 ## Path-only relocation
 

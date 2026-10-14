@@ -2,6 +2,8 @@
 import copy
 import json
 import os
+import shutil
+import hashlib
 import sys
 import tempfile
 import unittest
@@ -237,6 +239,85 @@ class Upgrade(unittest.TestCase):
         s['qc']['page_reviews'][0]['mode']='rendered'
         Path(r['state']).write_text(json.dumps(s),encoding='utf-8')
         self.assertFalse(t.check_state(r['state'],True)['ready_for_delivery'])
+    def test_sibling_delivery_survives_working_folder_removal(self):
+        task = self.root / self.source.stem
+        recovery, work = task / 'recovery', task / 'work'
+        recovery.mkdir(parents=True)
+        work.mkdir()
+        for font in self.state['layout']['fonts']:
+            name = font['source']
+            (self.root / name).rename(work / name)
+            font['source'] = '../work/' + name
+        self.sp.unlink()
+        self.sp = recovery / 'authoring.json'
+        self.state['source']['path'] = '../../' + self.source.name
+        self.save(self.state)
+        result = builder.build(self.source, self.sp, work / 'candidate.pdf')
+        state = w.load(result['state'])
+        current = recovery / 'state.json'
+        # Resolve all current paths before freezing review fingerprints.
+        state['source']['path'] = '../../' + self.source.name
+        state['output']['path'] = '../work/candidate.pdf'
+        for font in state['layout']['fonts']:
+            font['source'] = '../work/' + Path(font['source']).name
+        current.write_text(json.dumps(state, ensure_ascii=False), encoding='utf-8')
+        result['state'] = str(current)
+        self.render_records(result, state, self.source.stem + '/work/render')
+        t.write_json(t.audit(self.source, result['output'], state, dpi=72), work / 'audit.json')
+        t.write_json(w.check_fonts(current, result['assignments']), work / 'fonts.json')
+        state['qc'].update(content_sha256=t.content_hash(state),
+            source_sha256=state['source']['sha256'], output_sha256=state['output']['sha256'],
+            translation_pages=[1, 2], visual_pages=[1, 2], reviewer='synthetic fixture',
+            reviewed_at='2000-01-01T00:00:00Z', structure='passed',
+            structure_notes='Synthetic fixture attestations; no real translation review.',
+            audit_path='../work/audit.json', font_assignments='../work/candidate.font-runs.json',
+            font_report={'path': '../work/fonts.json', 'sha256': w.digest(work / 'fonts.json')})
+        current.write_text(json.dumps(state, ensure_ascii=False), encoding='utf-8')
+        self.assertTrue(t.check_state(current, True)['ready_for_delivery'])
+        qc_before = copy.deepcopy(state['qc'])
+        evidence_files = [p for p in work.rglob('*') if p.is_file()]
+        evidence_before = {str(p): w.digest(p) for p in evidence_files}
+        delivery = self.root / (self.source.stem + '_双语左右对照翻译.pdf')
+        with delivery.open('xb') as dest, Path(result['output']).open('rb') as source:
+            shutil.copyfileobj(source, dest)
+        self.assertEqual(w.digest(delivery), result['sha256'])
+        state['output']['path'] = '../../' + delivery.name
+        current.write_text(json.dumps(state, ensure_ascii=False), encoding='utf-8')
+        report = t.check_state(current, True)
+        self.assertTrue(report['ready_for_delivery'], report)
+        self.assertFalse(report['quality_certified'])
+        self.assertEqual(state['qc'], qc_before)
+        self.assertEqual(evidence_before, {str(p): w.digest(p) for p in evidence_files})
+        self.assertEqual({p.name for p in self.root.iterdir()}, {self.source.name, delivery.name, task.name})
+
+        def observable_pdf(path):
+            text = [p.extract_text() for p in PdfReader(path).pages]
+            pixels = []
+            doc = t.open_document(path)
+            try:
+                for index in range(len(doc)):
+                    page = doc[index]
+                    try:
+                        image = t.render_image(page, 72)
+                        pixels.append((image.size, hashlib.sha256(image.tobytes()).hexdigest()))
+                    finally:
+                        page.close()
+            finally:
+                doc.close()
+            return w.digest(path), text, pixels
+
+        before = {p.name: observable_pdf(p) for p in (self.source, delivery)}
+        self.assertIn('距离', ''.join(before[delivery.name][1]))
+        with tempfile.TemporaryDirectory() as disposable:
+            clone = Path(disposable) / 'delivery-copy'
+            shutil.copytree(self.root, clone)
+            target = (clone / task.name).resolve()
+            self.assertEqual(target.parent, clone.resolve())
+            self.assertEqual(target.name, self.source.stem)
+            shutil.rmtree(target)
+            self.assertEqual({p.name for p in clone.iterdir()}, {self.source.name, delivery.name})
+            self.assertEqual(before, {p.name: observable_pdf(p) for p in clone.iterdir()})
+
     def test_path_only_migration_retains_original_review_but_rejects_content_edits(self):
         r,s=self.accepted_v2();previous=self.root/'before-migration.json'
         previous.write_bytes(Path(r['state']).read_bytes())
