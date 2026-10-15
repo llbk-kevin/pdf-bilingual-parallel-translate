@@ -1,8 +1,16 @@
 # 恢复状态与验收生命周期
 
+## 版本 3：原位来源清单
+
+默认 extract/build 接口及完整块字段见 [inplace.zh-CN.md](inplace.zh-CN.md)。v3 保留原文 SHA-256/页数、准确可见几何、不可改写的字形事实、稳定块 ID、选定字形范围、译文/处理方法、允许/实际边界及实际字体 runs。明确使用 replace、cover、preserve 或 unresolved。原数值/公式字形归入 preserve 块，不因排版困难就将整个含待译内容的句子标为 preserve。
+
+check-state 重新提取源字形，检查几何、字形归属/范围、处理方法约束、允许/实际边界及原文身份。隐藏 OCR 不能在不覆盖可见扫描文字的情况下替换；不得改写源字形事实压制错误。绘制时另查溢出、缺字、选定删除范围及真实文字碰撞。图片/转曲文字清点和覆盖的语义安全性仍需目视复核。
+
+v3 草稿状态可以只含选中页，并连续映射到试样 PDF。完整 --final 检查仍要求所有原页及全部审阅证据。preserve 块复用已有文字，不要求新字体 runs；新绘制块和可选新增页码必须与实际 run 文本一致。元数据本身不能证明字形正确显示。
+
 ## 格式与坐标
 
-使用 UTF-8 无 BOM JSON，新任务的 schema_version 为 2；历史包继续支持版本 1。除绝对路径外，路径相对于 state.json 解析。默认目录中，当前状态位于 <source-stem>/recovery/；source.path 和发布后的 output.path 通常向上两级指向并排存放的 PDF，审核证据仍在工作文件夹内。指纹为实际字节的、小写 SHA-256。以下单页示例说明字段，占位指纹必须替换，不代表完成最终验收。
+使用 UTF-8 无 BOM JSON。新任务使用由 [inplace.zh-CN.md](inplace.zh-CN.md) 生成的 schema_version 3；历史包继续支持版本 1 和 2。下方 v2 示例说明显式旧版构建器及共用证据生命周期，不是默认布局。除绝对路径外，路径相对于 state.json 解析。默认目录中，当前状态位于 <source-stem>/recovery/；source.path 和发布后的 output.path 通常向上两级指向并排存放的 PDF，审核证据仍在工作文件夹内。指纹为实际字节的、小写 SHA-256。以下单页示例说明字段，占位指纹必须替换，不代表完成最终验收。
 
 ~~~json
 {
@@ -152,7 +160,7 @@ output 和 qc 不参与该指纹，避免循环依赖；二者由独立字节指
 
 ## 版本 2：实际审阅证据
 
-新任务使用 schema_version 2；上文基本示例是草稿，最终验收需补充下列证据。增加 document.source_kind（其他原文语言使用 original，或 english-original、official-chinese、generated-translation），以及适用的 vendor 和命名证据。每页 reading_order 必须等于 blocks 的顺序 ID。只有核对语义依赖后才能声明 context_pages 和 context_reviewed:true；否则指纹保守包含全书。layout、glossary 和 issues 始终为依赖。影响含义的疑点包括 page、block、source_quote、concern、treatment；可选 suggested_correction 必须有 evidence。译注附近保留原表达。
+版本 2 和 3 使用下述逐页证据；上文基本示例是草稿，最终验收需补充下列证据。增加 document.source_kind（其他原文语言使用 original，或 english-original、official-chinese、generated-translation），以及适用的 vendor 和命名证据。每页 reading_order 必须等于 blocks 的顺序 ID。只有核对语义依赖后才能声明 context_pages 和 context_reviewed:true；否则指纹保守包含全书。layout、glossary 和 issues 始终为依赖。影响含义的疑点包括 page、block、source_quote、concern、treatment；可选 suggested_correction 必须有 evidence。译注附近保留原表达。
 
 在冻结候选版本上执行构建、check-fonts、audit 和全书渲染后再审阅。输出状态引用该版本及实际构建输入。新版本使用新渲染目录，不覆盖已被审阅引用的索引。索引含准确的输出/原文指纹、渲染器版本和设置、PNG 文件哈希、RGB 像素哈希及 page_content_sha256。仅 PNG 元数据变化不影响像素哈希，但当前文件哈希仍须匹配它自己的当前索引。
 

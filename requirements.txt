@@ -3,3 +3,4 @@ pypdf>=6.10,<7
 pypdfium2>=5.13,<6
 Pillow>=12,<13
 fonttools>=4.50,<5
+PyMuPDF>=1.27,<1.29

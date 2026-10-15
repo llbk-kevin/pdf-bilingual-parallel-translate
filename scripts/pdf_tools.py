@@ -17,7 +17,7 @@ from pypdf import PdfReader
 from pypdf.generic import IndirectObject, StreamObject
 import pypdfium2 as pdfium
 import pypdfium2.raw as pdfium_c
-from PIL import ImageChops
+from PIL import Image, ImageChops, ImageDraw
 
 from workflow import check_fonts, page_fingerprint, validate_reviews, validate_relocation, pagination_items
 
@@ -67,6 +67,22 @@ def checked_reader(path):
 
 def open_document(path):
     try:
+        reader = checked_reader(path)
+        units = [float(p.get("/UserUnit",1)) for p in reader.pages]
+        if any(u != 1 for u in units):
+            # PDFium ignores UserUnit. Normalize a temporary in-memory rendering copy
+            # so pixels, point sizes and coordinates use the physical source dimensions.
+            import io
+            from pypdf import PdfWriter
+            writer = PdfWriter(clone_from=reader)
+            for p,u in zip(writer.pages,units):
+                if not math.isfinite(u) or u <= 0:
+                    raise ValueError("Invalid UserUnit")
+                if u != 1:
+                    p.scale_by(u)
+                    del p["/UserUnit"]
+            buf = io.BytesIO(); writer.write(buf)
+            return pdfium.PdfDocument(buf.getvalue())
         return pdfium.PdfDocument(str(path), password=_PASSWORD or "")
     except pdfium.PdfiumError as exc:
         raise ValueError("Cannot open PDF; check file and supplied password.") from exc
@@ -383,6 +399,54 @@ def render_image(page, dpi=144, max_pixels=40000000):
         bitmap.close()
 
 
+def compare_right_outside_regions(source_image, output_page, mapping, dpi, pixel_tolerance, max_pixels):
+    """Align the right pane at the source sampling origin, masking only drawn changes."""
+    width,height=mapping['source_rect'][2:]
+    scale=dpi/72
+    pixel_width,pixel_height=source_image.size
+    if pixel_width*pixel_height>max_pixels:raise ValueError('Right-pane comparison exceeds pixel limit')
+    bitmap=pdfium.PdfBitmap.new_native(pixel_width,pixel_height,pdfium_c.FPDFBitmap_BGRA)
+    bitmap.fill_rect((255,255,255,255),0,0,pixel_width,pixel_height)
+    matrix=pdfium_c.FS_MATRIX(scale,0,0,scale,-width*scale,0)
+    clip=pdfium_c.FS_RECTF(0,0,pixel_width,pixel_height)
+    pdfium_c.FPDF_RenderPageBitmapWithMatrix(bitmap,output_page,ctypes.byref(matrix),ctypes.byref(clip),pdfium_c.FPDF_ANNOT)
+    try:right=bitmap.to_pil().convert('RGB').copy()
+    finally:bitmap.close()
+    if 'redaction_regions' not in mapping:
+        right.close()
+        return {'passed':False,'reason':'missing_recorded_redaction_regions'},None
+    regions=list(mapping['redaction_regions'])
+    for block in mapping.get('blocks',[]):
+        if block.get('method') in ('replace','cover'):
+            regions.extend(block.get('actual_glyph_boxes',[]))
+        if block.get('method')=='cover':regions.append(block.get('cover_bbox') or block['source_bbox'])
+    regions.extend(mapping.get('pagination',{}).get('actual_glyph_boxes',[]))
+    # A visibly bordered link can move with its translated anchor. Its actual
+    # annotation areas are explicit evidence, not a broad paragraph exemption.
+    for link in mapping.get('link_mappings',[]):
+        if link.get('visible_border'):
+            regions.append(link['source_bbox']);regions.extend(link['right_bboxes'])
+    mask=Image.new('L',source_image.size,0);draw=ImageDraw.Draw(mask)
+    margin=2
+    for value in regions:
+        if len(value)!=4 or not all(isinstance(v,(int,float)) and math.isfinite(v) for v in value):
+            raise ValueError('Invalid recorded right-pane change rectangle')
+        x0,y0,x1,y1=value
+        if x1<x0 or y1<y0:raise ValueError('Invalid recorded right-pane change rectangle')
+        draw.rectangle((math.floor(x0*scale)-margin,math.floor(y0*scale)-margin,
+                        math.ceil(x1*scale)+margin,math.ceil(y1*scale)+margin),fill=255)
+    diff=ImageChops.difference(source_image,right);right.close()
+    diff.paste((0,0,0),(0,0),mask)
+    channels=diff.split();maximum=ImageChops.lighter(ImageChops.lighter(channels[0],channels[1]),channels[2])
+    histogram=maximum.histogram();changed=sum(histogram[pixel_tolerance+1:])
+    unmasked=mask.histogram()[0];mask.close();maximum.close()
+    return {'passed':changed==0,'changed_pixels_outside_regions':changed,
+            'unmasked_pixels':unmasked,'changed_pixel_ratio':changed/max(1,unmasked),
+            'pixel_tolerance':pixel_tolerance,'mask_margin_pixels':margin,
+            'recorded_regions':len(regions),'max_changed_ratio':0,
+            'note':'Only selected source drawing-trace boxes, actual translated outline boxes, covers, page labels and visibly moved links are masked; allowed_bbox is not exempted.'},diff
+
+
 def page_mapping(state, count):
     if not state:
         return {i: {"source_page": i+1, "output_page": i+1} for i in range(count)}
@@ -493,11 +557,23 @@ def audit(source, output, state=None, dpi=144, pixel_tolerance=16,
     def issue(severity, code, page=None, **extra):
         findings.append({"severity": severity, "code": code, **({"page": page} if page else {}), **extra})
 
-    if sm["page_count"] != om["page_count"]:
+    subset = bool(state and state.get("schema_version") == 3 and len(state["pages"]) != sm["page_count"])
+    if (len(state["pages"]) if subset else sm["page_count"]) != om["page_count"]:
         issue("error", "page_count_changed")
     if sm["resources"]["errors"] or om["resources"]["errors"]:
         issue("error", "resource_inventory_incomplete")
-    s_images = {x["signature"] for x in sm["resources"]["images"]}
+    image_baseline = sm["resources"]
+    if subset:
+        from pypdf import PdfWriter
+        selected_writer = PdfWriter()
+        for p in state["pages"]:
+            selected_writer.add_page(sr.pages[p["source_page"]-1])
+        import io
+        selected_buffer = io.BytesIO()
+        selected_writer.write(selected_buffer)
+        selected_buffer.seek(0)
+        image_baseline = inventory(PdfReader(selected_buffer))
+    s_images = {x["signature"] for x in image_baseline["images"]}
     o_images = {x["signature"] for x in om["resources"]["images"]}
     if missing := s_images-o_images:
         issue("error", "original_image_resource_changed_or_missing", count=len(missing))
@@ -529,6 +605,8 @@ def audit(source, output, state=None, dpi=144, pixel_tolerance=16,
         for i in range(len(source_doc)):
             m = mapping.get(i)
             if not m:
+                if subset:
+                    continue
                 issue("error", "missing_page_mapping", i+1)
                 continue
             j = int(m["output_page"])-1
@@ -587,6 +665,12 @@ def audit(source, output, state=None, dpi=144, pixel_tolerance=16,
             pixels, diff = compare_images(si,oi,rect,dpi,pixel_tolerance,max_changed_ratio)
             if not pixels["passed"]:
                 issue("error", "source_visual_changed", i+1, comparison=pixels)
+            right_comparison=None
+            if state and state.get('schema_version')==3:
+                right_comparison,right_diff=compare_right_outside_regions(si,op,m,dpi,pixel_tolerance,max_pixels)
+                if not right_comparison['passed']:
+                    issue('error','right_graphics_changed_outside_recorded_regions',i+1,comparison=right_comparison)
+                if right_diff:right_diff.close()
             si.close(); oi.close()
             if diff:
                 diff.close()
@@ -608,13 +692,13 @@ def audit(source, output, state=None, dpi=144, pixel_tolerance=16,
             pages.append({"source_page": i+1, "output_page": j+1,
                           "source_rect": rect, "source_visual": pixels, "pane_geometry": geometry,
                           "searchable_chinese_characters": len(cjk),
-                          "small_chinese_characters": len(small)})
+                          "small_chinese_characters": len(small), "right_outside_regions":right_comparison})
             sp.close(); op.close()
     finally:
         source_doc.close(); result_doc.close()
     expected_bookmarks = [{**b, "page": int(mapping[b["page"]-1]["output_page"])
                            if b["page"] and b["page"]-1 in mapping else b["page"]}
-                          for b in sm["bookmarks"]]
+                          for b in sm["bookmarks"] if not subset or not b["page"] or b["page"]-1 in mapping]
     if collections.Counter(map(canonical_hash, expected_bookmarks))-collections.Counter(map(canonical_hash,om["bookmarks"])):
         issue("error", "source_bookmarks_missing_or_changed")
     delta = {k: om["resources"]["encoded_bytes"][k]-v
@@ -639,7 +723,7 @@ def audit(source, output, state=None, dpi=144, pixel_tolerance=16,
 
 def content_hash(state):
     keys = ["source", "layout", "glossary", "pages", "issues"]
-    if state.get("schema_version") == 2:
+    if state.get("schema_version") in (2, 3):
         keys.append("document")
     return canonical_hash({k: state.get(k) for k in keys})
 
@@ -662,7 +746,7 @@ def check_state(state_path, final=False):
     def error(code, **extra):
         errors.append({"code": code, **extra})
 
-    if state.get("schema_version") not in (1, 2):
+    if state.get("schema_version") not in (1, 2, 3):
         error("unsupported_state_schema")
     if not isinstance(state.get("layout"), dict):
         error("missing_layout")
@@ -787,11 +871,12 @@ def check_state(state_path, final=False):
                 error("missing_verbatim_reason",page=n,block=bid)
         if collections.Counter(expected) != collections.Counter(actual_ids):
             error("block_inventory_mismatch",page=n)
-    if sorted(n for n in page_numbers if type(n) is int) != list(range(1,count+1)):
+    selected_count = len(pages) if state.get("schema_version") == 3 and not final else count
+    if (state.get("schema_version") != 3 or final) and sorted(n for n in page_numbers if type(n) is int) != list(range(1,count+1)):
         error("source_page_coverage_incomplete")
-    if sorted(n for n in output_numbers if type(n) is int) != list(range(1,count+1)):
+    if sorted(n for n in output_numbers if type(n) is int) != list(range(1,selected_count+1)):
         error("output_page_mapping_not_one_to_one")
-    if state.get("schema_version") == 2:
+    if state.get("schema_version") in (2, 3):
         if not isinstance(state.get("document"), dict) or state["document"].get("source_kind") not in ('original', 'english-original', 'official-chinese', 'generated-translation'):
             error("missing_document_identity")
         for page in pages:
@@ -805,6 +890,9 @@ def check_state(state_path, final=False):
         pagination_items(state)
     except (AttributeError, KeyError, TypeError, ValueError) as exc:
         error("invalid_pagination", detail=str(exc))
+    if state.get("schema_version") == 3 and actual_source_sha:
+        from inplace import validate_state
+        errors.extend(validate_state(state, source, _PASSWORD, final))
     computed_hash = content_hash(state)
     output = state.get("output", {})
     actual_output_sha = None
@@ -814,7 +902,7 @@ def check_state(state_path, final=False):
             actual_output_sha = sha256_file(outpath)
             if actual_output_sha != output.get("sha256"):
                 error("output_fingerprint_changed")
-            if len(checked_reader(outpath).pages) != count:
+            if len(checked_reader(outpath).pages) != selected_count:
                 error("output_page_count_changed")
         except (KeyError, ValueError, OSError) as exc:
             error("output_unavailable",detail=str(exc))
@@ -858,7 +946,7 @@ def check_state(state_path, final=False):
                 error("unresolved_issue",detail=issue)
             elif issue.get("status")=="retained" and not issue.get("note"):
                 error("retained_issue_without_explanation",detail=issue)
-    if final and state.get("schema_version") == 2:
+    if final and state.get("schema_version") in (2, 3):
         errors.extend(validate_reviews(state, state_path))
         try:
             font_report_path = resolve_state_file(base, qc["font_report"]["path"])
@@ -872,7 +960,7 @@ def check_state(state_path, final=False):
             error("font_check_unavailable", detail=str(exc))
     return {"schema_version":2,"tool":"pdf-bilingual-parallel-translate/check-state",
             "state_version":state.get("schema_version"),
-            "review_evidence_level":"page-bound-v2" if state.get("schema_version")==2 else "legacy-attestation-v1",
+            "review_evidence_level":"page-bound-v3" if state.get("schema_version")==3 else "page-bound-v2" if state.get("schema_version")==2 else "legacy-attestation-v1",
             "quality_certified":False, "mechanical_checks_passed":not errors,
             "computed_content_sha256":computed_hash, "errors":errors,"warnings":warnings,
             "valid":not errors,"final_checks":final,"ready_for_delivery":final and not errors,
@@ -922,6 +1010,14 @@ def render_command(args):
                     dn=f"page-{i+1:04d}-difference.png"
                     save_png(diff,Path(args.out)/dn,args.overwrite)
                     row["difference_image"]=dn;diff.close()
+                if state and state.get('schema_version')==3:
+                    right_comparison,right_diff=compare_right_outside_regions(sim,page,m,args.dpi,args.pixel_tolerance,args.max_pixels)
+                    row['right_outside_regions']=right_comparison
+                    if right_diff:
+                        if not right_comparison['passed']:
+                            rn=f'page-{i+1:04d}-right-outside-difference.png'
+                            save_png(right_diff,Path(args.out)/rn,args.overwrite);row['right_outside_difference_image']=rn
+                        right_diff.close()
                 sim.close();sp.close()
             rows.append(row);im.close();page.close()
     finally:

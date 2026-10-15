@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Minimal explicit-layout example. No translation or automatic review; input state is read-only."""
+"""Explicit legacy v1/v2 layout builder. Use inplace.py for the default v3 workflow."""
 import argparse
 import copy
 import io
@@ -31,6 +31,8 @@ def build(source, state_path, output, overwrite=False, password=None):
     s = copy.deepcopy(json.loads(state_path.read_text(encoding='utf-8')))
     if digest(source) != s['source']['sha256']:
         raise ValueError('Source fingerprint changed')
+    if s.get('schema_version') == 3 or s.get('layout',{}).get('mode') == 'inplace':
+        raise ValueError('Version 3 in-place state requires scripts/inplace.py; legacy fallback is not automatic')
     inputs = []
     for item in s['layout'].get('inputs', []):
         dependency = resolve(state_path.parent, item['path']).resolve()

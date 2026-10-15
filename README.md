@@ -1,79 +1,55 @@
----
-name: pdf-bilingual-parallel-translate
-description: 将 PDF 翻译为中文左右对照版本，左侧保留原文，右侧提供对应译文。适用于需要完整翻译、原文核对、版式保留和后续修订的任务。
----
-
-# PDF 双语平行对照翻译
+# PDF 双语左右对照翻译
 
 ## 工作约定
 
-使用当前会话模型翻译，不调用外部机器翻译。每次翻译前，检查当前 PDF 的实际内容，识别语言、主题领域、文体、预期读者和版式，据此选择术语、表达方式及适用检查项。不根据此前翻译任务推定本次领域；无法确定的分类保持暂定。遵循用户明确选择。
+使用当前会话模型翻译，不调用外部机器翻译。先检查当前 PDF 的语言、主题、体裁、读者与版式，再选择术语；不能从之前的任务推断领域。保留含义、不确定性、条件和限定，不擅自纠正疑似原文错误。
 
-采用 UTF-8 无 BOM。使用技能时只读英文 SKILL.md 和相关英文参考，不读中文 README.md。明确维护技能时，同步两种语言并遵循 AGENTS.md 及 [maintenance.zh-CN.md](references/maintenance.zh-CN.md)。解析安装目录；保留 CC Switch 链接并在本体维护，不自行迁移。任务文件放在本仓库外；不在技能中嵌入账号余额或临时额度政策。
+文本使用 UTF-8 无 BOM。普通使用只读英文入口和相关英文参考。明确维护技能时，同步中文 README 及成对参考文件，遵循 AGENTS.md 与 [maintenance.zh-CN.md](references/maintenance.zh-CN.md)。保留 CC Switch 链接，修改解析后的本体；文档任务产物和字体二进制放在仓库之外。
 
-默认任务结构（用户指定位置时遵从指定）：
+每份文档阅读 [naming.zh-CN.md](references/naming.zh-CN.md)。根据内容识别原文/译文角色，不根据文件名判断。原文改名前提出准确的新旧名称对照表，确认后执行；已接受的 Plan 已批准该表时无需再次确认。保留原文和已有输出。原文文件名使用已确认的编号（如有）、真实原语言标题和中文标题；只有生成译文带翻译后缀。仅确认属于 TI 的文档使用 TI 专属规则。
+
+默认路径如下，用户指定位置优先：
 
 ~~~text
 <source-directory>/
 |-- <source-stem>.pdf
-|-- <source-stem>_双语左右对照翻译.pdf  # 仅放已验收输出
-+-- <source-stem>/                    # 可单独删除的工作文件夹
+|-- <source-stem>_双语左右对照翻译.pdf    # 仅已验收 PDF
++-- <source-stem>/
     |-- 交付说明.md
-    |-- recovery/                # 状态、构建器、术语及重新生成说明
-    +-- work/                    # 草稿、提取、渲染、审计与断点
+    |-- recovery/                  # 状态、构建器、术语及再生成说明
+    +-- work/                      # 草稿、提取、渲染和审阅证据
 ~~~
 
-默认外层仅放原文和已验收译文。每份文档的说明、状态、构建器、字体报告、审核证据及临时文件全部放进同名工作文件夹，不额外添加工作文件夹后缀。在该文件夹的 work/ 内构建草稿，按 [building.zh-CN.md](references/building.zh-CN.md) 的流程仅发布已验收 PDF。PDF 的阅读、渲染、文字搜索和复制不得依赖工作文件夹；生成的 PDF 应嵌入所需资源。不自动删除工作文件夹。交付时简要说明，用户审核后可以删除该文件夹，同时会失去保存的译文及布局状态、审核证据，以及按该状态重建或继续编辑的能力。
+候选版本构建在 work/，只发布已验收 PDF，伴随文件留在同名工作文件夹内。PDF 应嵌入独立阅读、渲染、搜索和复制所需的全部资源。不自动删除工作文件夹；交付时说明删除它会丢失保存的编辑状态、证据及继续/再生成能力。
 
-根据内容识别角色，不以中文文件名或翻译后缀判断。源文件重命名前展示具体新旧名称对照表；普通模式确认后改名，已接受的 Plan 中有对照表时无需二次确认。不得覆盖原文或冲突目标；除非明确要求删除，否则保留旧译稿。每份文档均读取 [naming.zh-CN.md](references/naming.zh-CN.md)：原文使用已确认的编号（如有）、实际原文语言标题和中文标题，仅生成的双语译本添加翻译后缀。只有确认属于 TI 才应用 TI 补充规则。
+## 必须达到的结果
 
-恢复路径尽可能相对化。记录外部原文 SHA-256、字体名称/指纹/获取来源、依赖和构建参数。状态是译文及布局的权威输入，不是硬编码 Python 译文的附录。
+每个可见原页 W × H 严格对应一个 2W × H 合成页：左侧原文保持 1:1，右侧中文页等宽等高，逐页处理混合尺寸、裁切和旋转。右侧复用原页完整图形、照片、曲线、表格线和公式，仅在原位置替换需要翻译的原生文字；无需翻译的数值、标识及数学符号保留。图片或转曲标签可使用明确边界的白底覆盖和黑色中文。
 
-## 交付要求
+译文保持靠近原文；可使用已核实的相邻空白和适度的逐块字号拟合，并记录允许范围及实际结果。不移动图框/表格框、不扩大页面、不截断、不遗漏限定、不悄悄切回旧版纯文字右侧布局。完整内容仍无法清晰放下时，保留草稿，指出具体块和可选取舍。
 
-1. 完整、准确、原文保真和可读性是交付条件；其次优化空间对应，再考虑排版。不得为适应空间省略限定条件、混合不同含义或过度缩小文字。
-2. 每个原文页对应一个输出页。左侧可见原文保持 1:1，中文区必须与原文区同宽同高。按裁切和旋转后的每页可见尺寸 W × H 生成 2W × H 的合成页，混合尺寸逐页匹配，不为容纳译文扩大页面。语义块及分栏对应，不要求逐行一致。
-3. 忠实保留原文含义、语气、信息结构及不确定性。不得静默纠错或把猜测当事实。
-4. 保留原图片编码和质量。中文文字必须可搜索、可复制；使用轻量矢量，避免新增冗余资源。
+## 默认流程
 
-## 工具与构建接口
+1. **检查与提取。** 执行接口见 [inplace.zh-CN.md](references/inplace.zh-CN.md)。检查原文，保留 SHA-256 和资源基线，渲染代表页；运行 extract 创建 v3 状态。对照可见原页检查图片/转曲文字、隐藏 OCR、分栏、公式和印刷页码。语义分组与拟合遵循 [layout.zh-CN.md](references/layout.zh-CN.md)。
+2. **翻译与映射。** 使用 extract 的稳定 ID 并核对 source_text，不使用另一轮抽取的块序号直接贴译文。合并/拆分块时保留字形 ID 及完整覆盖。指定 replace、cover、preserve（含理由）或 unresolved。按连贯段落翻译，维护精简术语表，记录原文疑点、准确原句和处理方式；不需翻译的公式和数值保留。有数学记号时使用 [math.zh-CN.md](references/math.zh-CN.md)。每批完成后保存输入状态。
+3. **构建并查看样页。** 登记许可字体及指纹。默认原位构建器从原文和状态生成，不叠加旧双语 PDF。它共享原图资源，仅删除选中的原生文字，绘制中文并记录实际字体 runs，最后在全文件范围子集化。不支持的交互/文字剪裁特性及溢出明确失败。批量处理前检查密集表格、彩底、公式邻近文字、封面和旋转页面。保真限制见 [pdf-integrity.zh-CN.md](references/pdf-integrity.zh-CN.md)。
+4. **验证冻结候选。** 使用生成的状态执行 check-state、check-fonts、audit 和 render。实际查看每页，并翻译/核对所有清点块；仅渲染不算审阅。用具体证据处理警告；按 [state-and-qc.zh-CN.md](references/state-and-qc.zh-CN.md) 保存与页面绑定的审阅记录、失效关系及 --final 验证。修改后重新构建并复核受影响上下文。程序成功不证明语义正确。
+5. **交付与恢复。** 验证由状态独立重建后，按 [building.zh-CN.md](references/building.zh-CN.md) 发布已验收 PDF。报告原文/输出位置与字节体积、绝对及百分比增量、图片/字体/内容流增量、页数覆盖、审阅状态和保留疑点。局部试样不得称为完成的整份译文。
 
-诊断使用 Python 3.10+ 和 requirements.txt；可选范例另需 requirements-dev.txt。先发现解释器，优先使用合适的现有或隔离环境；不能只为绕过 Shell 故障就安装到共享 Python。必要时直接调用解释器，不在技能中写死本机运行时路径。
+## 命令
+
+发现可用的 Python 3.10+ 并安装 requirements.txt；开发测试和旧范例另需 requirements-dev.txt。优先使用已有合适环境或独立环境。不将本机运行时绝对路径写入技能，也不为绕过 shell 故障而污染共享 Python。
 
 ~~~text
-python -m venv "<source-directory>/<source-stem>/work/pdf-skill-env"
-<venv-python> -m pip install -r "<skill-dir>/requirements-dev.txt"
-<venv-python> "<skill-dir>/scripts/pdf_tools.py" --help
+python scripts/inplace.py extract --source SOURCE --state recovery/state.json --pages all
+python scripts/inplace.py build --source SOURCE --state recovery/state.json --output work/draft.pdf --pages all
+python scripts/pdf_tools.py inspect SOURCE --out work/baseline.json
+python scripts/pdf_tools.py check-state work/draft.state.json --out work/state-check.json
+python scripts/pdf_tools.py check-fonts work/draft.state.json --assignments work/draft.font-runs.json --out work/fonts.json
+python scripts/pdf_tools.py audit SOURCE work/draft.pdf --state work/draft.state.json --out work/audit.json
+python scripts/pdf_tools.py render work/draft.pdf --source SOURCE --state work/draft.state.json --pages all --out work/renders
 ~~~
 
-| 入口 | 输入 | 输出与用途 |
-| --- | --- | --- |
-| inspect SOURCE --out baseline.json | 原文 | 几何、提取、链接书签及可达资源。 |
-| audit SOURCE FINAL --state state.json --out audit.json | 原文、成品、可选映射 | 固定比例原文对比、资源、链接、体积及内容流问题。 |
-| render FINAL --source SOURCE --state state.json --pages all --out renders | 成品、可选原文/映射 | PNG 及包含文件/像素/内容/设置指纹的不可改写索引，不记录已查看。 |
-| check-fonts state.json --assignments final.font-runs.json --out fonts.json | 状态及实际绘制片段 | 分配字体覆盖、缺字、回退使用及未验证字体。 |
-| check-state state.json --final --out state-check.json | 状态及引用证据 | 一致性、指纹、覆盖和审阅记录；处理中省略 --final。 |
-| scripts/example_build.py --source SOURCE --state state.json --output work/draft.pdf | 显式边界、登记字体及完整状态 | 确定性 PDF、draft.state.json 和 draft.font-runs.json；输入状态只读。 |
+以上路径在文档工作文件夹内解析，含空格路径加引号。--pages 接受 all 或从 1 开始的 1,3-5 等选择；局部构建只作为试样，不能通过完整交付的覆盖检查。覆盖已有目标须显式 --overwrite。空用户密码 PDF 可直接打开，其他密码仅从用户提供的 --password-env 环境变量取得，不记录到状态或日志。
 
-相对 work/ 和报告路径均定位在该文档的工作文件夹内，不放到外层 PDF 旁。
-
-范例是构建模式，不是通用排版引擎。要求未旋转、未裁切、零原点页面，遇不支持的几何或溢出会失败。其他情况需明确适配；[building.zh-CN.md](references/building.zh-CN.md) 说明字体、表格及独立副本重建。
-
-含空格路径加引号。报告、渲染和范例在没有 --overwrite 时拒绝覆盖，原文始终受保护。--pages 接受 all 或从 1 开始的 1,3-5 等选择。默认对比设置为 144 DPI、4000 万像素、RGB 容差 16、变化比例 0.001，不是翻译质量阈值。调查差异，不放宽阈值掩盖问题。空用户密码 PDF 直接支持；需要密码时通过 --password-env 指定用户提供的环境变量，不保存或记录密码。
-
-诊断退出码：0 为机械检查完成且无错误（可能仍有警告）；2 为报告检查失败；1 为运行失败。ready_for_delivery 是一致性兼容字段，不是语义认证；quality_certified 保持 false。版本 1 状态标为旧版声明，不静默升级为版本 2 证据。
-
-## 工作流程
-
-1. 按工作约定判断当前文档，识别角色、命名及路径。检查原文并保留指纹和资源基线。渲染代表性页面，核对提取/OCR 及实际存在的数字符号。读取 [layout.zh-CN.md](references/layout.zh-CN.md)，逐页确定相等的区域尺寸，再选择字体、字号、颜色和安全边距。判断文档整体是否有可见页码，沿用原编号体系并保留无编号页；仅整份没有可见页码时，才安排在中文区右上角添加物理页码/总页数，计入封面和空白页。
-2. 创建恢复状态前读取 [state-and-qc.zh-CN.md](references/state-and-qc.zh-CN.md)。根据原文实际包含的内容建立清单：标题、段落、列表，以及存在的表格单元格、公式、图注或必要图内标签。对照可见原文核对，保留提取碎片的来源映射、阅读顺序、跨页依赖及上下文术语，区分图片内标签、重复提取和不可见文字。按连贯段落或上下文组翻译。原文疑点记录页码、块、原文、疑点及处理；建议校正是可选项，必须有依据。每批保存状态。
-3. 合成前读取 [pdf-integrity.zh-CN.md](references/pdf-integrity.zh-CN.md)。从原文及状态构建，不叠加旧双语 PDF；读取状态中的译文、完整单元格和布局，不覆盖输入编辑。先把范例及辅助模块复制到任务恢复包再调整。字体全书共享，备用字体针对具体缺字分配；构建时检查字形，对实际绘制片段运行 check-fonts。原文含表格或公式时，保留真实表格与重复公式；含数学表达时读取 [math.zh-CN.md](references/math.zh-CN.md)，优先保留易读结构，避免 ASCII 替代。
-
-   原文有图形时保留在左侧，右侧附近放对应图注及有标识的标签、图例和坐标说明，通过图号、原标签或准确位置消歧。保留有效留白，不添加空色框、虚构图形或集中于页顶的图注。影响含义的原文矛盾或不确定性在相应位置简要提示。
-
-   先试排代表页再扩展。动态结合换行、列宽及间距调整，利用邻近页边、上下和图形对应的空白，并局部缩小受影响块的字号。尽量靠近原文对应位置，保持阅读顺序、图形锚点清晰并预留页码空间；两个区域尺寸保持不变。完整、可读、同页对应仍无法实现时记录具体未解决页。根据状态绘制已确认的页码，不改变物理页映射。检查草稿状态，渲染并查看样页，修复溢出，以及实际存在的表格几何或数学表达问题。按前述目录约定将明确命名的草稿放在 work/，保存准确的批次/队列断点。
-4. 在独立副本验证恢复：重建，修改一个实际存在的译文块；有表格时再修改一个单元格，确认输出变化且输入编辑保留。不要仅为执行此检查而新增表格。重复生成不得累积资源。字节一致有参考价值；仅元数据变化时说明原因。
-5. 完成保存、字体子集化、无损内容压缩及资源清理。冻结候选版本、计算指纹并审计。逐页/逐资源调查警告并保留原报告；已证明的工具缺陷需明确绑定的替代证据，不能编辑通过标记。
-6. 分别进行翻译、视觉和结构验收。核对完整性、含义、语气、否定、条件、限定和专有名称；原文包含相关内容时，再核对数字、单位、正负号、比较符号、正比/反比、上下标、表格对应及重复公式。首次实际查看所有完整页面，检查最终渲染字形、区域等大、页码数值与位置及遮挡，并放大密集细节；拼图只作导航。依据 PDF 结构保真参考执行结构验收。返修后全书重渲染及结构检查，变化页重新看；只有像素、渲染设置、文字/布局、语义依赖一致且原记录可追溯时才能复用，否则重新查看。
-7. 仅记录实际审阅：页码、查看者/时间/证据、PDF/渲染/内容指纹及复用理由。check-state --final 验证记录，不能证明模型理解了页面。渲染或机械成功不能证明准确。
-8. 按 [building.zh-CN.md](references/building.zh-CN.md) 的哈希核验流程，将已验收 PDF 发布到原文旁，恢复资料和所有辅助文件留在工作文件夹内。交付时说明页数、原文及译本大小、绝对/比例增长、资源增量、覆盖及完整的保留疑点说明。如实说明未完成工作及具体未解决页。执行已获批准的恢复资料迁移前，遵循 [state-and-qc.zh-CN.md](references/state-and-qc.zh-CN.md) 中仅路径迁移的流程，保留旧验收和已验证迁移链，不替换旧哈希冒充新审阅。
+诊断默认采用 144 DPI、4000 万像素、RGB 容差 16 和变化比例 0.001。调查差异，不放宽阈值掩盖问题。退出码：0 为程序完成（可能仍有警告），2 为诊断检查失败，1 为操作失败。quality_certified 始终为 false。v1/v2 状态保留原有审阅语义并继续可读；scripts/example_build.py 仅供明确选择的兼容路径，不自动回退。

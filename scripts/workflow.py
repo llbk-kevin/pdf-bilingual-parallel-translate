@@ -144,10 +144,11 @@ def pagination_items(state):
             raise ValueError('Invalid source page label')
         if not isinstance(text, str):
             raise ValueError('Page label text must be a string')
-        expected = (original or '') if strategy == 'preserve-source' else '%s/%s' % (n, len(pages))
+        total = state.get('source',{}).get('page_count',len(pages)) if state.get('schema_version') == 3 else len(pages)
+        expected = (original or '') if strategy == 'preserve-source' else '%s/%s' % (n, total)
         if text != expected or (strategy == 'physical-total' and original is not None):
             raise ValueError('Page label conflicts with confirmed numbering strategy')
-        if not text:
+        if not text or (state.get('schema_version') == 3 and strategy == 'preserve-source'):
             continue
         bid = label.get('id')
         box = label.get('target_bbox')
@@ -190,7 +191,7 @@ def check_fonts(state_path, assignments_path):
     if assignments.get('output_sha256') != actual_output:
         errors.append({'code': 'stale_font_assignments'})
     runs = assignments.get('runs', [])
-    if not isinstance(runs, list) or not runs:
+    if not isinstance(runs, list) or (not runs and any(b.get('method') != 'preserve' for p in state['pages'] for b in p['blocks'])):
         errors.append({'code': 'missing_font_runs'})
         runs = []
     blocks = {b['id']: (p['source_page'], b) for p in state['pages'] for b in p['blocks']}
@@ -217,6 +218,8 @@ def check_fonts(state_path, assignments_path):
                            'block': bid, 'font': name,
                            'codepoints': [f'U+{x:04X}' for x in missing]})
     for bid, (n, block) in blocks.items():
+        if state.get('schema_version') == 3 and block.get('method') == 'preserve':
+            continue
         if normalized_text(texts.get(bid, '')) != normalized_text(block_text(block)):
             errors.append({'code': 'font_run_text_mismatch', 'page': n, 'block': bid})
     return {'schema_version': 1, 'tool': 'pdf-bilingual-parallel-translate/check-fonts',
