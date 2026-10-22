@@ -115,6 +115,8 @@ def page_fingerprint(state, page_number):
     page = next(p for p in state['pages'] if p['source_page'] == page_number)
     if page.get('context_reviewed') is True and 'context_pages' in page:
         nums = set(page['context_pages']) | {page_number}
+    elif state.get('layout',{}).get('review_profile')=='practical':
+        nums = {page_number, *page.get('context_pages',[])}
     else:
         nums = {p['source_page'] for p in state['pages']}
     return canonical({'source_sha256': state['source']['sha256'], 'layout': state['layout'],
@@ -336,3 +338,17 @@ def validate_relocation(state, state_path, content_hash):
         return traversed and current['qc']['content_sha256'] == content_hash(current)
     except (KeyError, ValueError, TypeError, OSError, RuntimeError):
         return False
+
+
+def audit_accepted(report, state):
+    """Keep raw audit findings; practical readers may explicitly retain right-pane differences."""
+    profile=state.get('layout',{}).get('review_profile','strict')
+    if profile not in ('strict','practical'):return False
+    if profile=='strict':return bool(report.get('mechanical_pass'))
+    retained={d.get('finding_sha256'):d for d in state.get('qc',{}).get('audit_dispositions',[])
+              if isinstance(d,dict) and d.get('decision')=='retain' and str(d.get('note','')).strip()}
+    for finding in report.get('findings',[]):
+        if finding['severity']!='error':continue
+        if finding['code']!='right_graphics_changed_outside_recorded_regions':return False
+        if canonical(finding) not in retained:return False
+    return True

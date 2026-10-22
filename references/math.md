@@ -1,3 +1,5 @@
+> Profile scope: default reading tasks follow [practical](practical.md). The strict/low-level details below are consulted as needed, not requirements to exhaust warnings, formula reviews or independent rebuilding in ordinary tasks. Actual viewing evidence remains required.
+
 # Mathematical notation and source uncertainty
 
 Read and apply this reference when the current source contains mathematical notation.

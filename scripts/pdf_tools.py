@@ -549,7 +549,8 @@ def small_text_roles(chars, mapping):
 
 
 def audit(source, output, state=None, dpi=144, pixel_tolerance=16,
-          max_changed_ratio=0.001, max_pixels=40000000):
+          max_changed_ratio=0.001, max_pixels=40000000, render_dir=None):
+    render_rows=[]
     sr, outreader = checked_reader(source), checked_reader(output)
     sm, om = pdf_metadata(source, sr, False), pdf_metadata(output, outreader, False)
     findings, pages = [], []
@@ -670,7 +671,20 @@ def audit(source, output, state=None, dpi=144, pixel_tolerance=16,
                 right_comparison,right_diff=compare_right_outside_regions(si,op,m,dpi,pixel_tolerance,max_pixels)
                 if not right_comparison['passed']:
                     issue('error','right_graphics_changed_outside_recorded_regions',i+1,comparison=right_comparison)
+                if render_dir and right_diff and not right_comparison['passed']:
+                    save_png(right_diff,Path(render_dir)/f"page-{j+1:04d}-right-outside-difference.png",False)
                 if right_diff:right_diff.close()
+            if render_dir:
+                name=f"page-{j+1:04d}.png";sn=f"page-{j+1:04d}-source.png"
+                save_png(oi,Path(render_dir)/name,False);save_png(si,Path(render_dir)/sn,False)
+                row={"output_page":j+1,"source_page":i+1,"image":name,"source_image":sn,
+                     "pixels":list(oi.size),"image_sha256":sha256_file(Path(render_dir)/name),
+                     "pixel_sha256":hashlib.sha256(oi.tobytes()).hexdigest(),"comparison":pixels,
+                     "page_content_sha256":page_fingerprint(state,i+1) if state else None,
+                     "right_outside_regions":right_comparison}
+                if right_comparison and not right_comparison['passed']:
+                    row['right_outside_difference_image']=f"page-{j+1:04d}-right-outside-difference.png"
+                render_rows.append(row)
             si.close(); oi.close()
             if diff:
                 diff.close()
@@ -701,6 +715,14 @@ def audit(source, output, state=None, dpi=144, pixel_tolerance=16,
                           for b in sm["bookmarks"] if not subset or not b["page"] or b["page"]-1 in mapping]
     if collections.Counter(map(canonical_hash, expected_bookmarks))-collections.Counter(map(canonical_hash,om["bookmarks"])):
         issue("error", "source_bookmarks_missing_or_changed")
+    if render_dir:
+        settings={"method":RENDER_METHOD,"dpi":dpi,"pdfium_version":str(pdfium.PDFIUM_INFO),
+                  "annotations":True,"color":"RGB","background":"white"}
+        index={"schema_version":1,"tool":"pdf-bilingual-parallel-translate/render",
+               "output_sha256":om['sha256'],"source_sha256":sm['sha256'],"dpi":dpi,
+               "settings":settings,"settings_sha256":canonical_hash(settings),
+               "pages":render_rows,"visual_review_completed":False}
+        write_json(index,Path(render_dir)/"index.json",False)
     delta = {k: om["resources"]["encoded_bytes"][k]-v
              for k,v in sm["resources"]["encoded_bytes"].items()}
     delta["unclassified_file_bytes"] = (om["resources"]["unclassified_file_bytes"]-
@@ -756,7 +778,7 @@ def check_state(state_path, final=False):
         if not isinstance(term,dict) or not term.get("source") or not term.get("target"):
             error("invalid_glossary_entry")
 
-    layout = state.get("layout", {})
+    layout = state.get("layout") if isinstance(state.get("layout"),dict) else {}
     if isinstance(layout, dict):
         builder = layout.get("builder")
         if builder:
@@ -871,8 +893,13 @@ def check_state(state_path, final=False):
                 error("missing_verbatim_reason",page=n,block=bid)
         if collections.Counter(expected) != collections.Counter(actual_ids):
             error("block_inventory_mismatch",page=n)
-    selected_count = len(pages) if state.get("schema_version") == 3 and not final else count
-    if (state.get("schema_version") != 3 or final) and sorted(n for n in page_numbers if type(n) is int) != list(range(1,count+1)):
+    sample = state.get('schema_version')==3 and state.get('document',{}).get('delivery_scope')=='sample'
+    declared = state.get('document',{}).get('selected_source_pages',[]) if sample else list(range(1,count+1))
+    if sample and (not isinstance(declared,list) or not declared or any(type(n) is not int or not 1<=n<=count for n in declared) or declared!=sorted(set(declared))):
+        error('invalid_sample_selection');declared=[]
+    if layout.get('review_profile','strict') not in ('practical','strict'):error('invalid_review_profile')
+    selected_count = len(pages) if state.get("schema_version") == 3 and not final else len(declared)
+    if (state.get("schema_version") != 3 or final) and sorted(n for n in page_numbers if type(n) is int) != declared:
         error("source_page_coverage_incomplete")
     if sorted(n for n in output_numbers if type(n) is int) != list(range(1,selected_count+1)):
         error("output_page_mapping_not_one_to_one")
@@ -925,7 +952,7 @@ def check_state(state_path, final=False):
     if final:
         for category in ("translation_pages","visual_pages"):
             reviewed = qc.get(category,[])
-            if not isinstance(reviewed,list) or any(type(x) is not int for x in reviewed) or sorted(reviewed)!=list(range(1,count+1)):
+            if not isinstance(reviewed,list) or any(type(x) is not int for x in reviewed) or sorted(reviewed)!=declared:
                 error("incomplete_"+category)
         if not qc.get("reviewer") or not qc.get("reviewed_at"):
             error("missing_review_attribution")
@@ -933,7 +960,8 @@ def check_state(state_path, final=False):
             error("structure_not_passed")
         try:
             report = read_json(resolve_state_file(base,qc["audit_path"]))
-            if report.get("tool") != "pdf-bilingual-parallel-translate/audit" or not report.get("mechanical_pass"):
+            from workflow import audit_accepted
+            if report.get("tool") != "pdf-bilingual-parallel-translate/audit" or not audit_accepted(report,state):
                 error("audit_not_passed")
             if (report["source"]["sha256"]!=actual_source_sha or report["output"]["sha256"]!=actual_output_sha):
                 error("stale_audit")
@@ -960,6 +988,8 @@ def check_state(state_path, final=False):
             error("font_check_unavailable", detail=str(exc))
     return {"schema_version":2,"tool":"pdf-bilingual-parallel-translate/check-state",
             "state_version":state.get("schema_version"),
+            "review_profile":layout.get("review_profile","strict"),
+            "delivery_scope":"sample" if sample else "full",
             "review_evidence_level":"page-bound-v3" if state.get("schema_version")==3 else "page-bound-v2" if state.get("schema_version")==2 else "legacy-attestation-v1",
             "quality_certified":False, "mechanical_checks_passed":not errors,
             "computed_content_sha256":computed_hash, "errors":errors,"warnings":warnings,

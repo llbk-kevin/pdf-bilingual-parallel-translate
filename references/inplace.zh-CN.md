@@ -1,3 +1,5 @@
+> 模式说明：默认阅读任务以 [practical](practical.zh-CN.md) 为准。下文严格/低层细节按需使用，不要求普通任务穷尽所有警告、公式复核或独立重建。实际查看记录仍必需。
+
 # 原位翻译：默认构建器与 v3 状态
 
 ## 提取、编辑与构建
@@ -71,3 +73,5 @@ show_pdf_page **不会**保留交互结构。构建器显式将 URI/内部链接
 资源/坐标逻辑变更后运行合成回归和代表性真实文档试验。测试字体及 PDF 用代码生成；许可字体、用户 PDF、翻译样张及本机运行时路径不入仓库。发布/恢复及**显式旧版**构建器见 [building.zh-CN.md](building.zh-CN.md)，最终审阅证据见 [state-and-qc.zh-CN.md](state-and-qc.zh-CN.md)。
 
 生成状态用 `annotation_mappings` 记录迁移的静态批注，用 `redaction_regions` 记录选中字形的原文绘制轨迹框。audit 与 render 都在相同像素原点比较右侧和原文，仅遮罩这些原文字形区域、实际译文字形轮廓框、明确的白底覆盖、新增编号与移动后的可见链接边框。栅格边缘留两像素余量；其余区域任何像素超过配置的通道容差即失败（`right_graphics_changed_outside_recorded_regions`）。`allowed_bbox` 不会使整段区域免检；缺少删除区域记录会失败，不跳过比较。该检查证明所选分辨率下的局部图形保留，不能代替语义与视觉审阅。
+
+显式 document.delivery_scope: sample 的选页样本记录范围外链接为省略；其他局部构建仍需包含内部链接目标。无跳转目标的书签标题保留原树结构。字号下限为 null 时视为固定请求字号。

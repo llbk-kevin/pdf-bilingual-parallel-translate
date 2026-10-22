@@ -114,7 +114,7 @@ def text_inventory(page, number):
                 method = 'preserve' if preserve else 'unresolved'
                 bid = 'p%d-b%s' % (number, canonical([bi,li,si,text,box(r)])[:12])
                 blocks.append({'id': bid, 'kind': 'text', 'source_text': text,
-                    'source_bbox': box(r), 'glyph_ids': ids,
+                    'source_bbox': box(r), 'glyph_ids': ids, 'source_group':bi, 'source_line':li,
                     'glyph_ranges': [[0,len(ids)]], 'hidden_ocr': hidden,
                     'method': method, 'status': 'verbatim' if preserve else 'pending',
                     'reason': 'Numeric or symbolic source span; confirm during inventory review' if preserve else '',
@@ -323,14 +323,14 @@ def check_interactions(doc, selected, state=None):
         for link in page.get_links():
             if link['kind'] not in (fitz.LINK_URI,fitz.LINK_GOTO):
                 raise ValueError('Unsupported link kind on page %d' % n)
-            if link['kind'] == fitz.LINK_GOTO and link.get('page',-1)+1 not in selected:
+            if link['kind'] == fitz.LINK_GOTO and link.get('page',-1)+1 not in selected and not (state and state.get('document',{}).get('delivery_scope')=='sample'):
                 raise ValueError('Selected pages exclude a link destination from page %d; include its destination' % n)
     for item in doc.get_toc(simple=False):
         dest = item[3]
         point=dest.get('to')
         if point is not None and not all(math.isfinite(v) for v in point):
             raise ValueError('Nonfinite bookmark axes require a raw-destination custom migration')
-        if dest.get('kind',fitz.LINK_GOTO) not in (fitz.LINK_GOTO,fitz.LINK_URI):
+        if dest.get('kind',fitz.LINK_GOTO) not in (fitz.LINK_NONE,fitz.LINK_GOTO,fitz.LINK_URI):
             raise ValueError('Unsupported bookmark action; refusing to discard it')
 
 def migrate_raw_links(source_doc,source_path,pdf_bytes,selected,password=None,state=None):
@@ -342,7 +342,10 @@ def migrate_raw_links(source_doc,source_path,pdf_bytes,selected,password=None,st
     composed=PdfReader(io.BytesIO(pdf_bytes))
     # append shares cloned resources while avoiding clone_from's source /Size
     # heuristic (direct objects may become additional indirect objects).
-    writer=PdfWriter();writer.append(composed,import_outline=True)
+    writer=PdfWriter();writer.append(composed,import_outline=False)
+    # Clone the original tree: append's outline importer drops no-action headings.
+    if composed.trailer["/Root"].get("/Outlines"):
+        writer._root_object[NameObject("/Outlines")]=composed.trailer["/Root"]["/Outlines"].clone(writer)
     if composed.metadata:writer.add_metadata(composed.metadata)
     source_numbers={(p.indirect_reference.idnum,p.indirect_reference.generation):i for i,p in enumerate(reader.pages)}
     mapping={n-1:i for i,n in enumerate(selected)}
@@ -372,7 +375,9 @@ def migrate_raw_links(source_doc,source_path,pdf_bytes,selected,password=None,st
         ref=value[0]
         if hasattr(ref,'idnum'):target=source_numbers.get((ref.idnum,ref.generation))
         else:target=int(ref) if isinstance(ref,int) else None
-        if target not in mapping:raise ValueError('Selected pages exclude raw link destination')
+        if target not in mapping:
+            if state and state.get('document',{}).get('delivery_scope')=='sample':return None
+            raise ValueError('Selected pages exclude raw link destination')
         p=source_doc[target];w,h=p.rect.width,p.rect.height
         m=transforms[target]*fitz.Matrix(1,0,0,1,pane*w,0)*fitz.Matrix(1,0,0,-1,0,h)
         mode=str(value[1]);args=list(value[2:])
@@ -396,7 +401,8 @@ def migrate_raw_links(source_doc,source_path,pdf_bytes,selected,password=None,st
         else:raise ValueError('Unsupported raw destination mode: '+mode)
         return ArrayObject([writer.pages[mapping[target]].indirect_reference,NameObject(mode),*args])
     page_states={p['source_page']:p for p in state['pages']} if state else {}
-    for ps in page_states.values():ps.pop('link_mappings',None)
+    for ps in page_states.values():
+        ps.pop('link_mappings',None);ps.pop('omitted_links',None)
     def right_rectangles(n,link_number,source_rect):
         if n not in page_states:return [source_rect]
         ps=page_states[n]
@@ -447,6 +453,12 @@ def migrate_raw_links(source_doc,source_path,pdf_bytes,selected,password=None,st
             annotation=ref.get_object()
             if annotation.get('/Subtype')!='/Link':continue
             link_number+=1
+            raw_action=annotation.get('/A')
+            raw_action=raw_action.get_object() if raw_action else {}
+            raw_dest=raw_action.get('/D') if raw_action.get('/S')=='/GoTo' else annotation.get('/Dest')
+            if raw_dest is not None and destination(raw_dest,0) is None:
+                page_states.get(n,{}).setdefault('omitted_links',[]).append({'source_link':link_number,'reason':'Destination outside explicitly selected sample'})
+                continue
             if annotation.get('/AP'):raise ValueError('Link appearance streams require explicit preservation support')
             for pane in (0,1):
                 copied=DictionaryObject()
@@ -638,7 +650,8 @@ def _layout_text_once(block,fonts):
 
 def layout_text(block,fonts):
     maximum=block.get('font_size',10)
-    minimum=block.get('font_size_min',maximum)
+    minimum=block.get('font_size_min')
+    if minimum is None:minimum=maximum
     step=block.get('font_size_step',.25)
     if (type(minimum) not in (int,float) or not math.isfinite(minimum) or minimum<=0 or minimum>maximum
             or type(step) not in (int,float) or not math.isfinite(step) or step<=0):
@@ -814,6 +827,8 @@ def build(source,state_path,output,pages='all',overwrite=False,password=None):
         mapping={n-1:j for j,n in enumerate(selected)}
         new_toc=[]
         for level,title,n,dest in toc:
+            if dest.get('kind')==fitz.LINK_NONE:
+                new_toc.append([level,title,-1,{'kind':fitz.LINK_NONE}]);continue
             if dest.get('kind')==fitz.LINK_URI:
                 new_toc.append([level,title,-1,dest]);continue
             if n in selected:

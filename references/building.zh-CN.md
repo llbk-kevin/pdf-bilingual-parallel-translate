@@ -1,3 +1,5 @@
+> 模式说明：默认阅读任务以 [practical](practical.zh-CN.md) 为准。下文严格/低层细节按需使用，不要求普通任务穷尽所有警告、公式复核或独立重建。实际查看记录仍必需。
+
 # 状态驱动的构建
 
 默认构建器为 scripts/inplace.py，提取与 v3 编辑接口见 [inplace.zh-CN.md](inplace.zh-CN.md)。将其冻结副本及 scripts/workflow.py 放在任务状态旁，保存 requirements.txt 和实际环境版本。明确使用 build --source、--state、--output。构建器只读编辑状态，输出 PDF、<output>.state.json 和 <output>.font-runs.json。审计/渲染使用记录实际位置、已清空 qc 的生成状态。重建时不能用新提取结果覆盖人工译文。
