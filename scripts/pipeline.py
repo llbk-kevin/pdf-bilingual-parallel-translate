@@ -115,9 +115,9 @@ def pixel_edits(changes,state,sp,edits_path):
 
 def apply_edits(args):
     sp=Path(args.state).resolve();state=load(sp);changes=load(args.edits)
-    top_keys={'blocks','inventory_reviewed_pages','context_pages','link_overrides','glossary','issues','source_render_index'}
+    top_keys={'blocks','inventory_reviewed_pages','context_pages','link_overrides','link_overrides_patch','glossary','issues','source_render_index'}
     if not isinstance(changes,dict) or not changes or set(changes)-top_keys:
-        raise ValueError('Edit JSON must be a nonempty object using blocks, inventory_reviewed_pages, context_pages, link_overrides, glossary or issues; unknown top-level keys are not accepted')
+        raise ValueError('Edit JSON must be a nonempty object using blocks, inventory_reviewed_pages, context_pages, link_overrides, link_overrides_patch, glossary or issues; unknown top-level keys are not accepted')
     changes=pixel_edits(changes,state,sp,args.edits)
     allowed={'translation','method','reason','font_size','font_size_min','font_size_step','leading','allowed_bbox',
              'cover_bbox','expansion_reason','kind','figure_id','rotation','font','color','source_text','source_bbox','table'}
@@ -157,7 +157,17 @@ def apply_edits(args):
         pages[n]['inventory_reviewed']=True;pages[n]['visual_text_review']='reviewed';changed.add(n)
     for n,values in changes.get('context_pages',{}).items():
         pages[int(n)]['context_pages']=values;pages[int(n)]['context_reviewed']=True
-    for n,values in changes.get('link_overrides',{}).items():pages[int(n)]['link_overrides']=values
+    if set(changes.get('link_overrides',{})) & set(changes.get('link_overrides_patch',{})):
+        raise ValueError('Use either full link_overrides or link_overrides_patch for a page')
+    for n,values in changes.get('link_overrides',{}).items():
+        pages[int(n)]['link_overrides']=values;changed.add(int(n))
+    for n,values in changes.get('link_overrides_patch',{}).items():
+        page=pages[int(n)];merged={v['source_link']:v for v in page.get('link_overrides',[])}
+        for value in values:
+            key=value.get('source_link')
+            if type(key) is not int or key<0:raise ValueError('Link patch requires nonnegative integer source_link')
+            merged[key]=value
+        page['link_overrides']=[merged[k] for k in sorted(merged)];changed.add(int(n))
     if 'glossary' in changes:state['glossary']=changes['glossary']
     if 'issues' in changes:state['issues']=changes['issues']
     for page in state['pages']:
@@ -252,6 +262,17 @@ def verify(args):
                  'retained_notes':old_qc.get('retained_notes',[])}
     if records:
         state['qc'].update({k:old_qc[k] for k in ('translation_pages','visual_pages','reviewer','reviewed_at','structure','structure_notes') if k in old_qc})
+    if args.previous_state and records:
+        prior=load(args.previous_state);reused={r['page'] for r in records if r.get('mode')=='reused'}
+        eligible={wf.canonical(f) for f in report['findings'] if f.get('page') in reused}
+        known={d['finding_sha256'] for d in state['qc']['audit_dispositions']}
+        for decision in prior.get('qc',{}).get('audit_dispositions',[]):
+            h=decision['finding_sha256']
+            if h in eligible and h not in known:
+                state['qc']['audit_dispositions'].append(copy.deepcopy(decision));known.add(h)
+        for note in prior.get('qc',{}).get('retained_notes',[]):
+            if note.get('page') in reused and note not in state['qc']['retained_notes']:
+                state['qc']['retained_notes'].append(copy.deepcopy(note))
     save(sp,state)
     fonts=load(checkdir/'fonts.json')
     hard=[f for f in report['findings'] if f['severity']=='error' and not
@@ -366,9 +387,9 @@ def main(argv=None):
         try:detail=json.loads(detail)
         except (ValueError,TypeError):pass
         log=Path(args.state).resolve().parent/'last-error.json';save(log,{'command':args.command,'detail':detail})
-        conflicts=detail.get('layout_conflicts',[]) if isinstance(detail,dict) else []
+        conflicts=(detail.get('layout_conflicts',[])+detail.get('link_conflicts',[])) if isinstance(detail,dict) else []
         summary={'ok':False,'command':args.command,'report':str(log),'affected_pages':sorted({x['page'] for x in conflicts})}
-        summary['error']=str(exc)[:1200] if not conflicts else 'Batch layout conflicts: '+str(len(conflicts))
+        summary['error']=str(exc)[:1200] if not conflicts else 'Batch build conflicts: '+str(len(conflicts))
         print(json.dumps(summary,ensure_ascii=False));return 2
     finally:
         event={'at':now(),'command':args.command,'seconds':round(time.monotonic()-started,3),'success':success,

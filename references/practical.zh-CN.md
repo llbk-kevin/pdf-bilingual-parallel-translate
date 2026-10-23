@@ -20,7 +20,7 @@ prepare 冻结脚本到状态旁，写 inventory.json 与 preflight.json。后�
 {"blocks":[{"page":1,"id":"paragraph-1","merge_ids":["EXTRACTED-ID-1","EXTRACTED-ID-2"],"method":"replace","translation":"完整段落的中文。","font_size":10,"font_size_min":9},{"page":1,"id":"EXTRACTED-FORMULA-ID","method":"preserve","reason":"保留原公式及数值"}],"inventory_reviewed_pages":[1]}
 ~~~
 
-替换真实 ID 并核对原文。merge_ids 合并字形引用与原框，不跨栏或跨单元格；普通块编辑省略 merge_ids。上述合并成功后再次修改，直接指定新 ID，例如 {"blocks":[{"page":1,"id":"paragraph-1","font_size":9,"font_size_min":8}]}；不要重复已经移除的原 merge_ids。公式混合正文确需拆字形时查 inplace.md，可写小型 JSON 编辑操作处理例外，不从乱码重绘整式。每个原文字形必须且只由一块拥有。短标识、单位、尺寸、公式保留，说明性正文翻译，不能为了省事把正文 preserve。
+替换真实 ID 并核对原文。合并的新 ID 必须唯一，或属于本次 merge_ids；不能借用别的段落 ID。merge_ids 合并字形引用与原框，不跨栏或跨单元格；普通块编辑省略 merge_ids。上述合并成功后再次修改，直接指定新 ID，例如 {"blocks":[{"page":1,"id":"paragraph-1","font_size":9,"font_size_min":8}]}；不要重复已经移除的原 merge_ids。公式混合正文确需拆字形时查 inplace.md，可写小型 JSON 编辑操作处理例外，不从乱码重绘整式。每个原文字形必须且只由一块拥有。短标识、单位、尺寸、公式保留，说明性正文翻译，不能为了省事把正文 preserve。
 
 图片/转曲新覆盖示例，坐标为可见页左上角 PDF 点：
 
@@ -30,14 +30,14 @@ prepare 冻结脚本到状态旁，写 inventory.json 与 preflight.json。后�
 
 若从原文渲染图量坐标，在编辑 JSON 顶层加 "source_render_index":"work/source/index.json"（相对编辑 JSON）。该批所有 source_bbox/cover_bbox/allowed_bbox 均按原始渲染图片像素输入，apply 核对源指纹、图片尺寸并按记录 DPI 换算。不从缩放后的查看器估算倍率，不在同批混用点和像素；未提供该字段仍是 PDF 点。双语图或裁剪图不能用作原文索引。
 
-仅在核实位置添加覆盖。allowed_bbox 扩展必须用 expansion_reason 说明邻接空白，不跨表格格子。apply 也接受按源页键的 context_pages、link_overrides、glossary、issues。link_overrides 的 source_link 按原页 /Link 批注从 0 起算，0 是首个链接，不是从 1 开始的页码；对照原始可点击区域检查生成的 page.link_mappings。链接文字翻译后用 target_block 加 target_text 指向相应文本。术语表和布局为共享依赖。practical 默认本页及声明上下文依赖，strict 未确认上下文时仍沿用全书依赖。改 authoring state 不覆盖旧候选和审核史。
+仅在核实位置添加覆盖。allowed_bbox 扩展必须用 expansion_reason 说明邻接空白，不跨表格格子。apply 也接受按源页键的 context_pages、link_overrides、glossary、issues。逐条更正优先使用 link_overrides_patch，例如 {"link_overrides_patch":{"1":[{"source_link":0,"target_block":"paragraph-1","target_text":"设计","occurrence":2}]}}。按 source_link 新增或替换，保留其他链接；旧 link_overrides 仍替换整页列表（空列表清空），同页不能同时使用两种接口。occurrence 是 target_block 内匹配的从 1 开始序号，重复锚点须明确指定。link_overrides 的 source_link 按原页 /Link 批注从 0 起算，0 是首个链接，不是从 1 开始的页码；对照原始可点击区域检查生成的 page.link_mappings。链接文字翻译后用 target_block 加 target_text 指向相应文本。术语表和布局为共享依赖。practical 默认本页及声明上下文依赖，strict 未确认上下文时仍沿用全书依赖。改 authoring state 不覆盖旧候选和审核史。
 
 ~~~text
 python recovery/pipeline.py apply --state recovery/state.json --edits edits.json
 python recovery/pipeline.py build --state recovery/state.json
 ~~~
 
-build 返回 PDF、生成状态及字形运行记录。verify/review/publish 必须用返回的生成状态。调整可 --pages 16，但单页候选不能通过五页样本最终验收。同类冲突从 last-error.json 集中修复后重建。font_size_min 空或缺省为固定字号，不为强制通过不断缩小到不可读。
+build 返回 PDF、生成状态及字形运行记录。verify/review/publish 必须用返回的生成状态。调整可 --pages 16，但单页候选不能通过五页样本最终验收。同类冲突从 last-error.json 集中修复后重建。链接映射错误按选定页集中写入 link_conflicts，包含 page、source_link 和 source_bbox，一批修完，不为逐条报错重复全本构建。降低字号时同时检查 font_size 和 font_size_min，下限不能高于指定字号。font_size_min 空或缺省为固定字号，不为强制通过不断缩小到不可读。
 
 ## 集中检查与真实记录
 
@@ -57,11 +57,11 @@ verify 检查状态、字体、审计，一次生成原文、输出及相关差�
 python recovery/pipeline.py review --state work/RETURNED.state.json --observations observations.json
 ~~~
 
-有覆盖的页会由 verify 列出 cover_review_needed。对照原图检查这些区域，特别是其下表格数值、引线和焊盘：像素审计会屏蔽声明覆盖区，不能证明覆盖安全。实际比较后，在该页观察中设置 "covers_checked":true，自动登记覆盖块 ID，不手写逐块证明。覆盖可能遮住图纸时，仅浏览全页不足以确认。
+有覆盖的页会由 verify 列出 cover_review_needed。对照原图检查这些区域，特别是其下表格数值、引线和焊盘：像素审计会屏蔽声明覆盖区，不能证明覆盖安全。实际比较后，在该页观察中设置 "covers_checked":true，自动登记覆盖块 ID，不手写逐块证明。覆盖可能遮住图纸时，仅浏览全页不足以确认。相邻数字看不清时，只放大该局部一次，核对左右具体数值和行对应后再填 covers_checked。DPI 换算正确不等于量到了正确标签；不能为清除残字把标签框扩进数值列。
 
 不可预填观察，不手改 qc。渲染不会生成已查看记录。retain_right_difference 仅在 practical 下处理当前精确匹配的 right_graphics_changed_outside_recorded_regions，不能豁免原文损坏、字体、缺页或其他错误，更不能用于主要图形遮挡。strict 仍要求原始审计通过。
 
-编辑重建后 verify --previous-state OLD_ACCEPTED.state.json，仅像素、渲染设置及页依赖完全相同才复用。保留原查看者、时间和证据，只复查变更/依赖页；最终完整候选仍自动检查。共享字体、布局、上下文确实影响其他页时失效，不编辑指纹伪造复用。
+编辑重建后 verify --previous-state OLD_ACCEPTED.state.json，仅像素、渲染设置及页依赖完全相同才复用。保留原查看者、时间和证据；复用页上精确匹配的已保留审计决定及页说明一并沿用，不豁免变化后的发现。只复查变更/依赖页；最终完整候选仍自动检查。共享字体、布局、上下文确实影响其他页时失效，不编辑指纹伪造复用。
 
 ## 交付与维护
 

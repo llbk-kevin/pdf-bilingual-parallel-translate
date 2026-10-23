@@ -446,6 +446,7 @@ def migrate_raw_links(source_doc,source_path,pdf_bytes,selected,password=None,st
         union=fitz.Rect(matches[0][0])
         for value in matches[0][1:]:union|=fitz.Rect(value)
         return [union]
+    link_conflicts=[]
     for n in selected:
         p=source_doc[n-1];w,h=p.rect.width,p.rect.height
         link_number=-1
@@ -460,6 +461,12 @@ def migrate_raw_links(source_doc,source_path,pdf_bytes,selected,password=None,st
                 page_states.get(n,{}).setdefault('omitted_links',[]).append({'source_link':link_number,'reason':'Destination outside explicitly selected sample'})
                 continue
             if annotation.get('/AP'):raise ValueError('Link appearance streams require explicit preservation support')
+            source_rect=fitz.Rect([float(a) for a in annotation['/Rect']])*transforms[n-1]
+            try: right_boxes=right_rectangles(n,link_number,source_rect)
+            except ValueError as exc:
+                link_conflicts.append({'page':n,'source_link':link_number,'source_bbox':box(source_rect),'detail':str(exc),
+                    'next':'Set link_overrides_patch with target_block, target_text and occurrence, or explicit right_bbox.'})
+                continue
             for pane in (0,1):
                 copied=DictionaryObject()
                 for key,value in annotation.items():
@@ -467,7 +474,7 @@ def migrate_raw_links(source_doc,source_path,pdf_bytes,selected,password=None,st
                         copied[NameObject(key)]=value.clone(writer) if hasattr(value,'clone') else value
                 m=transforms[n-1]*fitz.Matrix(1,0,0,1,pane*w,0)*fitz.Matrix(1,0,0,-1,0,h)
                 source_rect=fitz.Rect([float(a) for a in annotation['/Rect']])*transforms[n-1]
-                destination_rects=right_rectangles(n,link_number,source_rect) if pane else [source_rect]
+                destination_rects=right_boxes if pane else [source_rect]
                 if pane and n in page_states:
                     page_states[n].setdefault('link_mappings',[]).append({'source_link':link_number,'source_bbox':box(source_rect),'right_bboxes':[box(r) for r in destination_rects],
                         'visible_border':bool((annotation.get('/Border') and len(annotation['/Border'])>=3 and float(annotation['/Border'][2])>0) or (annotation.get('/BS') and float(annotation['/BS'].get('/W',0))>0))})
@@ -519,6 +526,7 @@ def migrate_raw_links(source_doc,source_path,pdf_bytes,selected,password=None,st
                 page_states[n]['annotation_mappings'].append({'source_annotation':annotation_number,
                     'subtype':str(annotation['/Subtype']),'source_bbox':box(source_rect),
                     'right_bbox':box(source_rect),'appearance':'preserved-normal-stream'})
+    if link_conflicts:raise ValueError(json.dumps({'link_conflicts':link_conflicts},ensure_ascii=False))
     # Consolidate page instructions so tiny q/Q wrapper streams are compressed
     # too; image streams remain untouched. Drop their now-unreferenced fragments.
     for page in writer.pages:page.compress_content_streams()

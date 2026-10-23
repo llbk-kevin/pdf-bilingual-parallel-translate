@@ -165,4 +165,37 @@ class PracticalPipeline(unittest.TestCase):
             self.assertEqual([(x[0],x[1]) for x in toc],[(1,'Heading without target'),(2,'Second')])
             self.assertEqual(toc[1][2],2)
 
+    def test_link_patch_keeps_other_links_and_reports_page(self):
+        self.prepared();ep=self.root/'links.json'
+        pl.save(ep,{'link_overrides':{'1':[{'source_link':0,'right_bbox':[20,20,50,40]}]}})
+        pl.apply_edits(self.args(edits=str(ep)))
+        pl.save(ep,{'link_overrides_patch':{'1':[{'source_link':1,'right_bbox':[60,20,90,40]}]}})
+        result=pl.apply_edits(self.args(edits=str(ep)))
+        self.assertEqual(result['changed_pages'],[1])
+        self.assertEqual([v['source_link'] for v in wf.load(self.sp)['pages'][0]['link_overrides']],[0,1])
+        before=self.sp.read_bytes()
+        pl.save(ep,{'link_overrides':{'1':[]},'link_overrides_patch':{'1':[]}})
+        with self.assertRaisesRegex(ValueError,'either'):pl.apply_edits(self.args(edits=str(ep)))
+        self.assertEqual(before,self.sp.read_bytes())
+
+    def test_reuse_carries_exact_retained_finding_and_notes(self):
+        self.prepared();r1=self.built();pl.verify(Namespace(state=r1['state'],previous_state=None))
+        finding={'code':'right_graphics_changed_outside_recorded_regions','severity':'error','page':2,'comparison':{'changed_pixels':3}}
+        old=wf.load(r1['state']);audit_path=wf.resolve(Path(r1['state']).parent,old['qc']['audit_path'])
+        audit=wf.load(audit_path);audit['findings'].append(finding);audit['mechanical_pass']=False;pl.save(audit_path,audit)
+        obs=self.observations(r1);data=wf.load(obs.observations)
+        data['pages'][1].update(retain_right_difference='Synthetic harmless fringe',retained=['Synthetic note'])
+        pl.save(obs.observations,data);self.assertTrue(pl.review(obs)['ready'])
+        s=wf.load(self.sp);s['pages'][0]['blocks'][0]['translation']='项目';pl.save(self.sp,s);r2=self.built()
+        original_audit=pt.audit
+        def with_finding(*a,**kw):
+            report=original_audit(*a,**kw);report['findings'].append(finding);report['mechanical_pass']=False;return report
+        with patch.object(pt,'audit',side_effect=with_finding):
+            result=pl.verify(Namespace(state=r2['state'],previous_state=r1['state']))
+        self.assertEqual(result['review_needed'],[1])
+        current=wf.load(r2['state']);self.assertEqual(current['qc']['audit_dispositions'],wf.load(r1['state'])['qc']['audit_dispositions'])
+        self.assertEqual(current['qc']['retained_notes'],[{'page':2,'note':'Synthetic note'}])
+        newobs=self.observations(r2);data=wf.load(newobs.observations);data['pages']=data['pages'][:1];pl.save(newobs.observations,data)
+        self.assertTrue(pl.review(newobs)['ready'])
+
 if __name__=='__main__':unittest.main()

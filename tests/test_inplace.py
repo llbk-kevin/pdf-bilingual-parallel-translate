@@ -331,4 +331,16 @@ class Inplace(unittest.TestCase):
         self.assertFalse(report['mechanical_pass'])
         self.assertTrue(any(v['code']=='right_graphics_changed_outside_recorded_regions' for v in report['findings']))
 
+    def test_link_conflicts_are_batched_across_pages(self):
+        doc=fitz.open()
+        for i in range(2):
+            p=doc.new_page(width=240,height=180);p.insert_text((20,40),'Model ABC123 is linked')
+            p.insert_link({'kind':fitz.LINK_URI,'from':fitz.Rect(49,28,90,44),'uri':'https://example.com/model'})
+        self.save_source(doc);s=self.extract()
+        for page in s['pages']:page['blocks'][0]['translation']='中文'
+        with self.assertRaises(ValueError) as error:self.build(s)
+        conflicts=json.loads(str(error.exception))['link_conflicts']
+        self.assertEqual([c['page'] for c in conflicts],[1,2])
+        self.assertTrue(all(c['source_link']==0 and c['source_bbox'] for c in conflicts))
+
 if __name__=='__main__':unittest.main()
