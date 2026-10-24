@@ -198,4 +198,25 @@ class PracticalPipeline(unittest.TestCase):
         newobs=self.observations(r2);data=wf.load(newobs.observations);data['pages']=data['pages'][:1];pl.save(newobs.observations,data)
         self.assertTrue(pl.review(newobs)['ready'])
 
+
+    def test_local_preview_uses_current_runner_and_selected_pages(self):
+        self.prepared();state=wf.load(self.sp);ep=self.root/'local.json'
+        pl.save(ep,{'blocks':[{'page':2,'id':state['pages'][1]['blocks'][0]['id'],'translation':'项目'}]})
+        result=pl.apply_edits(self.args(edits=str(ep)))
+        self.assertEqual(result['preview_argv'],[sys.executable,str(Path(pl.__file__).resolve()),'build','--state',str(self.sp.resolve()),'--pages','2'])
+        self.assertIn('--previous-state',result['next'])
+
+    def test_failed_cli_reports_diagnostic_on_both_streams_without_building(self):
+        import contextlib
+        import io
+        self.prepared();before=self.sp.read_bytes();stdout=io.StringIO();stderr=io.StringIO()
+        with patch.object(ip,'build') as builder, contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            code=pl.main(['build','--state',str(self.sp),'--source',str(self.root/'missing.pdf'),'--pages','1'])
+        self.assertEqual(code,2);builder.assert_not_called()
+        self.assertEqual(stdout.getvalue(),stderr.getvalue())
+        summary=json.loads(stderr.getvalue());detail=wf.load(summary['report'])['detail']
+        self.assertEqual(detail['code'],'source_override_mismatch')
+        self.assertEqual(Path(detail['expected']),self.source.resolve());self.assertFalse(detail['supplied_exists'])
+        self.assertIn('Omit --source',detail['action']);self.assertEqual(before,self.sp.read_bytes())
+
 if __name__=='__main__':unittest.main()

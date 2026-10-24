@@ -227,6 +227,10 @@ def validate_page(page, fresh, final=False):
             if method == 'replace' and (not glyphs or any(g['hidden'] for g in glyphs)):
                 raise ValueError('Replace requires visible native glyphs; hidden OCR needs cover or preserve: '+block['id'])
             if method == 'cover':
+                for key in ('cover_fill','cover_text_color'):
+                    value=block.get(key)
+                    if key in block and (not isinstance(value,list) or len(value)!=3 or any(type(v) not in (int,float) or not math.isfinite(v) or not 0<=v<=1 for v in value)):
+                        raise ValueError('Overlay color requires three finite RGB values in [0,1]: '+block['id']+' '+key)
                 cover = rect(block.get('cover_bbox') or block['source_bbox'])
                 if not contains(bounds,cover) or not block.get('reason'):
                     raise ValueError('Cover requires an in-page rectangle and explicit image/outline/OCR reason: '+block['id'])
@@ -804,7 +808,7 @@ def build(source,state_path,output,pages='all',overwrite=False,password=None):
                     cover=rect(b.get('cover_bbox') or b['source_bbox'])
                     protected=[g['id'] for g in pstate['glyphs'] if g['id'] not in deleted and not g['hidden'] and g['text'].strip() and cover.intersects(fitz.Rect(effective_boxes[g['id']]))]
                     if protected:build_errors.append({'page':n,'block':b['id'],'detail':'Cover intersects preserved native text: '+','.join(protected)})
-                    page.draw_rect(cover+fitz.Rect(w,0,w,0),color=None,fill=(1,1,1),overlay=True)
+                    page.draw_rect(cover+fitz.Rect(w,0,w,0),color=None,fill=tuple(b.get('cover_fill',(1,1,1))),overlay=True)
                 try:
                     lines,leading,ascent,transform,actual,preferred,glyph_boxes=layout_text(b,fonts)
                 except ValueError as exc:
@@ -828,7 +832,7 @@ def build(source,state_path,output,pages='all',overwrite=False,password=None):
                             if name not in page_fonts:
                                 page.insert_font(fontname=font['alias'],fontbuffer=font['data']);page_fonts.add(name)
                             page.insert_text(point,ch,fontname=font['alias'],fontsize=b['actual_font_size']*scale,
-                                             rotate=b.get('rotation',0),color=(0,0,0) if b['method']=='cover' else tuple(b.get('color',(0,0,0))),overlay=True)
+                                             rotate=b.get('rotation',0),color=tuple(b.get('cover_text_color',(0,0,0))) if b['method']=='cover' else tuple(b.get('color',(0,0,0))),overlay=True)
                             advance+=char_width
             original.set_rotation(rotation)
         if build_errors:raise ValueError(json.dumps({'layout_conflicts':build_errors},ensure_ascii=False))

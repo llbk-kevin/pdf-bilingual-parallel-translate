@@ -32,11 +32,11 @@ v3 使用 schema_version: 3 及 layout.mode: inplace。每页保存从 1 开始�
 | method | 处理 | 必需的编辑信息 |
 | --- | --- | --- |
 | replace | 删除右侧选中的**可见原生文字**并绘制译文 | 字形 ID/范围、translation、allowed_bbox、字体设置 |
-| cover | 如指定则删除隐藏/原生 OCR；将明确图片/转曲标签区域覆盖为白色并绘制黑色中文 | cover_bbox（或 source_bbox）、reason、translation、allowed_bbox；手工标签可无字形 ID |
+| cover | 如指定则删除隐藏/原生 OCR；在明确图片/转曲标签区域绘制可读中文浮层 | cover_bbox（或 source_bbox）、reason、translation、allowed_bbox；手工标签可无字形 ID |
 | preserve | 原样复用，不新绘文字、不产生字体 runs | reason 及保留的 translation/source_text |
 | unresolved | 保存待解决决定 | 说明/疑点；选中页存在该块时拒绝构建 |
 
-为图片/转曲标签新增块时，填写唯一 id、kind、人工核对的 source_text/source_bbox、glyph_ids: []、glyph_ranges: []、method: cover、cover_bbox、allowed_bbox、translation、reason 和 font_size。覆盖紧贴文字并尽量减少遮挡。用户明确允许少量局部遮挡时，记录准确边界/理由并目视验证，不静默掩盖影响含义的数据。无法普遍自动证明白块只遮住文字，必须目视检查。
+为图片/转曲标签新增块时，填写唯一 id、kind、人工核对的 source_text/source_bbox、glyph_ids: []、glyph_ranges: []、method: cover、cover_bbox、allowed_bbox、translation、reason 和 font_size。浮层保持局部且对应关系清楚；practical 允许露底和英文残字，不为清除残字扩大框。用户明确允许少量局部遮挡时，记录准确边界/理由并目视验证，不静默掩盖影响含义的数据。无法普遍自动证明白块只遮住文字，必须目视检查。
 
 隐藏 OCR 不能使用 replace：仅删隐藏文本，扫描图上的英文仍然存在。使用带可见标签范围的 cover，或说明理由后 preserve。保留周围图形几何和有效符号；扫描文字无法识别时，不编造原文。
 
@@ -48,7 +48,7 @@ font_size 为期望字号；可选 font_size_min 和 font_size_step（默认 0.2
 
 allowed_bbox 默认等于原框，扩展或移动须填写 expansion_reason，说明已确认的相邻空白。不挪动图片、曲线框或表格网格腾位置。构建器通过 fontTools 测量译文字形轮廓（MuPDF glyph_bbox 可能返回字体全局框），原生字体的原始上升部虚高时采用绘制 trace 框；检查这些框与保留原生文字、其他译文字形和 cover 的碰撞，而非笼统拒绝允许框重叠；一次汇总选中页的所有已检测冲突。图形/背景相互作用、阅读顺序和可读性仍需视觉检查。
 
-rotation 支持逆时针 0/90/180/270 度；提取保留 source_angle 与 orthogonal。非正交原生替换会拒绝；明确设计的 cover 可选择支持的方向。color 为从原生片段继承的 RGB [0..1]，彩底白标题尤其需要保留；cover 文字固定黑色。旧输入块若缺 color 则默认黑色，应实际检查。
+rotation 支持逆时针 0/90/180/270 度；提取保留 source_angle 与 orthogonal。非正交原生替换会拒绝；明确设计的 cover 可选择支持的方向。color 为从原生片段继承的 RGB [0..1]，彩底白标题尤其需要保留；cover_fill、cover_text_color 可选指定浮层背景和文字的 [0,1] RGB 三元组，缺省独立于原生 color，保持原白底黑字。旧输入块若缺 color 则默认黑色，应实际检查。
 
 仅支持平衡且不嵌套的 <sub>…</sub> 与 <sup>…</sup>，如 I<sub>out2</sub> 或 V<sup>2</sup>。以正文的 0.7 倍字号和基线偏移绘制；实际 runs 保存可见字符、所用字体、字号和 baseline_shift，不含标签。其他标签失败。复杂独立公式保留原矢量，不扁平化成 ASCII 下划线或反复的文字解释。
 
@@ -72,6 +72,6 @@ show_pdf_page **不会**保留交互结构。构建器显式将 URI/内部链接
 
 资源/坐标逻辑变更后运行合成回归和代表性真实文档试验。测试字体及 PDF 用代码生成；许可字体、用户 PDF、翻译样张及本机运行时路径不入仓库。发布/恢复及**显式旧版**构建器见 [building.zh-CN.md](building.zh-CN.md)，最终审阅证据见 [state-and-qc.zh-CN.md](state-and-qc.zh-CN.md)。
 
-生成状态用 `annotation_mappings` 记录迁移的静态批注，用 `redaction_regions` 记录选中字形的原文绘制轨迹框。audit 与 render 都在相同像素原点比较右侧和原文，仅遮罩这些原文字形区域、实际译文字形轮廓框、明确的白底覆盖、新增编号与移动后的可见链接边框。栅格边缘留两像素余量；其余区域任何像素超过配置的通道容差即失败（`right_graphics_changed_outside_recorded_regions`）。`allowed_bbox` 不会使整段区域免检；缺少删除区域记录会失败，不跳过比较。该检查证明所选分辨率下的局部图形保留，不能代替语义与视觉审阅。
+生成状态用 `annotation_mappings` 记录迁移的静态批注，用 `redaction_regions` 记录选中字形的原文绘制轨迹框。audit 与 render 都在相同像素原点比较右侧和原文，仅遮罩这些原文字形区域、实际译文字形轮廓框、明确的浮层覆盖、新增编号与移动后的可见链接边框。栅格边缘留两像素余量；其余区域任何像素超过配置的通道容差即失败（`right_graphics_changed_outside_recorded_regions`）。`allowed_bbox` 不会使整段区域免检；缺少删除区域记录会失败，不跳过比较。该检查证明所选分辨率下的局部图形保留，不能代替语义与视觉审阅。
 
 显式 document.delivery_scope: sample 的选页样本记录范围外链接为省略；其他局部构建仍需包含内部链接目标。无跳转目标的书签标题保留原树结构。字号下限为 null 时视为固定请求字号。

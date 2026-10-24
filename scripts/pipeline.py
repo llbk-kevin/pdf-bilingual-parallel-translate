@@ -120,7 +120,7 @@ def apply_edits(args):
         raise ValueError('Edit JSON must be a nonempty object using blocks, inventory_reviewed_pages, context_pages, link_overrides, link_overrides_patch, glossary or issues; unknown top-level keys are not accepted')
     changes=pixel_edits(changes,state,sp,args.edits)
     allowed={'translation','method','reason','font_size','font_size_min','font_size_step','leading','allowed_bbox',
-             'cover_bbox','expansion_reason','kind','figure_id','rotation','font','color','source_text','source_bbox','table'}
+             'cover_bbox','cover_fill','cover_text_color','expansion_reason','kind','figure_id','rotation','font','color','source_text','source_bbox','table'}
     pages={p['source_page']:p for p in state['pages']}
     changed=set()
     for edit in changes.get('blocks',[]):
@@ -177,12 +177,19 @@ def apply_edits(args):
     errors=ip.validate_state(state,source_path(state,sp))
     if errors:raise ValueError(json.dumps(errors,ensure_ascii=False))
     save(sp,state);save(sp.parent/'inventory.json',compact_inventory(state))
-    return {'state':str(sp),'changed_pages':sorted(changed),'next':'Build selected changed pages while adjusting; omit --pages for the complete requested selection.'}
+    preview=[sys.executable,str(Path(__file__).resolve()),'build','--state',str(sp)]
+    if changed:preview+=['--pages',','.join(map(str,sorted(changed)))]
+    return {'state':str(sp),'changed_pages':sorted(changed),'preview_argv':preview,
+            'next':'Use preview_argv for local adjustments; omit --pages for final full selection. After rebuilding, verify --previous-state OLD_ACCEPTED.state.json to retain unchanged reviews.'}
 
 
 def build(args):
     sp=Path(args.state).resolve();state=load(sp);source=source_path(state,sp)
-    if args.source and Path(args.source).resolve()!=source:raise ValueError('Source differs from authoring state')
+    if args.source and Path(args.source).resolve()!=source:
+        supplied=Path(args.source).resolve()
+        raise ValueError(json.dumps({'code':'source_override_mismatch','expected':str(source),
+                                    'supplied':str(supplied),'supplied_exists':supplied.is_file(),
+                                    'action':'Omit --source to use the frozen authoring source; do not change state or repeat this command unchanged.'},ensure_ascii=False))
     if args.profile and args.profile!=state['layout'].get('review_profile','strict'):raise ValueError('Set profile at prepare; do not silently change an existing task')
     key=wf.canonical({'state':pt.content_hash(state),'source':wf.digest(source),'pages':args.pages,
                       'builder':wf.digest(Path(ip.__file__)),'helper':wf.digest(Path(wf.__file__))})
@@ -390,7 +397,9 @@ def main(argv=None):
         conflicts=(detail.get('layout_conflicts',[])+detail.get('link_conflicts',[])) if isinstance(detail,dict) else []
         summary={'ok':False,'command':args.command,'report':str(log),'affected_pages':sorted({x['page'] for x in conflicts})}
         summary['error']=str(exc)[:1200] if not conflicts else 'Batch build conflicts: '+str(len(conflicts))
-        print(json.dumps(summary,ensure_ascii=False));return 2
+        message=json.dumps(summary,ensure_ascii=False)
+        print(message);print(message,file=sys.stderr)
+        return 2
     finally:
         event={'at':now(),'command':args.command,'seconds':round(time.monotonic()-started,3),'success':success,
                'state':str(Path(args.state).resolve()),'pages':getattr(args,'pages',None)}
