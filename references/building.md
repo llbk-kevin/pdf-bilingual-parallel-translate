@@ -20,7 +20,7 @@ The accepted PDF must embed fonts and resources needed for independent reading, 
 
 Author v3 decisions with source glyph IDs, method, translation, allowed_bbox, font settings and any explicit cover region. The builder derives target_bbox and actual placement; do not author a second independent page layout. Original table grids and formulas remain in the reused artwork. Group prose semantically, keep cell correspondence and choose bounded fitting only for affected blocks. Source geometry, image sharing, supported links, covers and failure behavior are specified in [inplace.md](inplace.md).
 
-For a cross-document trial, retain a sample-to-original page manifest and original SHA-256 values. Check the original-to-sample chain, including image semantics, links and rendering, not only sample-to-bilingual output. Explicitly record omitted destinations outside the selected pages; do not claim a sample preserves the full document's navigation. Never publish the trial as a complete translation of its source books.
+For a cross-document trial, retain a sample-to-original page manifest and original SHA-256 values. Check the original-to-sample chain, including image semantics, links and rendering. At delivery, list the selected source pages and links omitted because their target pages were not selected.
 
 ## Explicit legacy example (v1/v2)
 

@@ -5,9 +5,7 @@ description: Translate PDFs into Chinese side-by-side versions, preserving the o
 
 # PDF bilingual parallel translation
 
-## Installation and publication status
-
-This repository is published as source without a license; it does not claim to grant an open-source license. User documents, fonts and recovery artifacts are excluded. Dependencies retain their own licenses.
+## Installation
 
 For a new installation, clone this repository into a supported skills directory as pdf-bilingual-parallel-translate, then install requirements.txt in a Python 3.10+ environment. Use that environment to run scripts/pipeline.py. Supply an available Chinese font at prepare; no font is bundled. Keep outputs outside the skill directory. Existing CC Switch installations must retain their managed link; update the resolved repository instead of replacing the entry. See [practical.md](references/practical.md) for commands and supported inputs. The model supplies translations and actual visual review; these scripts do not automatically translate or certify semantic accuracy.
 
@@ -39,4 +37,4 @@ Read [practical.md](references/practical.md) for the full edit/observation contr
 
 Low-level inplace.py and pdf_tools.py remain supported; [inplace.md](references/inplace.md), [state-and-qc.md](references/state-and-qc.md) and [building.md](references/building.md) describe strict/manual details. Do not separately run audit and render when verify already produced matching evidence. v1/v2 retain original behavior; example_build.py is explicit legacy compatibility only.
 
-Diagnostics retain raw 144 DPI measurements (RGB tolerance 16, changed ratio 0.001). Practical acceptance can retain a reviewed right-side difference; source damage, font failures and coverage errors remain blocking. Mechanical success is not semantic certification. For workflow evaluation log phase time, tools/builds/renders and rework reasons. Report unavailable token counts as unavailable, not estimates presented as measurements.
+Diagnostics retain raw 144 DPI measurements (RGB tolerance 16, changed ratio 0.001). Practical acceptance can retain a reviewed right-side difference; source damage, font failures and coverage errors remain blocking. For workflow evaluation log phase time, tools/builds/renders and rework reasons. Report unavailable token counts as unavailable, not estimates presented as measurements.

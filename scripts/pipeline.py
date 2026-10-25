@@ -362,7 +362,7 @@ def publish(args):
            '- 样本的原文大小为完整源文件大小，不代表同页资源增长率。' if scope=='sample' else '',
            '- 资源增量：'+json.dumps(report['classified_delta_bytes'],ensure_ascii=False),
            '- 原始审计通过：'+str(report['mechanical_pass'])+'；阅读验收通过：'+str(wf.audit_accepted(report,state)),
-           '- 本记录不声称逐词精校或语义认证。','', '## 保留事项']
+           '', '## 保留事项']
     lines += ['- '+str(x) for x in state['qc'].get('retained_notes',[])]
     lines += ['- '+str(x) for x in state.get('issues',[])]
     for p in state['pages']:
@@ -373,7 +373,7 @@ def publish(args):
               '准备相同依赖与状态引用的字体；将参数数组传给子进程 API，或逐项引用为命令行参数：',
               '```json',json.dumps(recovery_argv,ensure_ascii=False),'```',
               '重建写入独立 .rebuilt.pdf，不覆盖已交付文件；已有同名重建文件时请另选输出路径。',
-              '普通恢复冒烟已验证源文件、字形、字体、构建器及输入指纹；没有将此声明为独立重建实验。',
+              '已核对恢复所需的源文件、字形、字体、构建器及输入指纹。',
               '请保留工作目录；删除它会丢失可编辑状态和审核证据。']
     note.write_text('\n'.join(lines)+'\n',encoding='utf-8')
     save(sp.parent/'publication.json',{'source':str(source),'output':str(destination),'state':str(sp),'check':final,'recovery_argv':recovery_argv})
