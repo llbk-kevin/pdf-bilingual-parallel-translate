@@ -332,8 +332,12 @@ def review(args):
               review_scope='basic-readability' if state['layout'].get('review_profile')=='practical' else 'strict')
     qc['structure']='passed' if wf.audit_accepted(audit,state) else 'pending'
     save(sp,state);result=pt.check_state(sp,True);save(checkdir/'final-check.json',result)
-    return {'state':str(sp),'ready':result['ready_for_delivery'],'errors':result['errors'],
-            'next':'Publish accepted sample/full PDF, or address only listed blockers.'}
+    saved_pages=sorted(o['page'] for o in observations['pages'])
+    return {'state':str(sp),'observations_saved':True,'saved_pages':saved_pages,
+            'reviewed_pages':sorted(records),'review_needed':[r['source_page'] for r in index['pages'] if r['source_page'] not in records],
+            'ready':result['ready_for_delivery'],'errors':result['errors'],
+            'next':('Publish accepted sample/full PDF.' if result['ready_for_delivery'] else
+                    'Observations saved; final delivery is not ready. Review remaining pages or rebuild full selection, then verify --previous-state '+str(sp)+' to reuse eligible evidence. Do not repeat saved page viewing without a changed dependency.')}
 
 
 def publish(args):
@@ -363,14 +367,17 @@ def publish(args):
     lines += ['- '+str(x) for x in state.get('issues',[])]
     for p in state['pages']:
         for x in p.get('omitted_links',[]):lines.append(f'- 源页 {p["source_page"]}：'+x['reason'])
-    lines += ['', '## 恢复',f'使用本工作目录 recovery 中的原始 authoring state.json 和冻结的 pipeline.py。',
-              '准备同一版本依赖及状态指向的字体后，运行：',
-              'python recovery/pipeline.py build --state recovery/state.json',
+    runner=wf.resolve(sp.parent,state['layout']['builder']['path']).resolve().with_name('pipeline.py')
+    recovery_argv=[sys.executable,'-X','utf8',str(runner),'build','--state',str(sp),'--output',str(destination.with_name(destination.stem+'.rebuilt.pdf'))]
+    lines += ['', '## 恢复','以下参数使用已验收状态及其实际冻结入口，兼容带版本号的恢复目录。',
+              '准备相同依赖与状态引用的字体；将参数数组传给子进程 API，或逐项引用为命令行参数：',
+              '```json',json.dumps(recovery_argv,ensure_ascii=False),'```',
+              '重建写入独立 .rebuilt.pdf，不覆盖已交付文件；已有同名重建文件时请另选输出路径。',
               '普通恢复冒烟已验证源文件、字形、字体、构建器及输入指纹；没有将此声明为独立重建实验。',
               '请保留工作目录；删除它会丢失可编辑状态和审核证据。']
     note.write_text('\n'.join(lines)+'\n',encoding='utf-8')
-    save(sp.parent/'publication.json',{'source':str(source),'output':str(destination),'state':str(sp),'check':final})
-    return {'output':str(destination),'notes':str(note),'state':str(sp),'ready':True,'scope':scope}
+    save(sp.parent/'publication.json',{'source':str(source),'output':str(destination),'state':str(sp),'check':final,'recovery_argv':recovery_argv})
+    return {'output':str(destination),'notes':str(note),'state':str(sp),'ready':True,'scope':scope,'recovery_argv':recovery_argv}
 
 
 def main(argv=None):
@@ -387,7 +394,7 @@ def main(argv=None):
     args=parser.parse_args(argv);started=time.monotonic();success=False
     try:
         result={'prepare':prepare,'apply':apply_edits,'build':build,'verify':verify,'review':review,'publish':publish}[args.command](args)
-        success=not result.get('errors') and result.get('ok',True)
+        success=(result.get('observations_saved',False) if args.command=='review' else not result.get('errors') and result.get('ok',True))
         print(json.dumps(result,ensure_ascii=False));return 0 if success else 2
     except Exception as exc:
         detail=str(exc)

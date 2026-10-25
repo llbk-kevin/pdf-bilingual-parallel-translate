@@ -5,6 +5,12 @@ description: Translate PDFs into Chinese side-by-side versions, preserving the o
 
 # PDF bilingual parallel translation
 
+## Installation and publication status
+
+This repository is published as source without a license; it does not claim to grant an open-source license. User documents, fonts and recovery artifacts are excluded. Dependencies retain their own licenses.
+
+For a new installation, clone this repository into a supported skills directory as pdf-bilingual-parallel-translate, then install requirements.txt in a Python 3.10+ environment. Use that environment to run scripts/pipeline.py. Supply an available Chinese font at prepare; no font is bundled. Keep outputs outside the skill directory. Existing CC Switch installations must retain their managed link; update the resolved repository instead of replacing the entry. See [practical.md](references/practical.md) for commands and supported inputs. The model supplies translations and actual visual review; these scripts do not automatically translate or certify semantic accuracy.
+
 ## Working conventions
 
 Translate with the current session model, without external machine translation. Determine this document's language, domain and audience from its contents. Preserve source and existing outputs. Use UTF-8 without BOM. Read this entry and [practical.md](references/practical.md); other English references are for specific unresolved questions. Maintenance requires AGENTS.md, synchronized Chinese documents and preservation of the resolved CC Switch link.

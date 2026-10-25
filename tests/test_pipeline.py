@@ -219,4 +219,42 @@ class PracticalPipeline(unittest.TestCase):
         self.assertEqual(Path(detail['expected']),self.source.resolve());self.assertFalse(detail['supplied_exists'])
         self.assertIn('Omit --source',detail['action']);self.assertEqual(before,self.sp.read_bytes())
 
+
+    def test_publication_recovery_uses_versioned_runner_and_accepted_state(self):
+        import subprocess
+        self.sp=self.root/'recovery-v2'/'state.json'
+        self.prepared()
+        with patch.object(ip,'__file__',str(self.sp.parent/'inplace.py')):
+            result=self.built()
+        pl.verify(Namespace(state=result['state'],previous_state=None));pl.review(self.observations(result))
+        destination=self.root/'published.pdf'
+        pub=pl.publish(Namespace(state=result['state'],output=str(destination),overwrite=False))
+        argv=pub['recovery_argv'];before=wf.digest(destination)
+        self.assertEqual(Path(argv[3]),(self.sp.parent/'pipeline.py').resolve())
+        self.assertEqual(Path(argv[6]),Path(result['state']))
+        self.assertNotEqual(Path(argv[8]),destination)
+        completed=subprocess.run(argv,capture_output=True,text=True,encoding='utf-8')
+        self.assertEqual(completed.returncode,0,completed.stdout+completed.stderr)
+        restored=json.loads(completed.stdout)
+        with fitz.open(restored['output']) as doc:
+            self.assertEqual(len(doc),2);self.assertIn('中文',doc[0].get_text())
+        self.assertEqual(wf.digest(destination),before)
+
+
+    def test_partial_review_acknowledges_save_without_allowing_publication(self):
+        import contextlib
+        import io
+        self.prepared();result=self.built();pl.verify(Namespace(state=result['state'],previous_state=None))
+        args=self.observations(result);data=wf.load(args.observations);data['pages']=data['pages'][:1];pl.save(args.observations,data)
+        stream=io.StringIO()
+        with contextlib.redirect_stdout(stream):
+            code=pl.main(['review','--state',result['state'],'--observations',args.observations])
+        report=json.loads(stream.getvalue())
+        self.assertEqual(code,0);self.assertTrue(report['observations_saved']);self.assertFalse(report['ready'])
+        self.assertEqual(report['saved_pages'],[1]);self.assertEqual(report['review_needed'],[2])
+        self.assertIn('--previous-state',report['next'])
+        with self.assertRaises(ValueError):
+            pl.publish(Namespace(state=result['state'],output=str(self.root/'not-ready.pdf'),overwrite=False))
+        self.assertFalse((self.root/'not-ready.pdf').exists())
+
 if __name__=='__main__':unittest.main()

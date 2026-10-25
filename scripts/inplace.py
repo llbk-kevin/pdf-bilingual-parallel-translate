@@ -178,7 +178,11 @@ def effective_glyph_boxes(page,glyphs):
     for trace in page.get_texttrace():
         for code,gid,origin,bbox in trace['chars']:
             p=fitz.Point(origin)*matrix
-            traces[(code,round(p.x,3),round(p.y,3))]=box(fitz.Rect(bbox)*matrix)
+            bounds=fitz.Rect(bbox)*matrix
+            # Repeated-letter ligatures may emit a zero-width tail at the same
+            # code/origin as their visible carrier. Do not overwrite its box.
+            if not bounds.is_empty:
+                traces[(code,round(p.x,3),round(p.y,3))]=box(bounds)
     return {g['id']:traces.get((ord(g['text']),round(g['origin'][0],3),round(g['origin'][1],3)),g['bbox']) for g in glyphs}
 
 def ligature_carriers(glyphs):

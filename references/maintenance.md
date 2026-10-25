@@ -4,7 +4,7 @@ This reference is for skill maintenance. Document names and subjects in historic
 
 ## Repository and installation
 
-The maintained repository is llbk-kevin/pdf-bilingual-parallel-translate, private, with main as its default branch. The global entry is <CODEX_HOME>/skills/pdf-bilingual-parallel-translate. A newly created ordinary directory stays there until CC Switch manages it. Do not manually migrate it.
+The maintained repository is llbk-kevin/pdf-bilingual-parallel-translate, published as source without a license, with main as its default branch. Public visibility does not itself grant an open-source license. The global entry is <CODEX_HOME>/skills/pdf-bilingual-parallel-translate. A newly created ordinary directory stays there until CC Switch manages it. Do not manually migrate it.
 
 Before edits, inspect whether the entry is a link and resolve its target. Modify the actual directory. Afterwards verify that the same link still points to the same target and the entry reads the updated content. If no link exists, maintain the ordinary directory. Report a broken link or diverged copies before attempting replacement.
 
@@ -90,3 +90,6 @@ Independent seven-page practical use exposed two specific failures: guessed pixe
 ## Parallel practical trial follow-up
 
 A second independent trial exposed sequential link-mapping failures and accidental replacement of a whole page's link corrections. Link conflicts now return a batch with page/link coordinates; link_overrides_patch updates individual source_link entries while legacy full-list replacement remains explicit. Reused page observations now retain only exact-matching accepted findings and page notes, so a harmless unchanged difference does not block local repair delivery. Ninety-three procedural tests pass; a real affected-page rebuild was pixel-identical after the link migration change. Two unsafe image-label covers required local correction and independent reinspection; correct DPI and a covers_checked flag do not establish safe placement. Read the adjacent values at a legible scale, without turning cosmetic marks into another full-document review.
+
+
+Repeated-letter ligatures can produce a zero-width trace tail with the same character and origin as the visible carrier. Effective bounds ignore empty trace entries so they cannot overwrite the carrier; immutable source glyph facts and ownership checks remain unchanged. A procedural ff fixture reproduces the prior failure and verifies replacement plus left-pane isolation.

@@ -211,6 +211,26 @@ class Inplace(unittest.TestCase):
         b['glyph_ids'].remove(zeros[0]['id']);b['glyph_ranges']=[[0,len(b['glyph_ids'])]]
         p['blocks'].append(keep);p['expected_blocks'].append(keep['id']);p['reading_order'].append(keep['id'])
         with self.assertRaisesRegex(ValueError,'split a ligature'):self.build(s,'split')
+    def test_repeated_letter_ligature_trace_keeps_visible_carrier(self):
+        doc=fitz.open();p=doc.new_page(width=240,height=180)
+        p.insert_font(fontname='Fixture',fontfile=str(self.font));p.insert_text((20,40),'ft',fontname='Fixture')
+        xref=int(doc.xref_get_key(p.get_fonts()[0][0],'ToUnicode')[1].split()[0])
+        cmap=doc.xref_stream(xref).decode()
+        cmap=cmap.replace('1 beginbfrange','2 beginbfrange').replace('<0001> <005f> <0020>','<0001> <0046> <0020>\n<0048> <005f> <0067>')
+        import re
+        cmap=re.sub(r'(\d+) beginbfchar',lambda m:str(int(m[1])+1)+' beginbfchar\n<0047> <00660066>',cmap)
+        doc.update_stream(xref,cmap.encode());self.save_source(doc);s=self.extract()
+        self.assertEqual(s['pages'][0]['blocks'][0]['source_text'],'fft')
+        original=copy.deepcopy(s['pages'][0]['glyphs'])
+        with fitz.open(self.source) as source:
+            boxes=ip.effective_glyph_boxes(source[0],original)
+        carrier=next(g for g in original if g['text']=='f' and not fitz.Rect(g['bbox']).is_empty)
+        self.assertFalse(fitz.Rect(boxes[carrier['id']]).is_empty)
+        r=self.build(s);self.assert_left_same(r)
+        self.assertEqual(original,s['pages'][0]['glyphs'])
+        with fitz.open(r['output']) as output:
+            self.assertNotIn('fft',output[0].get_text(clip=fitz.Rect(240,0,480,180)))
+
     def test_raw_nullable_link_modes_and_rotation(self):
         from pypdf.generic import ArrayObject, DictionaryObject, FloatObject, NullObject
         doc=fitz.open();doc.new_page(width=240,height=180);doc.new_page(width=240,height=180)

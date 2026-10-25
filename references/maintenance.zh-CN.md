@@ -4,7 +4,7 @@
 
 ## 仓库与安装
 
-维护仓库为 llbk-kevin/pdf-bilingual-parallel-translate，保持私有，默认分支 main。全局入口为 <CODEX_HOME>/skills/pdf-bilingual-parallel-translate。新建的普通目录在 CC Switch 接管前留在原处，不手动迁移。
+维护仓库为 llbk-kevin/pdf-bilingual-parallel-translate，保持公开源码（暂不添加许可证），默认分支 main。全局入口为 <CODEX_HOME>/skills/pdf-bilingual-parallel-translate。新建的普通目录在 CC Switch 接管前留在原处，不手动迁移。
 
 编辑前检查入口是否为链接并解析其目标，在实际目录维护。修改后确认原链接仍指向同一目标，且从入口能读到更新。尚无链接时直接维护普通目录。发现断链或独立副本分歧时，先报告，不擅自替换。
 
@@ -90,3 +90,6 @@ pipeline 对新任务默认 practical，脚本冻结在 authoring state 旁；�
 ## 双路阅读模式试用后续
 
 第二轮独立试用暴露了链接映射逐条报错，以及逐条修正意外替换整页链接列表的问题。现在链接冲突集中返回页码、链接编号及坐标；link_overrides_patch 按 source_link 更新单项，旧整页列表替换仍保留明确语义。复用页观察同时保留精确匹配的已接受发现和页说明，避免未变的无害差异阻断局部修复交付。93 项程序回归通过；链接迁移修订后的真实受影响页重建像素一致。两处不安全的图片标签覆盖已局部修正并独立复查；DPI 正确或 covers_checked 标志并不证明位置安全，应以可辨认尺度读取邻近数值，不为美观残影再启动全书检查。
+
+
+重复字母连字可能产生与可见承载字形具有相同字符及原点的零宽追踪尾项。有效边界忽略空追踪项，避免其覆盖承载字形；原始字形事实及所有权检查保持不变。新增 ff 合成夹具复现旧故障，并验证替换和左侧原文隔离。

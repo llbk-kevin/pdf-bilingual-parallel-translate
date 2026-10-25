@@ -74,3 +74,6 @@ python recovery/pipeline.py publish --state work/RETURNED.state.json --output AC
 publish 自动生成中文交付说明及 publication 记录，状态含源/输出哈希，报告资源增量、范围、保留问题及恢复方法。样本的源大小是完整原文件，并明确不是同页压缩比例。恢复冒烟检查冻结源、字体、构建器和状态一致性；独立重建和重复资源稳定性主要在维护回归，不每次翻译重复。
 
 pipeline-events.jsonl 记录命令耗时和结果，模型翻译/查看时间及工具次数另记。机器日志不代表思考 token。不同规模任务不承诺加速比例。完整错误写在 --state 旁的 last-error.json，失败摘要同时输出 stdout 和 stderr。子进程失败时第一次就捕获退出码及两个输出流；包装器仅显示 Command failed 时，读取已有 last-error.json，不为了获取诊断原样重跑构建；现有文件需显式 --overwrite。真实例外超出入口能力时保留低层严格/手工工具。
+
+
+review 用 observations_saved、saved_pages、reviewed_pages 和 review_needed 明确确认已保存的查看记录。退出码0表示记录保存成功，不代表可以最终交付；仍须查看 ready 和 errors。局部审核可通过 verify --previous-state 复用，publish 仍拒绝覆盖不完整的候选。publish 另返回 recovery_argv，引用已验收状态及其实际冻结入口，兼容带版本号的恢复目录；重建写入独立 .rebuilt.pdf，不替换成品。
