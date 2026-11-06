@@ -23,6 +23,25 @@ Each requested visible W × H page becomes 2W × H. The left stays at original s
 
 Fit in the original paragraph/cell/label, with modest font adjustment and verified adjacent blank space when needed. Never move diagrams or table frames, truncate meaning, guess mathematical characters or silently switch to text-only layout. If a blocker cannot be resolved, retain the draft and identify the affected part.
 
+## File locations
+
+Keep the original PDF, accepted bilingual PDF and a folder named after the complete source stem beside one another:
+
+~~~text
+documents/
+|-- <source-stem>.pdf
+|-- <source-stem>_双语左右对照翻译.pdf
+`-- <source-stem>/
+    |-- 交付说明.md
+    |-- recovery/
+    `-- work/
+        |-- candidates, states, reviews and logs
+        `-- rebuild/
+            `-- optional rebuilt PDF and its JSON sidecars
+~~~
+
+Only the accepted PDF is published outside the working folder. Keep notes and all intermediate files inside it. Ordinary delivery checks recovery dependencies; run recovery_argv only when rebuilding is needed, during maintenance validation or at the user's request. At delivery check this task's created paths against this layout; unrelated pre-existing files need no rearrangement.
+
 ## Default workflow
 
 1. **Preflight.** Discover Python 3.10+ with requirements.txt and a Chinese font. Run pipeline prepare with original PDF, requested source pages and font. It freezes recovery scripts, creates an inventory and reports risks. Inspect source grouping, scans and formula boundaries. Read naming.md only when naming is needed; renaming originals needs explicit approval.
@@ -33,7 +52,7 @@ Fit in the original paragraph/cell/label, with modest font adjustment and verifi
 
 ## Commands and outputs
 
-Read [practical.md](references/practical.md) for the full edit/observation contract and commands. Put each document's recovery/ and work/ under its output folder; publish only accepted PDF at the chosen destination. Keep PDFs, fonts and artifacts outside the skill repository. Do not delete recovery automatically: it contains saved edits and review evidence.
+Read [practical.md](references/practical.md) for the full edit/observation contract and commands. Put recovery/ and work/ inside each source-stem working folder; publish only the accepted PDF at the chosen destination. Keep PDFs, fonts and artifacts outside the skill repository. Do not delete recovery automatically: it contains saved edits and review evidence.
 
 Low-level inplace.py and pdf_tools.py remain supported; [inplace.md](references/inplace.md), [state-and-qc.md](references/state-and-qc.md) and [building.md](references/building.md) describe strict/manual details. Do not separately run audit and render when verify already produced matching evidence. v1/v2 retain original behavior; example_build.py is explicit legacy compatibility only.
 

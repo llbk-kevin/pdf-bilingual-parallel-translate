@@ -7,8 +7,10 @@ import datetime
 import json
 import math
 import os
+import re
 import shutil
 import sys
+import tempfile
 import time
 from pathlib import Path
 import inplace as ip
@@ -340,21 +342,59 @@ def review(args):
                     'Observations saved; final delivery is not ready. Review remaining pages or rebuild full selection, then verify --previous-state '+str(sp)+' to reuse eligible evidence. Do not repeat saved page viewing without a changed dependency.')}
 
 
+def publication_paths(sp, task_dir=None):
+    """Keep publication metadata and optional rebuilding within the task."""
+    if task_dir:
+        root=Path(task_dir).resolve()
+    elif sp.parent.name=='work' or re.fullmatch(r'recovery(?:-v[0-9]+)?',sp.parent.name):
+        root=sp.parent.parent.resolve()
+    else:
+        raise ValueError('Cannot infer working folder; publish requires --task-dir for this state location')
+    if not sp.is_relative_to(root):
+        raise ValueError('Publication state must remain inside --task-dir')
+    note=(root/'交付说明.md').resolve()
+    rebuild=(root/'work'/'rebuild'/'accepted.rebuilt.pdf').resolve()
+    record=(sp.parent/'publication.json').resolve()
+    ancestor=rebuild.parent
+    while not ancestor.exists():ancestor=ancestor.parent
+    if not ancestor.is_dir():raise ValueError('Rebuild parent is not a directory: '+str(ancestor))
+    if any(not p.is_relative_to(root) for p in (note,rebuild,record)):
+        raise ValueError('Publication support files must remain inside the working folder')
+    return root,note,rebuild,record
+
+
+def preflight_publication(targets,overwrite):
+    """Detect conflicts and unwritable directories before copying any PDF."""
+    for path in targets:
+        if path.exists() and (not path.is_file() or not overwrite):
+            raise ValueError('Publication target exists; choose another path or explicit --overwrite: '+str(path))
+        ancestor=path.parent
+        while not ancestor.exists():ancestor=ancestor.parent
+        if not ancestor.is_dir():raise ValueError('Publication parent is not a directory: '+str(ancestor))
+        if path.exists() and not os.access(path,os.W_OK):
+            raise ValueError('Publication target is not writable: '+str(path))
+    for parent in {p.parent for p in targets}:
+        parent.mkdir(parents=True,exist_ok=True)
+        with tempfile.TemporaryFile(dir=parent):pass
+
+
 def publish(args):
     sp=Path(args.state).resolve();state=load(sp);result=pt.check_state(sp,True)
     if not result['ready_for_delivery']:raise ValueError(json.dumps(result['errors'],ensure_ascii=False))
     destination=Path(args.output).resolve();source=source_path(state,sp)
     candidate=wf.resolve(sp.parent,state['output']['path']).resolve()
-    if destination in (source,sp):raise ValueError('Publication must not overwrite source or state')
-    if destination!=candidate:
-        if destination.exists() and not args.overwrite:raise ValueError('Destination exists; choose a new filename or explicit --overwrite')
-        destination.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(candidate,destination)
+    task_dir,note,rebuild,record=publication_paths(sp,getattr(args,'task_dir',None))
+    if destination in (source,sp,note,record,rebuild):raise ValueError('Publication must not overwrite source, state or support paths')
+    if len({source,sp,note,record,rebuild})!=5:raise ValueError('Publication support paths collide with an input')
+    report=load(wf.resolve(sp.parent,state['qc']['audit_path']))
+    runner=wf.resolve(sp.parent,state['layout']['builder']['path']).resolve().with_name('pipeline.py')
+    preflight_publication([note,record]+([destination] if destination!=candidate else []),args.overwrite)
+    if destination!=candidate:shutil.copyfile(candidate,destination)
     if wf.digest(destination)!=state['output']['sha256']:raise ValueError('Publication fingerprint changed')
     state['output']['path']=ref(destination,sp.parent);save(sp,state)
     final=pt.check_state(sp,True)
     if not final['ready_for_delivery']:raise ValueError('Published state failed final consistency')
-    report=load(wf.resolve(sp.parent,state['qc']['audit_path']))
-    note=destination.with_suffix('.md');scope=state['document'].get('delivery_scope','full')
+    scope=state['document'].get('delivery_scope','full')
     lines=['# 双语 PDF 交付说明','',f'- 模式：{state["layout"].get("review_profile","strict")}；范围：{scope}。',
            f'- 原文：{source}',f'- 成品：{destination}',f'- 状态：{sp}',
            f'- 源页：{[p["source_page"] for p in state["pages"]]}',
@@ -367,17 +407,16 @@ def publish(args):
     lines += ['- '+str(x) for x in state.get('issues',[])]
     for p in state['pages']:
         for x in p.get('omitted_links',[]):lines.append(f'- 源页 {p["source_page"]}：'+x['reason'])
-    runner=wf.resolve(sp.parent,state['layout']['builder']['path']).resolve().with_name('pipeline.py')
-    recovery_argv=[sys.executable,'-X','utf8',str(runner),'build','--state',str(sp),'--output',str(destination.with_name(destination.stem+'.rebuilt.pdf'))]
-    lines += ['', '## 恢复','以下参数使用已验收状态及其实际冻结入口，兼容带版本号的恢复目录。',
+    recovery_argv=[sys.executable,'-X','utf8',str(runner),'build','--state',str(sp),'--output',str(rebuild)]
+    lines += ['', '## 恢复','仅在需要重建时执行以下参数；普通交付只核对恢复依赖。参数使用已验收状态和实际冻结入口。',
               '准备相同依赖与状态引用的字体；将参数数组传给子进程 API，或逐项引用为命令行参数：',
               '```json',json.dumps(recovery_argv,ensure_ascii=False),'```',
-              '重建写入独立 .rebuilt.pdf，不覆盖已交付文件；已有同名重建文件时请另选输出路径。',
+              '重建 PDF 及配套 JSON 写入工作目录 work/rebuild/；已有同名文件时请在该目录另选输出名。',
               '已核对恢复所需的源文件、字形、字体、构建器及输入指纹。',
               '请保留工作目录；删除它会丢失可编辑状态和审核证据。']
     note.write_text('\n'.join(lines)+'\n',encoding='utf-8')
-    save(sp.parent/'publication.json',{'source':str(source),'output':str(destination),'state':str(sp),'check':final,'recovery_argv':recovery_argv})
-    return {'output':str(destination),'notes':str(note),'state':str(sp),'ready':True,'scope':scope,'recovery_argv':recovery_argv}
+    save(record,{'source':str(source),'output':str(destination),'state':str(sp),'check':final,'notes':str(note),'task_dir':str(task_dir),'recovery_argv':recovery_argv})
+    return {'output':str(destination),'notes':str(note),'state':str(sp),'ready':True,'scope':scope,'task_dir':str(task_dir),'recovery_argv':recovery_argv}
 
 
 def main(argv=None):
@@ -391,6 +430,7 @@ def main(argv=None):
         if name=='apply':p.add_argument('--edits',required=True)
         if name=='verify':p.add_argument('--previous-state')
         if name=='review':p.add_argument('--observations',required=True)
+        if name=='publish':p.add_argument('--task-dir',help='Working folder for delivery notes and optional rebuilding; inferred from work/ or recovery[-vN]/')
     args=parser.parse_args(argv);started=time.monotonic();success=False
     try:
         result={'prepare':prepare,'apply':apply_edits,'build':build,'verify':verify,'review':review,'publish':publish}[args.command](args)

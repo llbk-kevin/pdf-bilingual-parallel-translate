@@ -6,7 +6,7 @@ The default builder is scripts/inplace.py; see [inplace.md](inplace.md) for extr
 
 ## Working files and publication
 
-Use <source-stem>/recovery/ for authoring state and builders, and <source-stem>/work/ for candidate PDFs, generated sidecars, extraction, renders and audit reports. Always build inside the working folder: both builders emit sidecars beside their PDFs. Do not build directly to the outer delivery path. Keep 交付说明.md inside <source-stem>/.
+Use <source-stem>/recovery/ for authoring state and builders, and <source-stem>/work/ for candidate PDFs, generated sidecars, extraction, renders and audit reports. Always build inside the working folder: both builders emit sidecars beside their PDFs. Do not build directly to the outer delivery path. Keep 交付说明.md inside <source-stem>/. Optional rebuilding writes work/rebuild/accepted.rebuilt.pdf and all sidecars inside that folder. pipeline publish returns notes and recovery_argv with these locations; use --task-dir for nonstandard state locations. Ordinary delivery checks recovery dependencies without running a full rebuild.
 
 After the frozen candidate has passed translation, visual and structural acceptance:
 

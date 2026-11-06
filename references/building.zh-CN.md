@@ -6,7 +6,7 @@
 
 ## 工作文件与发布
 
-输入状态和构建器放在 <source-stem>/recovery/，候选 PDF、构建伴随文件、提取、渲染及审计报告放在 <source-stem>/work/。构建始终在工作文件夹内进行，因为两种构建器都会在 PDF 旁生成伴随文件；不要直接构建到外层交付路径。交付说明.md 保留在 <source-stem>/ 内。
+输入状态和构建器放在 <source-stem>/recovery/，候选 PDF、构建伴随文件、提取、渲染及审计报告放在 <source-stem>/work/。构建始终在工作文件夹内进行，因为两种构建器都会在 PDF 旁生成伴随文件；不要直接构建到外层交付路径。交付说明.md 保留在 <source-stem>/ 内。按需恢复的 PDF 及全部配套文件写入该文件夹的 work/rebuild/accepted.rebuilt.pdf。pipeline publish 返回对应的 notes 与 recovery_argv；状态位置非标准时使用 --task-dir。普通交付核对恢复依赖，不执行完整重建。
 
 冻结的候选版本通过翻译、视觉和结构验收后：
 

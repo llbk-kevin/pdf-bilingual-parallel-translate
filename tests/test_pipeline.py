@@ -92,6 +92,7 @@ class PracticalPipeline(unittest.TestCase):
         self.prepared();r=self.built();pl.verify(Namespace(state=r['state'],previous_state=None));pl.review(self.observations(r))
         dest=self.root/'published.pdf';pub=pl.publish(Namespace(state=r['state'],output=str(dest),overwrite=False))
         self.assertEqual(wf.digest(dest),wf.digest(r['output']));self.assertTrue(pt.check_state(r['state'],True)['ready_for_delivery'])
+        self.assertEqual(Path(pub['notes']),(self.root/'交付说明.md').resolve())
         self.assertTrue(Path(pub['notes']).exists())
     def test_partial_preview_preserves_authoring_and_resource_stability(self):
         self.prepared();before=self.sp.read_bytes();a=self.args();a.pages='1';r=pl.build(a)
@@ -232,13 +233,15 @@ class PracticalPipeline(unittest.TestCase):
         argv=pub['recovery_argv'];before=wf.digest(destination)
         self.assertEqual(Path(argv[3]),(self.sp.parent/'pipeline.py').resolve())
         self.assertEqual(Path(argv[6]),Path(result['state']))
-        self.assertNotEqual(Path(argv[8]),destination)
+        self.assertEqual(Path(argv[8]),(self.root/'work'/'rebuild'/'accepted.rebuilt.pdf').resolve())
         completed=subprocess.run(argv,capture_output=True,text=True,encoding='utf-8')
         self.assertEqual(completed.returncode,0,completed.stdout+completed.stderr)
         restored=json.loads(completed.stdout)
         with fitz.open(restored['output']) as doc:
             self.assertEqual(len(doc),2);self.assertIn('中文',doc[0].get_text())
         self.assertEqual(wf.digest(destination),before)
+        self.assertEqual({p.name for p in (self.root/'work'/'rebuild').iterdir()},
+                         {'accepted.rebuilt.pdf','accepted.rebuilt.state.json','accepted.rebuilt.font-runs.json','accepted.rebuilt.build.json'})
 
 
     def test_partial_review_acknowledges_save_without_allowing_publication(self):
@@ -256,5 +259,76 @@ class PracticalPipeline(unittest.TestCase):
         with self.assertRaises(ValueError):
             pl.publish(Namespace(state=result['state'],output=str(self.root/'not-ready.pdf'),overwrite=False))
         self.assertFalse((self.root/'not-ready.pdf').exists())
+
+
+    def accepted(self,output=None):
+        self.prepared();args=self.args();args.output=str(output) if output else None
+        result=pl.build(args);pl.verify(Namespace(state=result['state'],previous_state=None))
+        pl.review(self.observations(result));return result
+
+    def test_publish_writes_only_pdf_outside_task_and_does_not_rebuild(self):
+        self.sp=self.root/'任务 空格'/'recovery'/'state.json'
+        result=self.accepted();destination=self.root/'译文 空格.pdf'
+        before={p.name for p in self.root.iterdir()};state_before=wf.load(result['state'])
+        with patch.object(ip,'build',side_effect=AssertionError('publish must not rebuild')):
+            published=pl.publish(Namespace(state=result['state'],output=str(destination),overwrite=False))
+        self.assertEqual({p.name for p in self.root.iterdir()}-before,{destination.name})
+        self.assertEqual(Path(published['notes']),(self.sp.parent.parent/'交付说明.md').resolve())
+        self.assertFalse((self.sp.parent.parent/'work'/'rebuild').exists())
+        current=wf.load(result['state']);self.assertEqual(current['qc'],state_before['qc'])
+        self.assertTrue(pt.check_state(result['state'],True)['ready_for_delivery'])
+
+    def test_unknown_state_location_requires_explicit_task_dir_before_copy(self):
+        result=self.accepted(self.root/'自定 路径'/'candidate.pdf')
+        destination=self.root/'published.pdf';before=Path(result['state']).read_bytes()
+        with self.assertRaisesRegex(ValueError,'--task-dir'):
+            pl.publish(Namespace(state=result['state'],output=str(destination),overwrite=False))
+        self.assertFalse(destination.exists());self.assertEqual(Path(result['state']).read_bytes(),before)
+        import contextlib
+        import io
+        output=io.StringIO()
+        with contextlib.redirect_stdout(output):
+            code=pl.main(['publish','--state',result['state'],'--output',str(destination),'--task-dir',str(self.root)])
+        self.assertEqual(code,0);published=json.loads(output.getvalue())
+        self.assertEqual(Path(published['notes']),(self.root/'交付说明.md').resolve())
+        self.assertEqual(Path(published['recovery_argv'][-1]),(self.root/'work'/'rebuild'/'accepted.rebuilt.pdf').resolve())
+
+    def test_publication_conflicts_are_found_before_copy_or_state_change(self):
+        result=self.accepted();destination=self.root/'published.pdf'
+        before=Path(result['state']).read_bytes()
+        note=self.root/'交付说明.md';record=Path(result['state']).parent/'publication.json'
+        for conflicting in (note,record,destination):
+            with self.subTest(path=conflicting):
+                conflicting.write_text('Existing user file',encoding='utf-8')
+                with self.assertRaisesRegex(ValueError,'target exists'):
+                    pl.publish(Namespace(state=result['state'],output=str(destination),overwrite=False))
+                self.assertEqual(conflicting.read_text(encoding='utf-8'),'Existing user file')
+                self.assertEqual(Path(result['state']).read_bytes(),before)
+                if conflicting!=destination:self.assertFalse(destination.exists())
+                conflicting.unlink()
+        note.mkdir()
+        with self.assertRaisesRegex(ValueError,'target exists'):
+            pl.publish(Namespace(state=result['state'],output=str(destination),overwrite=True))
+        self.assertFalse(destination.exists());note.rmdir()
+        note.write_text('Previous note',encoding='utf-8')
+        self.assertTrue(pl.publish(Namespace(state=result['state'],output=str(destination),overwrite=True))['ready'])
+
+    def test_invalid_task_directory_is_rejected_before_publication(self):
+        result=self.accepted();destination=self.root/'published.pdf';before=Path(result['state']).read_bytes()
+        with self.assertRaisesRegex(ValueError,'inside --task-dir'):
+            pl.publish(Namespace(state=result['state'],output=str(destination),overwrite=False,task_dir=str(self.root/'unrelated')))
+        self.assertFalse(destination.exists());self.assertEqual(Path(result['state']).read_bytes(),before)
+
+
+    def test_publication_directory_failures_leave_pdf_and_state_untouched(self):
+        result=self.accepted();destination=self.root/'published.pdf';before=Path(result['state']).read_bytes()
+        with patch.object(pl.tempfile,'TemporaryFile',side_effect=PermissionError('Fixture directory is not writable')):
+            with self.assertRaises(PermissionError):
+                pl.publish(Namespace(state=result['state'],output=str(destination),overwrite=False))
+        self.assertFalse(destination.exists());self.assertEqual(Path(result['state']).read_bytes(),before)
+        blocked=self.root/'work'/'rebuild';blocked.write_text('Not a directory',encoding='utf-8')
+        with self.assertRaisesRegex(ValueError,'Rebuild parent'):
+            pl.publish(Namespace(state=result['state'],output=str(destination),overwrite=False))
+        self.assertFalse(destination.exists());self.assertEqual(blocked.read_text(encoding='utf-8'),'Not a directory')
 
 if __name__=='__main__':unittest.main()
