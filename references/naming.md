@@ -4,7 +4,7 @@ Read this reference before naming any source, bilingual output or task directory
 
 ## Identify before naming
 
-Inspect the cover, opening pages, footer and publication/colophon pages for the actual title, publication number and version. Metadata and downloaded filenames are hints only. Retain full title, selected title, Chinese title, identifiers, version, language, vendor when relevant, file role and page/evidence notes in state.document.naming or the task naming manifest. For historical accepted states, keep new naming evidence in the migration manifest instead of changing fingerprinted content.
+Inspect the cover, opening pages, footer and publication/colophon pages for the actual title, publication number and version. Metadata and downloaded filenames are hints only. Retain full title, selected title, Chinese title, identifiers, version, language, vendor when relevant, file role and page/evidence notes in state.document.naming or the task naming manifest.
 
 Use the actual original-language title, including non-English titles; do not manufacture an English intermediate title. Preserve capitalization and model names that belong to the title. Join line breaks and confirmed line-break hyphenation. An overlong subtitle may be omitted, with the complete title retained as evidence; do not silently remove main-title meaning.
 
@@ -37,14 +37,14 @@ Official Chinese: snvaa43_zhcace2_耦合电感器SEPIC功率级的基本计算.p
 
 scripts/workflow.py provides document_filename(source_title, chinese_title, document_id=None, *, role, version=None, source_is_chinese=False, paper=False, vendor=None, english_document_id=None). role is required: original, generated-translation or official-chinese. For Chinese originals set source_is_chinese=True; for papers set paper=True. vendor='TI' enables TI number normalization. The function formats confirmed metadata and returns one filename; it neither identifies documents nor renames files.
 
-The TI wrapper ti_filename(english_title, chinese_title, document_id=None, *, role, english_document_id=None, version=None) now also requires role. Replace old implicit-role calls and the former official_chinese boolean with an explicit role. A missing role fails rather than choosing a suffix silently.
+The TI wrapper ti_filename(english_title, chinese_title, document_id=None, *, role, english_document_id=None, version=None) also requires an explicit role.
 
 ~~~python
 from workflow import document_filename
-original = document_filename('Eight Hints for Better Scope Probing',
-    '改善示波器探测的八项提示', '5989-7894EN', role='original')
-translated = document_filename('Eight Hints for Better Scope Probing',
-    '改善示波器探测的八项提示', '5989-7894EN', role='generated-translation')
+original = document_filename('Visitor Information Guide',
+    '访客信息指南', 'DOC-012A', role='original')
+translated = document_filename('Visitor Information Guide',
+    '访客信息指南', 'DOC-012A', role='generated-translation')
 ~~~
 
 Normalize whitespace and replace Windows-forbidden characters minimally: an English colon becomes a spaced hyphen, and a slash becomes a fullwidth slash. Remove trailing spaces/dots. The helper rejects reserved Windows filenames and components longer than 255 UTF-16 code units without truncation. The agent must additionally check full-path lengths, actual tool support and collisions.
@@ -57,6 +57,6 @@ For every document, proactively check names before translation and present an ex
 
 When a proposed name contradicts the actual file role, an identifier's source or version is ambiguous, or a main title would have to be shortened, explain the concrete conflict and ask before deciding the name. Once resolved, use the answer within its stated scope. Do not promote a one-task exception into a standing skill rule without an explicit request.
 
-Before moves, save exact paths and fingerprints, check collisions and resolved directory boundaries, and verify long-path support in an isolated fixture where needed. Move one group at a time with a durable checkpoint; do not use broad wildcard renames or silently overwrite targets. Update current recovery paths, regeneration instructions, queue and delivery index. Preserve original audit/review bytes and each earlier migration snapshot, following [state-and-qc.md](state-and-qc.md). Verify PDFs remain byte-identical and test rebuilding only in independent copies. Keep clearly identified historical records out of bulk path replacements.
+Complete approved renames before prepare. Record paths and SHA-256, check collisions, directory boundaries and long-path support, then move each group and verify PDF bytes. If a current task input path changes after building, rebuild and verify as described in [State and review evidence](state-and-qc.md).
 
 Preserve existing translations unless their exact deletion was explicitly requested. This naming rule does not authorize deleting old translations.

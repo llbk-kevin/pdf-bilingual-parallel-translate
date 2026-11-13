@@ -31,8 +31,8 @@ def compact_inventory(state):
 
 def prepare(args):
     sp=Path(args.state).resolve()
-    result=ip.extract(args.source,sp,args.pages,args.overwrite)
-    state=load(sp);state['layout']['review_profile']=args.profile or 'practical'
+    result=ip.extract(args.source,sp,args.pages,args.overwrite,profile=args.profile or 'practical')
+    state=load(sp)
     selected=result['pages']
     state['document'].update(delivery_scope='full' if len(selected)==state['source']['page_count'] else 'sample',
                              selected_source_pages=selected)
@@ -116,7 +116,7 @@ def pixel_edits(changes,state,sp,edits_path):
 
 
 def apply_edits(args):
-    sp=Path(args.state).resolve();state=load(sp);changes=load(args.edits)
+    sp=Path(args.state).resolve();state=wf.require_state(load(sp));changes=load(args.edits)
     top_keys={'blocks','inventory_reviewed_pages','context_pages','link_overrides','link_overrides_patch','glossary','issues','source_render_index'}
     if not isinstance(changes,dict) or not changes or set(changes)-top_keys:
         raise ValueError('Edit JSON must be a nonempty object using blocks, inventory_reviewed_pages, context_pages, link_overrides, link_overrides_patch, glossary or issues; unknown top-level keys are not accepted')
@@ -186,13 +186,13 @@ def apply_edits(args):
 
 
 def build(args):
-    sp=Path(args.state).resolve();state=load(sp);source=source_path(state,sp)
+    sp=Path(args.state).resolve();state=wf.require_state(load(sp));source=source_path(state,sp)
     if args.source and Path(args.source).resolve()!=source:
         supplied=Path(args.source).resolve()
         raise ValueError(json.dumps({'code':'source_override_mismatch','expected':str(source),
                                     'supplied':str(supplied),'supplied_exists':supplied.is_file(),
                                     'action':'Omit --source to use the frozen authoring source; do not change state or repeat this command unchanged.'},ensure_ascii=False))
-    if args.profile and args.profile!=state['layout'].get('review_profile','strict'):raise ValueError('Set profile at prepare; do not silently change an existing task')
+    if args.profile and args.profile!=state['layout']['review_profile']:raise ValueError('Set profile at prepare; do not silently change an existing task')
     key=wf.canonical({'state':pt.content_hash(state),'source':wf.digest(source),'pages':args.pages,
                       'builder':wf.digest(Path(ip.__file__)),'helper':wf.digest(Path(wf.__file__))})
     output=Path(args.output).resolve() if args.output else sp.parent.parent/'work'/('candidate-'+key[:16]+'.pdf')
@@ -215,9 +215,7 @@ def rebase_record(record,base):
     return value
 
 
-def reuse_reviews(state,sp,index,index_path,previous_path):
-    if not previous_path:return []
-    previous_path=Path(previous_path).resolve();old=load(previous_path)
+def reuse_reviews(sp, index, index_path, previous_path, old):
     if wf.validate_reviews(old,previous_path):return []
     by_page={r['page']:r for r in old.get('qc',{}).get('page_reviews',[])};records=[]
     for row in index['pages']:
@@ -243,7 +241,9 @@ def verification_paths(sp,state):
 
 
 def verify(args):
-    sp=Path(args.state).resolve();state=load(sp);source=source_path(state,sp)
+    sp=Path(args.state).resolve();state=wf.require_state(load(sp));source=source_path(state,sp)
+    previous_path = Path(args.previous_state).resolve() if args.previous_state else None
+    prior = wf.require_state(load(previous_path)) if previous_path else None
     output=wf.resolve(sp.parent,state['output']['path']).resolve();checkdir=verification_paths(sp,state)
     manifest=checkdir/'verification.json';cached=False
     if manifest.exists():
@@ -261,7 +261,8 @@ def verify(args):
         save(manifest,{'files':files,'created_at':now()})
     report=load(checkdir/'audit.json');index_path=checkdir/'renders'/'index.json';index=load(index_path)
     records=state.get('qc',{}).get('page_reviews',[])
-    if args.previous_state and not records:records=reuse_reviews(state,sp,index,index_path,args.previous_state)
+    if prior and not records:
+        records = reuse_reviews(sp, index, index_path, previous_path, prior)
     old_qc=state.get('qc',{})
     state['qc']={'content_sha256':pt.content_hash(state),'source_sha256':state['source']['sha256'],
                  'output_sha256':state['output']['sha256'],'audit_path':ref(checkdir/'audit.json',sp.parent),
@@ -271,8 +272,8 @@ def verify(args):
                  'retained_notes':old_qc.get('retained_notes',[])}
     if records:
         state['qc'].update({k:old_qc[k] for k in ('translation_pages','visual_pages','reviewer','reviewed_at','structure','structure_notes') if k in old_qc})
-    if args.previous_state and records:
-        prior=load(args.previous_state);reused={r['page'] for r in records if r.get('mode')=='reused'}
+    if prior and records:
+        reused={r['page'] for r in records if r.get('mode')=='reused'}
         eligible={wf.canonical(f) for f in report['findings'] if f.get('page') in reused}
         known={d['finding_sha256'] for d in state['qc']['audit_dispositions']}
         for decision in prior.get('qc',{}).get('audit_dispositions',[]):
@@ -285,9 +286,9 @@ def verify(args):
     save(sp,state)
     fonts=load(checkdir/'fonts.json')
     hard=[f for f in report['findings'] if f['severity']=='error' and not
-          (state['layout'].get('review_profile')=='practical' and f['code']=='right_graphics_changed_outside_recorded_regions')]
+          (state['layout']['review_profile']=='practical' and f['code']=='right_graphics_changed_outside_recorded_regions')]
     reviewed={r['page'] for r in records}
-    return {'ok':not hard and fonts['mechanical_pass'],'state':str(sp),'cached':cached,'profile':state['layout'].get('review_profile','strict'),
+    return {'ok':not hard and fonts['mechanical_pass'],'state':str(sp),'cached':cached,'profile':state['layout']['review_profile'],
             'blocking_findings':hard,'font_pass':fonts['mechanical_pass'],
             'cover_review_needed':[{'page':p['source_page'],'blocks':[b['id'] for b in p['blocks'] if b['method']=='cover']} for p in state['pages'] if p['source_page'] not in reviewed and any(b['method']=='cover' for b in p['blocks'])],
             'finding_counts':counts(report['findings']),'audit':str(checkdir/'audit.json'),
@@ -296,7 +297,7 @@ def verify(args):
 
 
 def review(args):
-    sp=Path(args.state).resolve();state=load(sp);observations=load(args.observations)
+    sp=Path(args.state).resolve();state=wf.require_state(load(sp));observations=load(args.observations)
     reviewer=observations.get('reviewer')
     if not reviewer:raise ValueError('Actual reviewer required')
     # Use the evidence bound by verify, not a path recomputed from today's runner.
@@ -331,7 +332,7 @@ def review(args):
     qc.update(page_reviews=sorted(records.values(),key=lambda r:r['page']),audit_dispositions=list(dispositions.values()),
               translation_pages=sorted(records),visual_pages=sorted(records),reviewer=reviewer,reviewed_at=now(),
               structure_notes=observations.get('structure_notes') or 'Basic page readability reviewed; diagnostic warnings retained in the audit. See retained notes and explicit difference dispositions.',
-              review_scope='basic-readability' if state['layout'].get('review_profile')=='practical' else 'strict')
+              review_scope='basic-readability' if state['layout']['review_profile']=='practical' else 'strict')
     qc['structure']='passed' if wf.audit_accepted(audit,state) else 'pending'
     save(sp,state);result=pt.check_state(sp,True);save(checkdir/'final-check.json',result)
     saved_pages=sorted(o['page'] for o in observations['pages'])
@@ -379,7 +380,7 @@ def preflight_publication(targets,overwrite):
 
 
 def publish(args):
-    sp=Path(args.state).resolve();state=load(sp);result=pt.check_state(sp,True)
+    sp=Path(args.state).resolve();state=wf.require_state(load(sp));result=pt.check_state(sp,True)
     if not result['ready_for_delivery']:raise ValueError(json.dumps(result['errors'],ensure_ascii=False))
     destination=Path(args.output).resolve();source=source_path(state,sp)
     candidate=wf.resolve(sp.parent,state['output']['path']).resolve()
@@ -395,11 +396,13 @@ def publish(args):
     final=pt.check_state(sp,True)
     if not final['ready_for_delivery']:raise ValueError('Published state failed final consistency')
     scope=state['document'].get('delivery_scope','full')
-    lines=['# 双语 PDF 交付说明','',f'- 模式：{state["layout"].get("review_profile","strict")}；范围：{scope}。',
+    lines=['# 双语 PDF 交付说明','',f'- 模式：{state["layout"]["review_profile"]}。范围：{scope}。',
            f'- 原文：{source}',f'- 成品：{destination}',f'- 状态：{sp}',
+           f'- 原文 SHA-256：{state["source"]["sha256"]}',
+           f'- 成品 SHA-256：{state["output"]["sha256"]}',
            f'- 源页：{[p["source_page"] for p in state["pages"]]}',
            f'- 原文 {report["source"]["bytes"]} bytes；输出 {report["output"]["bytes"]} bytes；增长 {report["size_delta_bytes"]} bytes（{100*report["size_delta_bytes"]/max(1,report["source"]["bytes"]):.2f}%）。',
-           '- 样本的原文大小为完整源文件大小，不代表同页资源增长率。' if scope=='sample' else '',
+           '- 样本体积与完整源文件比较。' if scope=='sample' else '',
            '- 资源增量：'+json.dumps(report['classified_delta_bytes'],ensure_ascii=False),
            '- 原始审计通过：'+str(report['mechanical_pass'])+'；阅读验收通过：'+str(wf.audit_accepted(report,state)),
            '', '## 保留事项']
@@ -408,8 +411,8 @@ def publish(args):
     for p in state['pages']:
         for x in p.get('omitted_links',[]):lines.append(f'- 源页 {p["source_page"]}：'+x['reason'])
     recovery_argv=[sys.executable,'-X','utf8',str(runner),'build','--state',str(sp),'--output',str(rebuild)]
-    lines += ['', '## 恢复','仅在需要重建时执行以下参数；普通交付只核对恢复依赖。参数使用已验收状态和实际冻结入口。',
-              '准备相同依赖与状态引用的字体；将参数数组传给子进程 API，或逐项引用为命令行参数：',
+    lines += ['', '## 恢复','需要重建时，使用冻结入口、已验收状态和所引用的源文件、字体及依赖。',
+              '将以下参数数组传给子进程 API，或逐项引用为命令行参数。',
               '```json',json.dumps(recovery_argv,ensure_ascii=False),'```',
               '重建 PDF 及配套 JSON 写入工作目录 work/rebuild/；已有同名文件时请在该目录另选输出名。',
               '已核对恢复所需的源文件、字形、字体、构建器及输入指纹。',

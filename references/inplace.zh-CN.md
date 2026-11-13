@@ -7,7 +7,7 @@
 需要冻结且可独立再生成的恢复包时，将 scripts/inplace.py 和 scripts/workflow.py 复制到任务 recovery。使用已有合适 Python，或在任务环境安装 requirements.txt。脚本不调用翻译服务。
 
 ~~~text
-python inplace.py extract --source SOURCE --state state.json --pages all
+python inplace.py extract --source SOURCE --state state.json --pages all --profile practical
 python inplace.py build --source SOURCE --state state.json --output ../work/draft.pdf --pages 1,3-5
 ~~~
 
@@ -23,7 +23,7 @@ v3 使用 schema_version: 3 及 layout.mode: inplace。每页保存从 1 开始�
 
 字形事实包括 id、text、bbox、origin、font、size、hidden 和 trace_type。不得为了通过排版检查改写事实。一个连字拆出的零宽 Unicode 尾字仍保留原 bbox；字体、字号、原点和 trace 信息相符时，删除区域由前方承载字形提供。保留连字的一半、替换另一半会被拒绝。其他不支持的零面积字形明确失败，不静默省略。
 
-原生块通过 glyph_ids 和可选的半开区间 glyph_ranges 引用字形，例如 [[0,5],[8,12]]。每个非空白源字形必须恰好归属一个选定范围，包括保留公式和隐藏 OCR。合并片段时将 ID 连接到一个连贯块；保留行内数值时把文字和值的 ID 拆成不同块。同步 expected_blocks 和 reading_order，使之对应最终有序块列表。source_text/source_bbox 和语义、表格、图形锚点应真实有意义。原位表格文字可使用 table-cell 块，原表格线保留；有意组合成 kind: table 时，还需旧有 source_rows/translated_rows 元数据。
+原生块通过 glyph_ids 和可选的半开区间 glyph_ranges 引用字形，例如 [[0,5],[8,12]]。每个非空白源字形必须恰好归属一个选定范围，包括保留公式和隐藏 OCR。合并片段时将 ID 连接到一个连贯块；保留行内数值时把文字和值的 ID 拆成不同块。同步 expected_blocks 和 reading_order，使之对应最终有序块列表。source_text/source_bbox 和语义、表格、图形锚点应真实有意义。原位表格文字可使用 table-cell 块，原表格线保留；有意组合成 kind: table 时，还需 source_rows/translated_rows 元数据。
 
 自动提取器不判断数学语义。替换邻近正文前，拆出并保留变量名、符号、公式编号、下标和数值数据；每次重复公式都要核对。原文疑点保留准确原句和明确处理方式。
 
@@ -36,7 +36,7 @@ v3 使用 schema_version: 3 及 layout.mode: inplace。每页保存从 1 开始�
 | preserve | 原样复用，不新绘文字、不产生字体 runs | reason 及保留的 translation/source_text |
 | unresolved | 保存待解决决定 | 说明/疑点；选中页存在该块时拒绝构建 |
 
-为图片/转曲标签新增块时，填写唯一 id、kind、人工核对的 source_text/source_bbox、glyph_ids: []、glyph_ranges: []、method: cover、cover_bbox、allowed_bbox、translation、reason 和 font_size。浮层保持局部且对应关系清楚；practical 允许露底和英文残字，不为清除残字扩大框。用户明确允许少量局部遮挡时，记录准确边界/理由并目视验证，不静默掩盖影响含义的数据。无法普遍自动证明白块只遮住文字，必须目视检查。
+为图片/转曲标签新增块时，填写唯一 id、kind、人工核对的 source_text/source_bbox、glyph_ids: []、glyph_ranges: []、method: cover、cover_bbox、allowed_bbox、translation、reason 和 font_size。浮层保持局部且对应关系清楚；practical 允许露底和英文残字，不为清除残字扩大框。用户明确允许少量局部遮挡时，记录准确边界/理由并目视验证，不静默掩盖影响含义的数据。
 
 隐藏 OCR 不能使用 replace：仅删隐藏文本，扫描图上的英文仍然存在。使用带可见标签范围的 cover，或说明理由后 preserve。保留周围图形几何和有效符号；扫描文字无法识别时，不编造原文。
 
@@ -48,7 +48,7 @@ font_size 为期望字号；可选 font_size_min 和 font_size_step（默认 0.2
 
 allowed_bbox 默认等于原框，扩展或移动须填写 expansion_reason，说明已确认的相邻空白。不挪动图片、曲线框或表格网格腾位置。构建器通过 fontTools 测量译文字形轮廓（MuPDF glyph_bbox 可能返回字体全局框），原生字体的原始上升部虚高时采用绘制 trace 框；检查这些框与保留原生文字、其他译文字形和 cover 的碰撞，而非笼统拒绝允许框重叠；一次汇总选中页的所有已检测冲突。图形/背景相互作用、阅读顺序和可读性仍需视觉检查。
 
-rotation 支持逆时针 0/90/180/270 度；提取保留 source_angle 与 orthogonal。非正交原生替换会拒绝；明确设计的 cover 可选择支持的方向。color 为从原生片段继承的 RGB [0..1]，彩底白标题尤其需要保留；cover_fill、cover_text_color 可选指定浮层背景和文字的 [0,1] RGB 三元组，缺省独立于原生 color，保持原白底黑字。旧输入块若缺 color 则默认黑色，应实际检查。
+rotation 支持逆时针 0/90/180/270 度；提取保留 source_angle 与 orthogonal。非正交原生替换会拒绝；明确设计的 cover 可选择支持的方向。color 为从原生片段继承的 RGB [0..1]，彩底白标题尤其需要保留；cover_fill、cover_text_color 可选指定浮层背景和文字的 [0,1] RGB 三元组，缺省独立于原生 color，默认为白底黑字。缺省 color 为黑色。
 
 仅支持平衡且不嵌套的 <sub>…</sub> 与 <sup>…</sup>，如 I<sub>out2</sub> 或 V<sup>2</sup>。以正文的 0.7 倍字号和基线偏移绘制；实际 runs 保存可见字符、所用字体、字号和 baseline_shift，不含标签。其他标签失败。复杂独立公式保留原矢量，不扁平化成 ASCII 下划线或反复的文字解释。
 
@@ -66,11 +66,11 @@ show_pdf_page **不会**保留交互结构。构建器显式将 URI/内部链接
 
 右侧已复用原印刷页码，应保留编号和无编号封面，不因当前试样页数少而新增编号。仅整份文档无页码时，已有经确认的 physical-total 分页字段可在预留右上区域添加页码/总数，并纳入实际 runs 与碰撞检查。v3 的 preserve-source 分页由现有图文提供，不再重复绘制编号。
 
-## 验证与兼容
+## 验证
 
-对生成状态执行 check-state、check-fonts、audit 和 render。v3 草稿可包含选定源页；--final 要求完整原文覆盖和正常审阅证据。audit 将试样图像基线限制在选中源页并映射目的页；带状态的渲染保留原文/输出映射与指纹。v1/v2 状态读取和历史审阅记录继续支持；不能只改版本号就升级验收。
+对生成状态执行 check-state、check-fonts、audit 和 render。check-state --final 核对声明的交付范围与审核证据。选页样本的图片基线及目的页按源页映射处理。推荐用 [流程入口](practical.zh-CN.md) 一次完成检查与渲染。
 
-资源/坐标逻辑变更后运行合成回归和代表性真实文档试验。测试字体及 PDF 用代码生成；许可字体、用户 PDF、翻译样张及本机运行时路径不入仓库。发布/恢复及**显式旧版**构建器见 [building.zh-CN.md](building.zh-CN.md)，最终审阅证据见 [state-and-qc.zh-CN.md](state-and-qc.zh-CN.md)。
+发布和按需重建见 [building.zh-CN.md](building.zh-CN.md)，验收证据见 [state-and-qc.zh-CN.md](state-and-qc.zh-CN.md)。
 
 生成状态用 `annotation_mappings` 记录迁移的静态批注，用 `redaction_regions` 记录选中字形的原文绘制轨迹框。audit 与 render 都在相同像素原点比较右侧和原文，仅遮罩这些原文字形区域、实际译文字形轮廓框、明确的浮层覆盖、新增编号与移动后的可见链接边框。栅格边缘留两像素余量；其余区域任何像素超过配置的通道容差即失败（`right_graphics_changed_outside_recorded_regions`）。`allowed_bbox` 不会使整段区域免检；缺少删除区域记录会失败，不跳过比较。该检查证明所选分辨率下的局部图形保留，不能代替语义与视觉审阅。
 

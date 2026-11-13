@@ -106,36 +106,21 @@ class Diagnostics(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
     def state(self):
-        builder=self.root/"build.py"
-        builder.write_text("# fixture builder\n",encoding="utf-8")
-        pages=[]
-        for n in (1,2):
-            bid=f"p{n}-body"
-            pages.append({"source_page":n,"output_page":n,"source_rect":[0,0,240,300],
-                          "kind":"translated","inventory_reviewed":True,
-                          "expected_blocks":[bid],"blocks":[{"id":bid,"kind":"paragraph",
-                          "source_bbox":[30,30,220,60],"source_text":f"Source {n}: 12 km if time <= 5 h.",
-                          "translation":f"原文 {n}：时间 ≤ 5 h 时为 12 km。","status":"translated"}]})
-        return {"schema_version":1,"source":{"path":"source.pdf","sha256":t.sha256_file(self.src)},
-                "output":{"path":"output.pdf","sha256":t.sha256_file(self.out)},
-                "layout":{"builder":{"path":"build.py","sha256":t.sha256_file(builder)},
-                          "fonts":[{"name":"Fixture","sha256":"0"*64,"source":"generated fixture",
-                                    "purpose":"Test metadata, no Chinese font rendered"}]},
-                "glossary":[],"pages":pages,"issues":[],"qc":{}}
+        from inplace import extract
+        path = self.root / 'inventory.json'
+        extract(self.src, path, overwrite=True)
+        state = t.read_json(path)
+        state['output'] = {'path': self.out.name, 'sha256': t.sha256_file(self.out)}
+        for page in state['pages']:
+            page['inventory_reviewed'] = True
+            for block in page['blocks']:
+                block.update(method='replace', status='translated', translation='距离 12 km')
+        return state
+
     def write_state(self,s):
         p=self.root/"state.json"
         p.write_text(json.dumps(s,ensure_ascii=False),encoding="utf-8")
         return p
-    def accepted(self):
-        s=self.state()
-        report=t.audit(self.src,self.out,dpi=72)
-        t.write_json(report,self.root/"audit.json")
-        s["qc"]={"content_sha256":t.content_hash(s),"source_sha256":s["source"]["sha256"],
-                 "output_sha256":s["output"]["sha256"],"translation_pages":[1,2],
-                 "visual_pages":[1,2],"reviewer":"test fixture; not a real review",
-                 "reviewed_at":"2000-01-01T00:00:00Z","structure":"passed","audit_path":"audit.json",
-                 "structure_notes":"Fixture deliberately contains no Chinese."}
-        return s
     def codes(self,report):
         return {f["code"] for f in report["findings"]}
     def test_nested_shared_resources_counted_once(self):
@@ -196,21 +181,6 @@ class Diagnostics(unittest.TestCase):
         a=t.audit(self.src,self.out,dpi=72)
         self.assertIn("source_bookmarks_missing_or_changed",self.codes(a))
         self.assertIn("source_links_changed",self.codes(a))
-    def test_final_state_and_stale_content(self):
-        s=self.accepted()
-        self.assertTrue(t.check_state(self.write_state(s),True)["ready_for_delivery"])
-        s["pages"][0]["blocks"][0]["translation"]="changed"
-        r=t.check_state(self.write_state(s),True)
-        self.assertIn("stale_qc_content",{x["code"] for x in r["errors"]})
-    def test_stale_output_builder_and_review_coverage(self):
-        s=self.accepted()
-        self.out.write_bytes(self.out.read_bytes()+b"\n% revision\n")
-        (self.root/"build.py").write_text("# changed\n",encoding="utf-8")
-        s["qc"]["visual_pages"]=[1]
-        r=t.check_state(self.write_state(s),True)
-        codes={x["code"] for x in r["errors"]}
-        self.assertTrue({"output_fingerprint_changed","builder_fingerprint_changed",
-                         "incomplete_visual_pages","stale_audit"}<=codes)
     def test_missing_translation_inventory_and_table(self):
         s=self.state()
         b=s["pages"][0]["blocks"][0]

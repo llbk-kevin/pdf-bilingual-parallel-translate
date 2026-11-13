@@ -68,11 +68,46 @@ class PracticalPipeline(unittest.TestCase):
         self.assertEqual(v['review_needed'],[1,2]);self.assertFalse(pt.check_state(r['state'],True)['ready_for_delivery'])
         self.assertTrue(pl.review(self.observations(r))['ready'])
         self.assertTrue(self.built()['cached'])
-    def test_explicit_sample_final_and_legacy_full_coverage(self):
+    def test_explicit_sample_final_and_incomplete_full_coverage(self):
         self.prepared('2');r=self.built();pl.verify(Namespace(state=r['state'],previous_state=None))
         self.assertTrue(pl.review(self.observations(r))['ready'])
-        s=wf.load(r['state']);s['document'].pop('delivery_scope');pl.save(r['state'],s)
+        pub = pl.publish(Namespace(state=r['state'], output=str(self.root/'sample.pdf'), overwrite=False))
+        self.assertEqual(pub['scope'], 'sample')
+        self.assertTrue(pt.check_state(r['state'], True)['ready_for_delivery'])
+        s=wf.load(r['state']);s['document']['delivery_scope']='full';pl.save(r['state'],s)
         self.assertIn('source_page_coverage_incomplete',[e['code'] for e in pt.check_state(r['state'],True)['errors']])
+    def test_unsupported_states_fail_before_authoring_or_build(self):
+        valid = self.prepared(profile=None)
+        self.assertEqual(valid['layout']['review_profile'], 'practical')
+        edits = self.root/'edits.json'
+        pl.save(edits, {'inventory_reviewed_pages': [1, 2]})
+        for version, profile, code in [(1, 'practical', 'unsupported_state_schema'),
+                                       (2, 'strict', 'unsupported_state_schema'),
+                                       (3, None, 'invalid_review_profile'),
+                                       (3, 'other', 'invalid_review_profile')]:
+            with self.subTest(version=version, profile=profile):
+                state = copy.deepcopy(valid)
+                state['schema_version'] = version
+                if profile is None:
+                    del state['layout']['review_profile']
+                else:
+                    state['layout']['review_profile'] = profile
+                pl.save(self.sp, state)
+                before = self.sp.read_bytes()
+                report = pt.check_state(self.sp, True)
+                self.assertFalse(report['ready_for_delivery'])
+                self.assertEqual(report['errors'][0]['code'], code)
+                with self.assertRaisesRegex(ValueError, code):
+                    pl.apply_edits(self.args(edits=str(edits)))
+                with self.assertRaisesRegex(ValueError, code):
+                    self.built()
+                with self.assertRaisesRegex(ValueError, code):
+                    ip.build(self.source, self.sp, self.root/'rejected.pdf')
+                with self.assertRaisesRegex(ValueError, code):
+                    wf.check_fonts(self.sp, self.root/'unused.json')
+                self.assertEqual(self.sp.read_bytes(), before)
+                self.assertFalse((self.root/'rejected.pdf').exists())
+
     def test_practical_disposition_never_waives_left_damage(self):
         f={'code':'right_graphics_changed_outside_recorded_regions','severity':'error','page':1,'comparison':{'changed_pixels':8}}
         report={'mechanical_pass':False,'findings':[f]};s={'layout':{'review_profile':'practical'},'qc':{}}
@@ -88,12 +123,15 @@ class PracticalPipeline(unittest.TestCase):
         self.assertEqual(v['review_needed'],[1]);qc=wf.load(r2['state'])['qc'];rec=qc['page_reviews'][0]
         self.assertEqual(rec['page'],2);self.assertEqual(rec['previous']['reviewed_at'],'2020-01-01T00:00:00+00:00')
         self.assertEqual(rec['reviewed_at'],rec['previous']['reviewed_at'])
-    def test_publication_is_byte_identical_and_recoverable(self):
-        self.prepared();r=self.built();pl.verify(Namespace(state=r['state'],previous_state=None));pl.review(self.observations(r))
+    def test_strict_publication_is_byte_identical_and_recoverable(self):
+        self.prepared(profile='strict');r=self.built();pl.verify(Namespace(state=r['state'],previous_state=None));pl.review(self.observations(r))
         dest=self.root/'published.pdf';pub=pl.publish(Namespace(state=r['state'],output=str(dest),overwrite=False))
         self.assertEqual(wf.digest(dest),wf.digest(r['output']));self.assertTrue(pt.check_state(r['state'],True)['ready_for_delivery'])
         self.assertEqual(Path(pub['notes']),(self.root/'交付说明.md').resolve())
-        self.assertTrue(Path(pub['notes']).exists())
+        note = Path(pub['notes']).read_text(encoding='utf-8')
+        self.assertIn(wf.digest(self.source), note)
+        self.assertIn(wf.digest(dest), note)
+        self.assertEqual(pt.check_state(r['state'], True)['review_profile'], 'strict')
     def test_partial_preview_preserves_authoring_and_resource_stability(self):
         self.prepared();before=self.sp.read_bytes();a=self.args();a.pages='1';r=pl.build(a)
         self.assertEqual(r['pages'],[1]);self.assertEqual(self.sp.read_bytes(),before)

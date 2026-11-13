@@ -4,7 +4,7 @@
 
 ## 先识别再命名
 
-检查封面、前几页、页脚及出版信息页，识别实际标题、文献编号和版本。元数据及下载文件名只作线索。在 state.document.naming 或任务命名清单中保存完整标题、选用标题、中文标题、编号、版本、语言、适用的厂商、文件角色及页码/证据说明。对于已经验收的历史状态，新增命名依据保存在迁移清单中，避免改变已绑定指纹的内容。
+检查封面、前几页、页脚及出版信息页，识别实际标题、文献编号和版本。元数据及下载文件名只作线索。在 state.document.naming 或任务命名清单中保存完整标题、选用标题、中文标题、编号、版本、语言、适用的厂商、文件角色及页码/证据说明。
 
 使用实际原文语言的标题，包括非英文标题，不额外生成英文中间标题。保留原有大小写及属于标题的型号。整理换行及已确认的断行连字符。过长副标题可以省略，但证据中保留完整标题；不得静默删减主标题含义。
 
@@ -37,14 +37,14 @@
 
 scripts/workflow.py 提供 document_filename(source_title, chinese_title, document_id=None, *, role, version=None, source_is_chinese=False, paper=False, vendor=None, english_document_id=None)。role 必填，可选 original、generated-translation 或 official-chinese。中文原文设置 source_is_chinese=True，论文设置 paper=True，vendor='TI' 启用 TI 编号规范化。函数只格式化已确认的元数据并返回一个文件名，不识别文档或执行改名。
 
-TI 包装入口 ti_filename(english_title, chinese_title, document_id=None, *, role, english_document_id=None, version=None) 也改为必须提供 role。旧的隐式角色调用及 official_chinese 布尔参数需改为显式角色。缺失角色会报错，不静默选择后缀。
+TI 包装入口 ti_filename(english_title, chinese_title, document_id=None, *, role, english_document_id=None, version=None) 同样需要显式 role。
 
 ~~~python
 from workflow import document_filename
-original = document_filename('Eight Hints for Better Scope Probing',
-    '改善示波器探测的八项提示', '5989-7894EN', role='original')
-translated = document_filename('Eight Hints for Better Scope Probing',
-    '改善示波器探测的八项提示', '5989-7894EN', role='generated-translation')
+original = document_filename('Visitor Information Guide',
+    '访客信息指南', 'DOC-012A', role='original')
+translated = document_filename('Visitor Information Guide',
+    '访客信息指南', 'DOC-012A', role='generated-translation')
 ~~~
 
 规范化空白并最小替换 Windows 非法字符：英文冒号替换为两侧带空格的连字符，斜杠替换为全角斜杠，去除结尾空格和点。辅助函数拒绝 Windows 保留文件名及超过 255 个 UTF-16 代码单元的名称，不执行截断。Agent 还须检查完整路径长度、实际工具支持及目标冲突。
@@ -57,6 +57,6 @@ Windows 进程启动可能限制工作目录长度，即使文件读写已经支
 
 拟定名称与实际文件角色矛盾、编号来源或版本不明确、或必须缩短主标题时，先说明具体冲突并询问，再决定名称。问题解决后在已说明的范围内使用答复。未经明确要求，不将一次任务特例升级为长期技能规则。
 
-移动前保存精确路径与指纹，检查冲突及实际解析的目录边界，必要时用隔离样例验证长路径支持。逐组移动并持久保存断点，不使用广泛通配符改名或静默覆盖。更新当前恢复路径、重新生成说明、队列和交付索引。按照 [state-and-qc.zh-CN.md](state-and-qc.zh-CN.md) 保留原始审计/查看记录字节及每次历史迁移快照。核对 PDF 字节不变，重建仅在独立副本中测试。明确识别的历史记录不得纳入批量路径替换。
+在 prepare 前完成已批准的改名。移动前记录路径和 SHA-256，核对冲突、目录边界和长路径支持。逐组移动并核对 PDF 字节。若本次任务的输入路径在构建后变化，按 [状态与审核证据](state-and-qc.zh-CN.md) 重新构建并检查。
 
 保留既有译稿，除非明确要求删除精确目标。命名规则不授权自动删除旧译稿。

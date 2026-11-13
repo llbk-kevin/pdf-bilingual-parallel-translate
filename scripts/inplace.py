@@ -11,7 +11,7 @@ import re
 import sys
 from pathlib import Path
 import pymupdf as fitz
-from workflow import digest, canonical, resolve, pagination_items
+from workflow import digest, canonical, resolve, pagination_items, state_header_error
 
 METHODS = {'replace', 'cover', 'preserve', 'unresolved'}
 
@@ -127,18 +127,20 @@ def text_inventory(page, number):
     # exclude them from coverage, since they carry no visible semantic content.
     return glyphs, blocks
 
-def extract(source, state_path, pages='all', overwrite=False, password=None):
+def extract(source, state_path, pages='all', overwrite=False, password=None, *, profile='practical'):
     source, state_path = Path(source).resolve(), Path(state_path).resolve()
     if source == state_path:
         raise ValueError('State must not overwrite the original')
     if state_path.exists() and not overwrite:
         raise ValueError('State exists; use --overwrite explicitly')
+    if profile not in ('practical', 'strict'):
+        raise ValueError('Expected practical or strict review profile')
     doc = open_source(source, password)
     try:
         selected = selected_pages(pages, len(doc))
         state = {'schema_version': 3, 'document': {'source_kind': 'original'},
             'source': {'path': relative(source,state_path.parent), 'sha256':digest(source), 'page_count':len(doc)},
-            'layout': {'mode':'inplace', 'fonts':[], 'body_size_pt':10,
+            'layout': {'mode':'inplace', 'review_profile':profile, 'fonts':[], 'body_size_pt':10,
                        'coordinate_system':'visible-page-top-left-points',
                        'pagination_strategy': None}, 'glossary':[], 'issues':[], 'pages':[], 'qc':{}}
         for output_number, n in enumerate(selected, 1):
@@ -256,8 +258,10 @@ def validate_page(page, fresh, final=False):
     return errors
 
 def validate_state(state, source, password=None, final=False):
-    if state.get('schema_version') != 3 or state.get('layout',{}).get('mode') != 'inplace':
-        return [{'code':'invalid_inplace_state','detail':'Expected v3 inplace state; use example_build.py explicitly for v1/v2'}]
+    problem = state_header_error(state)
+    if problem:
+        code, detail = problem
+        return [{'code': code, 'detail': detail}]
     errors = []
     if digest(source) != state['source']['sha256']:
         return [{'code':'source_fingerprint_changed'}]
@@ -891,11 +895,12 @@ def main(argv=None):
         p=sub.add_parser(command);p.add_argument('--source',required=True);p.add_argument('--state',required=True)
         p.add_argument('--pages',default='all');p.add_argument('--overwrite',action='store_true');p.add_argument('--password-env')
         if command=='build':p.add_argument('--output',required=True)
+        else:p.add_argument('--profile', choices=('practical', 'strict'), default='practical')
     a=parser.parse_args(argv)
     password=os.environ.get(a.password_env) if a.password_env else None
     try:
         if a.password_env and password is None:raise ValueError('Password environment variable unavailable')
-        if a.command=='extract':result=extract(a.source,a.state,a.pages,a.overwrite,password)
+        if a.command=='extract':result=extract(a.source,a.state,a.pages,a.overwrite,password,profile=a.profile)
         else:result=build(a.source,a.state,a.output,a.pages,a.overwrite,password)
         print(json.dumps(result,ensure_ascii=False));return 0
     except Exception as exc:

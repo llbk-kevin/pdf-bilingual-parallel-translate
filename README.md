@@ -2,7 +2,7 @@
 
 ## 安装
 
-首次安装时，将仓库克隆到工具支持的技能目录，目录名为 pdf-bilingual-parallel-translate；在 Python 3.10+ 环境安装 requirements.txt，并用该环境运行 scripts/pipeline.py。prepare 时指定本机可用中文字体，仓库不附带字体；输出保存在技能目录之外。已有 CC Switch 安装必须保留托管链接，更新解析后的本体，不替换入口。命令与输入要求见 [中文操作说明](references/practical.zh-CN.md)。译文与实际视觉检查由模型完成，脚本不自动翻译，也不认证语义准确性。
+首次安装时，将仓库克隆到工具支持的技能目录，目录名为 pdf-bilingual-parallel-translate；在 Python 3.10+ 环境安装 requirements.txt，并用该环境运行 scripts/pipeline.py。prepare 时指定本机可用中文字体，仓库不附带字体；输出保存在技能目录之外。已有 CC Switch 安装必须保留托管链接，更新解析后的本体，不替换入口。命令与输入要求见 [中文操作说明](references/practical.zh-CN.md)。模型负责翻译与逐页查看，脚本负责构建与检查。
 
 ## 工作约定
 
@@ -10,7 +10,7 @@
 
 默认 **practical 阅读模式**：原文完整、请求页面齐全、中文正常、主要图文可读、PDF 可独立打开。零星措辞、断行、小残影及美观差异记录后交付，不全面校订术语。公式、数值、型号和引脚名直接复用，不依据乱码猜测。已知且可安全修正的错误随当前批次处理。
 
-仅明确要求精细验收时用 **strict**。旧状态缺少模式字段仍按严格语义，不改写历史验收。均不设置固定时间、token 或轮次上限。为阻断问题及有证据的流程缺陷继续迭代，不因新增美观建议返工。
+仅明确要求精细验收时用 **strict**。状态须记录所选模式。均不设置固定时间、token 或轮次上限。为阻断问题及有证据的流程缺陷继续迭代，不因新增美观建议返工。
 
 ## 成品要求
 
@@ -49,6 +49,6 @@
 
 完整接口见 [中文操作说明](references/practical.zh-CN.md)。每份文档在同名工作文件夹内保存 recovery/ 和 work/，仅向外层发布验收 PDF。用户 PDF、字体及测试产物不进技能仓库。不要自动删除恢复目录，否则丢失编辑和审核证据。
 
-低层 inplace.py、pdf_tools.py 继续支持，严格/手工细节见 inplace、state-and-qc、building 的配对参考。verify 已生成匹配证据时不重复 audit 与 render。v1/v2 保持原行为；example_build.py 仅显式旧兼容。
+低层 inplace.py、pdf_tools.py 继续支持，严格/手工细节见 inplace、state-and-qc、building 的配对参考。verify 已生成匹配证据时不重复 audit 与 render。状态统一使用 v3。
 
-保留原始 144 DPI 测量（RGB 容差 16、变化比例 0.001）。阅读模式允许保留已查看右侧差异，原文损坏、字体失败、范围错误仍阻断。流程评估记录阶段耗时、工具/构建/渲染次数及返工原因，无法取得 token 则标明，不将估算当实测。
+保留原始 144 DPI 测量（RGB 容差 16、变化比例 0.001）。阅读模式允许保留已查看右侧差异，原文损坏、字体失败、范围错误仍阻断。

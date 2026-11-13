@@ -19,7 +19,7 @@ import pypdfium2 as pdfium
 import pypdfium2.raw as pdfium_c
 from PIL import Image, ImageChops, ImageDraw
 
-from workflow import check_fonts, page_fingerprint, validate_reviews, validate_relocation, pagination_items
+from workflow import check_fonts, page_fingerprint, validate_reviews, pagination_items, require_state, state_header_error
 
 SCHEMA_VERSION = 2
 _PASSWORD = None
@@ -550,6 +550,8 @@ def small_text_roles(chars, mapping):
 
 def audit(source, output, state=None, dpi=144, pixel_tolerance=16,
           max_changed_ratio=0.001, max_pixels=40000000, render_dir=None):
+    if state is not None:
+        require_state(state)
     render_rows=[]
     sr, outreader = checked_reader(source), checked_reader(output)
     sm, om = pdf_metadata(source, sr, False), pdf_metadata(output, outreader, False)
@@ -558,7 +560,7 @@ def audit(source, output, state=None, dpi=144, pixel_tolerance=16,
     def issue(severity, code, page=None, **extra):
         findings.append({"severity": severity, "code": code, **({"page": page} if page else {}), **extra})
 
-    subset = bool(state and state.get("schema_version") == 3 and len(state["pages"]) != sm["page_count"])
+    subset = bool(state and len(state["pages"]) != sm["page_count"])
     if (len(state["pages"]) if subset else sm["page_count"]) != om["page_count"]:
         issue("error", "page_count_changed")
     if sm["resources"]["errors"] or om["resources"]["errors"]:
@@ -667,7 +669,7 @@ def audit(source, output, state=None, dpi=144, pixel_tolerance=16,
             if not pixels["passed"]:
                 issue("error", "source_visual_changed", i+1, comparison=pixels)
             right_comparison=None
-            if state and state.get('schema_version')==3:
+            if state:
                 right_comparison,right_diff=compare_right_outside_regions(si,op,m,dpi,pixel_tolerance,max_pixels)
                 if not right_comparison['passed']:
                     issue('error','right_graphics_changed_outside_recorded_regions',i+1,comparison=right_comparison)
@@ -744,9 +746,8 @@ def audit(source, output, state=None, dpi=144, pixel_tolerance=16,
 
 
 def content_hash(state):
-    keys = ["source", "layout", "glossary", "pages", "issues"]
-    if state.get("schema_version") in (2, 3):
-        keys.append("document")
+    require_state(state)
+    keys = ["source", "layout", "glossary", "pages", "issues", "document"]
     return canonical_hash({k: state.get(k) for k in keys})
 
 
@@ -760,18 +761,20 @@ def resolve_state_file(base, value):
 def check_state(state_path, final=False):
     state_path = Path(state_path)
     state = read_json(state_path)
-    if not isinstance(state,dict):
-        raise ValueError("State must be a JSON object.")
+    problem = state_header_error(state)
+    if problem:
+        code, detail = problem
+        return {"schema_version": 2, "tool": "pdf-bilingual-parallel-translate/check-state",
+                "state_version": state.get("schema_version") if isinstance(state, dict) else None,
+                "errors": [{"code": code, "detail": detail}], "warnings": [],
+                "valid": False, "mechanical_checks_passed": False,
+                "final_checks": final, "ready_for_delivery": False}
     errors, warnings = [], []
     base = state_path.parent
 
     def error(code, **extra):
         errors.append({"code": code, **extra})
 
-    if state.get("schema_version") not in (1, 2, 3):
-        error("unsupported_state_schema")
-    if not isinstance(state.get("layout"), dict):
-        error("missing_layout")
     if not isinstance(state.get("glossary"), list):
         error("missing_glossary")
     for term in state.get("glossary", []) if isinstance(state.get("glossary"),list) else []:
@@ -893,31 +896,34 @@ def check_state(state_path, final=False):
                 error("missing_verbatim_reason",page=n,block=bid)
         if collections.Counter(expected) != collections.Counter(actual_ids):
             error("block_inventory_mismatch",page=n)
-    sample = state.get('schema_version')==3 and state.get('document',{}).get('delivery_scope')=='sample'
-    declared = state.get('document',{}).get('selected_source_pages',[]) if sample else list(range(1,count+1))
+    document = state.get('document')
+    if not isinstance(document, dict):
+        document = {}
+    sample = document.get('delivery_scope')=='sample'
+    declared = document.get('selected_source_pages',[]) if sample else list(range(1,count+1))
     if sample and (not isinstance(declared,list) or not declared or any(type(n) is not int or not 1<=n<=count for n in declared) or declared!=sorted(set(declared))):
         error('invalid_sample_selection');declared=[]
-    if layout.get('review_profile','strict') not in ('practical','strict'):error('invalid_review_profile')
-    selected_count = len(pages) if state.get("schema_version") == 3 and not final else len(declared)
-    if (state.get("schema_version") != 3 or final) and sorted(n for n in page_numbers if type(n) is int) != declared:
+    selected_count = len(pages) if not final else len(declared)
+    if final and sorted(n for n in page_numbers if type(n) is int) != declared:
         error("source_page_coverage_incomplete")
     if sorted(n for n in output_numbers if type(n) is int) != list(range(1,selected_count+1)):
         error("output_page_mapping_not_one_to_one")
-    if state.get("schema_version") in (2, 3):
-        if not isinstance(state.get("document"), dict) or state["document"].get("source_kind") not in ('original', 'english-original', 'official-chinese', 'generated-translation'):
-            error("missing_document_identity")
-        for page in pages:
-            block_ids = [b.get("id") for b in page.get("blocks", []) if isinstance(b, dict)]
-            if page.get("reading_order") != block_ids:
-                error("reading_order_missing_or_inconsistent", page=page.get("source_page"))
-            ctx = page.get("context_pages", [])
-            if not isinstance(ctx, list) or any(type(n) is not int or not 1 <= n <= count for n in ctx):
-                error("invalid_context_pages", page=page.get("source_page"))
+    if document.get("source_kind") not in ('original', 'english-original', 'official-chinese', 'generated-translation'):
+        error("missing_document_identity")
+    for page in pages:
+        if not isinstance(page, dict):
+            continue
+        block_ids = [b.get("id") for b in page.get("blocks", []) if isinstance(b, dict)]
+        if page.get("reading_order") != block_ids:
+            error("reading_order_missing_or_inconsistent", page=page.get("source_page"))
+        ctx = page.get("context_pages", [])
+        if not isinstance(ctx, list) or any(type(n) is not int or not 1 <= n <= count for n in ctx):
+            error("invalid_context_pages", page=page.get("source_page"))
     try:
         pagination_items(state)
     except (AttributeError, KeyError, TypeError, ValueError) as exc:
         error("invalid_pagination", detail=str(exc))
-    if state.get("schema_version") == 3 and actual_source_sha:
+    if actual_source_sha and not errors:
         from inplace import validate_state
         errors.extend(validate_state(state, source, _PASSWORD, final))
     computed_hash = content_hash(state)
@@ -939,12 +945,8 @@ def check_state(state_path, final=False):
     if not isinstance(qc,dict):
         error("invalid_qc"); qc = {}
     if qc:
-        if "migration" in state or qc.get("content_sha256") != computed_hash:
-            if validate_relocation(state, state_path, content_hash):
-                warnings.append({"code":"verified_path_only_migration",
-                                 "note":"Original review retained; no claim of new semantic review."})
-            else:
-                error("stale_qc_content")
+        if qc.get("content_sha256") != computed_hash:
+            error("stale_qc_content")
         if qc.get("source_sha256") != actual_source_sha:
             error("stale_qc_source")
         if qc.get("output_sha256") != actual_output_sha or actual_output_sha is None:
@@ -974,7 +976,7 @@ def check_state(state_path, final=False):
                 error("unresolved_issue",detail=issue)
             elif issue.get("status")=="retained" and not issue.get("note"):
                 error("retained_issue_without_explanation",detail=issue)
-    if final and state.get("schema_version") in (2, 3):
+    if final:
         errors.extend(validate_reviews(state, state_path))
         try:
             font_report_path = resolve_state_file(base, qc["font_report"]["path"])
@@ -988,14 +990,13 @@ def check_state(state_path, final=False):
             error("font_check_unavailable", detail=str(exc))
     return {"schema_version":2,"tool":"pdf-bilingual-parallel-translate/check-state",
             "state_version":state.get("schema_version"),
-            "review_profile":layout.get("review_profile","strict"),
+            "review_profile":layout["review_profile"],
             "delivery_scope":"sample" if sample else "full",
-            "review_evidence_level":"page-bound-v3" if state.get("schema_version")==3 else "page-bound-v2" if state.get("schema_version")==2 else "legacy-attestation-v1",
+            "review_evidence_level":"page-bound-v3",
             "quality_certified":False, "mechanical_checks_passed":not errors,
             "computed_content_sha256":computed_hash, "errors":errors,"warnings":warnings,
             "valid":not errors,"final_checks":final,"ready_for_delivery":final and not errors,
-            "note":"Checks consistency and recorded review coverage. It cannot attest that a "
-                   "person/model actually inspected pages or that translations are correct."}
+            "note":"Checks state consistency and recorded page review evidence."}
 
 
 def save_png(image, path, overwrite=False):
@@ -1009,9 +1010,9 @@ def save_png(image, path, overwrite=False):
 
 
 def render_command(args):
+    state = require_state(read_json(args.state)) if args.state else None
     doc = open_document(args.pdf)
     source = open_document(args.source) if args.source else None
-    state = read_json(args.state) if args.state else None
     mapping = page_mapping(state,len(source)) if source else {}
     by_output = {int(v["output_page"])-1:v for v in mapping.values()}
     rows=[]
@@ -1040,7 +1041,7 @@ def render_command(args):
                     dn=f"page-{i+1:04d}-difference.png"
                     save_png(diff,Path(args.out)/dn,args.overwrite)
                     row["difference_image"]=dn;diff.close()
-                if state and state.get('schema_version')==3:
+                if state:
                     right_comparison,right_diff=compare_right_outside_regions(sim,page,m,args.dpi,args.pixel_tolerance,args.max_pixels)
                     row['right_outside_regions']=right_comparison
                     if right_diff:

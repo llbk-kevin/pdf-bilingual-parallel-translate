@@ -1,6 +1,5 @@
 """Fixed-pane and explicitly confirmed pagination regressions; generated PDF fixtures only."""
 import copy
-import io
 import json
 import unittest
 from pathlib import Path
@@ -12,10 +11,11 @@ t, w, builder = fixture.t, fixture.w, fixture.builder
 
 
 class EqualPanesAndPagination(unittest.TestCase):
-    setUp = fixture.Upgrade.setUp
-    tearDown = fixture.Upgrade.tearDown
-    save = fixture.Upgrade.save
-    built = fixture.Upgrade.built
+    setUp = fixture.Workflow.setUp
+    tearDown = fixture.Workflow.tearDown
+    save = fixture.Workflow.save
+    built = fixture.Workflow.built
+    extract = fixture.Workflow.extract
 
     def labels(self, strategy, texts):
         self.state['layout']['pagination_strategy'] = strategy
@@ -29,31 +29,15 @@ class EqualPanesAndPagination(unittest.TestCase):
         sizes = [(240,300), (360.25,240.125)]
         c = canvas.Canvas(str(self.source), invariant=1)
         for width,height in sizes:
-            c.setPageSize((width,height)); c.drawString(20,height-30,'Source'); c.showPage()
+            c.setPageSize((width,height)); c.drawString(20,height-30,'Source example'); c.showPage()
         c.save()
-        self.state['source']['sha256'] = w.digest(self.source)
-        del self.state['layout']['pane_width_pt']
-        for page,(width,height) in zip(self.state['pages'],sizes):
-            page['source_rect'] = [0,0,width,height]
-            page['blocks'][0]['target_bbox'] = [width+20,30,2*width-20,100]
-        self.save(self.state)
+        self.extract()
         r,s = self.built()
         actual = [(float(p.mediabox.width),float(p.mediabox.height)) for p in PdfReader(r['output']).pages]
         self.assertEqual(actual,[(2*a,b) for a,b in sizes])
         audit = t.audit(self.source,r['output'],s,dpi=72)
         self.assertTrue(audit['mechanical_pass'],audit['findings'])
         self.assertTrue(all(p['pane_geometry']['passed'] for p in audit['pages']))
-
-    def test_legacy_width_cannot_widen_or_narrow(self):
-        for width in (260,220,float('nan'),True):
-            with self.subTest(width=width):
-                self.state['layout']['pane_width_pt'] = width; self.save(self.state)
-                with self.assertRaisesRegex(ValueError,'pane width must equal'):
-                    self.built()
-                self.assertFalse((self.root/'output.pdf').exists())
-        self.state['layout']['pane_width_pt'] = 240.05; self.save(self.state)
-        r,s = self.built()
-        self.assertEqual(float(PdfReader(r['output']).pages[0].mediabox.width),480)
 
     def test_audit_rejects_unequal_size_and_displaced_source(self):
         r,s = self.built()
@@ -86,12 +70,22 @@ class EqualPanesAndPagination(unittest.TestCase):
             self.assertEqual(result['pages'][0]['pane_geometry']['passed'],expected)
 
     def test_source_labels_preserve_unnumbered_cover_and_roman_page(self):
+        c = canvas.Canvas(str(self.source), pagesize=(240, 300), invariant=1)
+        c.drawString(20, 260, 'Cover title'); c.showPage()
+        c.drawString(20, 260, 'Contents title'); c.drawString(20, 20, 'iv'); c.showPage()
+        c.save()
+        self.extract()
+        for page in self.state['pages']:
+            page['blocks'][0]['translation'] = '中文'
+        label = self.state['pages'][1]['blocks'][-1]
+        label.update(method='preserve', translation='iv', status='verbatim', reason='Printed page label')
         self.labels('preserve-source',['','iv'])
         r,s=self.built()
         runs=w.load(r['assignments'])['runs']
-        self.assertFalse(any(x['block']=='p1-number' for x in runs))
-        self.assertEqual(''.join(x['text']for x in runs if x['block']=='p2-number'),'iv')
-        self.assertIn('iv',PdfReader(r['output']).pages[1].extract_text())
+        self.assertFalse(any(x['block'] in ('p1-number', 'p2-number') for x in runs))
+        pages = PdfReader(r['output']).pages
+        self.assertNotIn('iv', pages[0].extract_text())
+        self.assertEqual(pages[1].extract_text().count('iv'), 2)
         self.assertTrue(w.check_fonts(r['state'],r['assignments'])['mechanical_pass'])
         self.assertTrue(t.check_state(r['state'])['valid'])
 
@@ -113,7 +107,7 @@ class EqualPanesAndPagination(unittest.TestCase):
     def test_inconsistent_labels_and_invalid_geometry_are_rejected(self):
         self.labels('physical-total',['1/2','2/2'])
         valid=copy.deepcopy(self.state)
-        changes=[{'text':'1/4'},{'source_label':'i'},{'id':'p1-body'},
+        changes=[{'text':'1/4'},{'source_label':'i'},{'id':self.state['pages'][0]['blocks'][0]['id']},
                  {'target_bbox':[230,0,260,20]},{'target_bbox':[400,5,460,5]},
                  {'font_size':0},{'target_bbox':[400,5,401,6]}]
         for fields in changes:

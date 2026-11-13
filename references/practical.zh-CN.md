@@ -7,12 +7,12 @@
 使用具备 requirements.txt 的现有或隔离 Python，查找许可允许的中文 TTF/OTF，必要时登记后备字体。路径加引号。在文档工作目录运行：
 
 ~~~text
-python SKILL/scripts/pipeline.py prepare --source ORIGINAL.pdf --state recovery/state.json --pages 1,16,34-36 --font CHINESE.ttf --profile practical
+python SKILL/scripts/pipeline.py prepare --source ORIGINAL.pdf --state recovery/state.json --pages 1,3-5 --font CHINESE.ttf --profile practical
 ~~~
 
 --pages 为原文物理页号，从 1 开始，默认 all。选页明确标为 sample：输出连续编号，source_page 保留源页号；样本外书签及链接记为省略，不重定向。整本仍要求完整源页。字体以路径和哈希登记，重建需可用；PDF 内嵌实际用字子集，阅读不需外部字体。
 
-prepare 冻结脚本到状态旁，写 inventory.json 与 preflight.json。后续包括 verify/review/publish 均使用冻结入口，不把命令变量改回 SKILL/scripts/pipeline.py。仓库更新不会更新已有恢复包；维护确需新脚本时建独立版本包，保留历史。先读简洁 inventory，不反复读巨大的字形状态。source_group/source_line 辅助段落归属但不决定阅读顺序。可用 pdf_tools.py render ORIGINAL.pdf --pages SELECTION --out work/source 查看原页，再决定覆盖与公式。风险仅为提示，不是自动翻译结论。公式密集提示属于非阻断启发式，编码异常和实际可见原文优先。
+prepare 冻结脚本到状态旁，写 inventory.json 与 preflight.json。后续包括 verify/review/publish 均使用冻结入口，不把命令变量改回 SKILL/scripts/pipeline.py。维护时如需替换当前任务的脚本，另建恢复目录。先读简洁 inventory，不反复读巨大的字形状态。source_group/source_line 辅助段落归属但不决定阅读顺序。可用 pdf_tools.py render ORIGINAL.pdf --pages SELECTION --out work/source 查看原页，再决定覆盖与公式。风险仅为提示，不是自动翻译结论。公式密集提示属于非阻断启发式，编码异常和实际可见原文优先。
 
 批量 edits.json 原生段落示例：
 
@@ -25,12 +25,12 @@ prepare 冻结脚本到状态旁，写 inventory.json 与 preflight.json。后�
 图片/转曲新覆盖示例，坐标为可见页左上角 PDF 点：
 
 ~~~json
-{"blocks":[{"page":34,"id":"scan-note-1","method":"cover","kind":"text","source_text":"Visible English label","source_bbox":[10,20,90,32],"cover_bbox":[10,20,90,32],"allowed_bbox":[10,20,90,32],"translation":"中文说明","font_size":8,"reason":"局部图片标签，已对照图纸检查边界"}],"inventory_reviewed_pages":[34]}
+{"blocks":[{"page":3,"id":"scan-note-1","method":"cover","kind":"text","source_text":"Visible English label","source_bbox":[10,20,90,32],"cover_bbox":[10,20,90,32],"allowed_bbox":[10,20,90,32],"translation":"中文说明","font_size":8,"reason":"局部图片标签，已对照图纸检查边界"}],"inventory_reviewed_pages":[3]}
 ~~~
 
 若从原文渲染图量坐标，在编辑 JSON 顶层加 "source_render_index":"work/source/index.json"（相对编辑 JSON）。该批所有 source_bbox/cover_bbox/allowed_bbox 均按原始渲染图片像素输入，apply 核对源指纹、图片尺寸并按记录 DPI 换算。不从缩放后的查看器估算倍率，不在同批混用点和像素；未提供该字段仍是 PDF 点。双语图或裁剪图不能用作原文索引。
 
-仅在已核实的对应位置添加浮层。practical 只要求中文可读、原文对应关系清楚，不要求完全擦除英文、边界精确或背景同色；保留小残字，不为此扩大框或重复重建。可选 cover_fill 和 cover_text_color 为 [0,1] RGB 三元组，缺省兼容原白底黑字。选定一种可读样式即可，不做自动配色。照片上的型号、板卡丝印及微小软件界面标签，在已有必要中文图注或解释时可保留。allowed_bbox 扩展必须用 expansion_reason 说明邻接空白，不跨表格格子。apply 也接受按源页键的 context_pages、link_overrides、glossary、issues。逐条更正优先使用 link_overrides_patch，例如 {"link_overrides_patch":{"1":[{"source_link":0,"target_block":"paragraph-1","target_text":"设计","occurrence":2}]}}。按 source_link 新增或替换，保留其他链接；旧 link_overrides 仍替换整页列表（空列表清空），同页不能同时使用两种接口。occurrence 是 target_block 内匹配的从 1 开始序号，重复锚点须明确指定。link_overrides 的 source_link 按原页 /Link 批注从 0 起算，0 是首个链接，不是从 1 开始的页码；对照原始可点击区域检查生成的 page.link_mappings。链接文字翻译后用 target_block 加 target_text 指向相应文本。术语表和布局为共享依赖。practical 默认本页及声明上下文依赖，strict 未确认上下文时仍沿用全书依赖。改 authoring state 不覆盖旧候选和审核史。
+仅在已核实的对应位置添加浮层。practical 只要求中文可读、原文对应关系清楚，不要求完全擦除英文、边界精确或背景同色；保留小残字，不为此扩大框或重复重建。可选 cover_fill 和 cover_text_color 为 [0,1] RGB 三元组，缺省为白底黑字。选定一种可读样式即可，不做自动配色。照片上的型号、板卡丝印及微小软件界面标签，在已有必要中文图注或解释时可保留。allowed_bbox 扩展必须用 expansion_reason 说明邻接空白，不跨表格格子。apply 也接受按源页键的 context_pages、link_overrides、glossary、issues。逐条更正优先使用 link_overrides_patch，例如 {"link_overrides_patch":{"1":[{"source_link":0,"target_block":"paragraph-1","target_text":"设计","occurrence":2}]}}。按 source_link 新增或替换，保留其他链接；link_overrides 仍替换整页列表（空列表清空），同页不能同时使用两种接口。occurrence 是 target_block 内匹配的从 1 开始序号，重复锚点须明确指定。link_overrides 的 source_link 按原页 /Link 批注从 0 起算，0 是首个链接，不是从 1 开始的页码；对照原始可点击区域检查生成的 page.link_mappings。链接文字翻译后用 target_block 加 target_text 指向相应文本。术语表和布局为共享依赖。practical 默认本页及声明上下文依赖，strict 未确认上下文时使用全书依赖。改 authoring state 不覆盖旧候选和审核史。
 
 ~~~text
 python recovery/pipeline.py apply --state recovery/state.json --edits edits.json
@@ -39,7 +39,7 @@ python recovery/pipeline.py build --state recovery/state.json
 
 apply 返回 preview_argv 参数数组，使用当前冻结入口、authoring state 和变化页。直接传给子进程 API，不拼成未转义的 shell 命令。局部调整使用该预览，最终完整候选省略 --pages。后续 build 省略 --source，冻结状态已经标识源文件；覆盖路径不一致时报告期望/传入路径和传入文件是否存在，不代表可以修改源指纹。
 
-build 返回 PDF、生成状态及字形运行记录。verify/review/publish 必须用返回的生成状态。调整可 --pages 16，但单页候选不能通过五页样本最终验收。同类冲突从 last-error.json 集中修复后重建。链接映射错误按选定页集中写入 link_conflicts，包含 page、source_link 和 source_bbox，一批修完，不为逐条报错重复全本构建。降低字号时同时检查 font_size 和 font_size_min，下限不能高于指定字号。font_size_min 空或缺省为固定字号，不为强制通过不断缩小到不可读。
+build 返回 PDF、生成状态及字形运行记录。verify/review/publish 必须用返回的生成状态。使用 --pages 3 局部预览，交付时构建完整声明范围。同类冲突从 last-error.json 集中修复后重建。链接映射错误按选定页集中写入 link_conflicts，包含 page、source_link 和 source_bbox，一批修完，不为逐条报错重复全本构建。降低字号时同时检查 font_size 和 font_size_min，下限不能高于指定字号。font_size_min 空或缺省为固定字号，不为强制通过不断缩小到不可读。
 
 ## 集中检查与真实记录
 
@@ -59,11 +59,13 @@ verify 检查状态、字体、审计，一次生成原文、输出及相关差�
 python recovery/pipeline.py review --state work/RETURNED.state.json --observations observations.json
 ~~~
 
-有覆盖的页会由 verify 列出 cover_review_needed。对照原图检查这些区域，特别是其下表格数值、引线和焊盘：像素审计会屏蔽声明覆盖区，不能证明覆盖安全。实际比较后，在该页观察中设置 "covers_checked":true，自动登记覆盖块 ID，不手写逐块证明。覆盖可能遮住图纸时，仅浏览全页不足以确认。相邻数字看不清时，只放大该局部一次，核对左右具体数值和行对应后再填 covers_checked。DPI 换算正确不等于量到了正确标签；不能为清除残字把标签框扩进数值列。
+verify 列出 cover_review_needed。逐处对照原图与右侧浮层，确认位置对应，表格数值、引线及关键图形可读。局部细节看不清时放大该处。完成比较后在该页观察中设置 "covers_checked":true，由脚本登记覆盖块 ID。
 
 不可预填观察，不手改 qc。渲染不会生成已查看记录。retain_right_difference 仅在 practical 下处理当前精确匹配的 right_graphics_changed_outside_recorded_regions，不能豁免原文损坏、字体、缺页或其他错误，更不能用于主要图形遮挡。strict 仍要求原始审计通过。
 
 编辑重建后 verify --previous-state OLD_ACCEPTED.state.json，仅像素、渲染设置及页依赖完全相同才复用。保留原查看者、时间和证据；复用页上精确匹配的已保留审计决定及页说明一并沿用，不豁免变化后的发现。只复查变更/依赖页；最终完整候选仍自动检查。共享字体、布局、上下文确实影响其他页时失效，不编辑指纹伪造复用。
+
+review 返回 observations_saved、saved_pages、reviewed_pages 和 review_needed。查看 ready 和 errors 确认能否交付。局部审核可通过 verify --previous-state 复用。
 
 ## 交付与维护
 
@@ -71,9 +73,6 @@ python recovery/pipeline.py review --state work/RETURNED.state.json --observatio
 python recovery/pipeline.py publish --state work/RETURNED.state.json --output ACCEPTED.pdf
 ~~~
 
-publish 将交付说明.md 写入工作文件夹，将 publication.json 写在已验收状态旁，并返回相应路径和 task_dir；只向 --output 复制已验收 PDF。说明包含源/输出哈希、资源增量、范围、保留问题及恢复方法。工作文件夹从状态所在的 work/、recovery/ 或 recovery-vN/ 推导；其他布局通过 publish --task-dir DIR 明确指定包含状态的工作文件夹。复制前检查说明、记录及成品目标冲突，替换已有目标须 --overwrite。样本的源大小是完整原文件，并明确不是同页压缩比例。恢复冒烟检查冻结源、字体、构建器和状态一致性；独立重建和重复资源稳定性主要在维护回归，不每次翻译重复。
+publish 将交付说明.md 写入工作文件夹，将 publication.json 写在已验收状态旁，并返回相应路径和 task_dir；只向 --output 复制已验收 PDF。说明包含源/输出哈希、资源增量、范围、保留问题及恢复方法。工作文件夹从状态所在的 work/、recovery/ 或 recovery-vN/ 推导；其他布局通过 publish --task-dir DIR 明确指定包含状态的工作文件夹。复制前检查说明、记录及成品目标冲突，替换已有目标须 --overwrite。样本的源大小是完整原文件，并明确不是同页压缩比例。普通交付核对冻结依赖。需要重建时执行返回的 recovery_argv，PDF 及伴随文件写入任务目录的 work/rebuild/accepted.rebuilt.pdf。
 
-pipeline-events.jsonl 记录命令耗时和结果，模型翻译/查看时间及工具次数另记。机器日志不代表思考 token。不同规模任务不承诺加速比例。完整错误写在 --state 旁的 last-error.json，失败摘要同时输出 stdout 和 stderr。子进程失败时第一次就捕获退出码及两个输出流；包装器仅显示 Command failed 时，读取已有 last-error.json，不为了获取诊断原样重跑构建；现有文件需显式 --overwrite。真实例外超出入口能力时保留低层严格/手工工具。
-
-
-review 用 observations_saved、saved_pages、reviewed_pages 和 review_needed 明确确认已保存的查看记录。退出码0表示记录保存成功，不代表可以最终交付；仍须查看 ready 和 errors。局部审核可通过 verify --previous-state 复用，publish 仍拒绝覆盖不完整的候选。publish 另返回 recovery_argv，引用已验收状态及其实际冻结入口，兼容带版本号的恢复目录；按需执行时，PDF 及配套文件写入工作文件夹的 work/rebuild/accepted.rebuilt.pdf；publish 不自动执行该命令。
+pipeline-events.jsonl 记录各命令的耗时和结果。失败时保留退出码、stdout 和 stderr，再读取 --state 旁的 last-error.json 定位问题。现有目标需显式 --overwrite。

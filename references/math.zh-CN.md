@@ -10,4 +10,4 @@
 
 公式与相邻说明分别建块。放大原文，核对符号、指数、正负号、单位及限定条件。选用变量译名之前先读定义。将原文中出现的上下界、条件和正反比措辞列为明确语义核对项；数字字符串匹配仅是线索。
 
-原文疑似错误时保留其字面主张并在附近简短提示。记录 page、block、source_quote、concern 和 treatment；suggested_correction 与 evidence 为成对的可选项。例如文字称正比而公式为反比，保留文字主张、指出矛盾并保留实际公式，不能静默改写。历史标准和链接保持历史背景，除非另行要求更新。
+原文疑似错误时保留其字面主张并在附近简短提示。记录 page、block、source_quote、concern 和 treatment；suggested_correction 与 evidence 为成对的可选项。例如文字称正比而公式为反比，保留文字主张、指出矛盾并保留实际公式，不能静默改写。

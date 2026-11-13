@@ -7,7 +7,7 @@ description: Translate PDFs into Chinese side-by-side versions, preserving the o
 
 ## Installation
 
-For a new installation, clone this repository into a supported skills directory as pdf-bilingual-parallel-translate, then install requirements.txt in a Python 3.10+ environment. Use that environment to run scripts/pipeline.py. Supply an available Chinese font at prepare; no font is bundled. Keep outputs outside the skill directory. Existing CC Switch installations must retain their managed link; update the resolved repository instead of replacing the entry. See [practical.md](references/practical.md) for commands and supported inputs. The model supplies translations and actual visual review; these scripts do not automatically translate or certify semantic accuracy.
+For a new installation, clone this repository into a supported skills directory as pdf-bilingual-parallel-translate, then install requirements.txt in a Python 3.10+ environment. Use that environment to run scripts/pipeline.py. Supply an available Chinese font at prepare; no font is bundled. Keep outputs outside the skill directory. Existing CC Switch installations must retain their managed link; update the resolved repository instead of replacing the entry. See [practical.md](references/practical.md) for commands and supported inputs. The model translates and reviews pages. The scripts build and check the PDF.
 
 ## Working conventions
 
@@ -15,7 +15,7 @@ Translate with the current session model, without external machine translation. 
 
 Default to **practical** reading quality: original intact, requested pages complete, Chinese legible, main text and graphics readable in a standalone PDF. Minor wording, line breaks, tiny residual marks and cosmetic differences may be recorded and delivered. Do not exhaustively correct terminology. Preserve formulas, values, models and pin names directly; never guess from corrupted extraction. Correct an obvious known error safely with the current batch.
 
-Use **strict** only for explicitly requested detailed acceptance. Old states without a profile retain strict semantics; never rewrite historical acceptance. Neither profile imposes fixed time, token or iteration limits. Continue for material blockers or demonstrated workflow defects, not every new cosmetic suggestion.
+Use **strict** only for explicitly requested detailed acceptance. Record the selected profile in the state. Neither profile imposes fixed time, token or iteration limits. Continue for material blockers or demonstrated workflow defects, not every new cosmetic suggestion.
 
 ## Required result
 
@@ -54,6 +54,6 @@ Only the accepted PDF is published outside the working folder. Keep notes and al
 
 Read [practical.md](references/practical.md) for the full edit/observation contract and commands. Put recovery/ and work/ inside each source-stem working folder; publish only the accepted PDF at the chosen destination. Keep PDFs, fonts and artifacts outside the skill repository. Do not delete recovery automatically: it contains saved edits and review evidence.
 
-Low-level inplace.py and pdf_tools.py remain supported; [inplace.md](references/inplace.md), [state-and-qc.md](references/state-and-qc.md) and [building.md](references/building.md) describe strict/manual details. Do not separately run audit and render when verify already produced matching evidence. v1/v2 retain original behavior; example_build.py is explicit legacy compatibility only.
+Low-level inplace.py and pdf_tools.py remain supported; [inplace.md](references/inplace.md), [state-and-qc.md](references/state-and-qc.md) and [building.md](references/building.md) describe strict/manual details. Do not separately run audit and render when verify already produced matching evidence. Use v3 in-place state.
 
-Diagnostics retain raw 144 DPI measurements (RGB tolerance 16, changed ratio 0.001). Practical acceptance can retain a reviewed right-side difference; source damage, font failures and coverage errors remain blocking. For workflow evaluation log phase time, tools/builds/renders and rework reasons. Report unavailable token counts as unavailable, not estimates presented as measurements.
+Diagnostics retain raw 144 DPI measurements (RGB tolerance 16, changed ratio 0.001). Practical acceptance can retain a reviewed right-side difference; source damage, font failures and coverage errors remain blocking.

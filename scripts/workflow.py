@@ -1,6 +1,5 @@
 """Small deterministic helpers; no translation, implicit review or file renaming."""
 import hashlib
-import copy
 import json
 import math
 import re
@@ -19,6 +18,28 @@ def canonical(value):
 
 def load(path):
     return json.loads(Path(path).read_text(encoding='utf-8'))
+
+
+def state_header_error(state):
+    """Check the state format before reading task-specific fields."""
+    if not isinstance(state, dict) or state.get('schema_version') != 3:
+        return 'unsupported_state_schema', 'Expected a v3 in-place state.'
+    layout = state.get('layout')
+    if not isinstance(layout, dict):
+        return 'missing_layout', 'Expected a layout object.'
+    if layout.get('mode') != 'inplace':
+        return 'invalid_inplace_state', 'Expected layout.mode to be inplace.'
+    if layout.get('review_profile') not in ('practical', 'strict'):
+        return 'invalid_review_profile', 'Set layout.review_profile to practical or strict.'
+    return None
+
+
+def require_state(state):
+    problem = state_header_error(state)
+    if problem:
+        code, detail = problem
+        raise ValueError(f'{code}: {detail}')
+    return state
 
 
 def resolve(base, value):
@@ -104,7 +125,7 @@ def document_filename(source_title=None, chinese_title=None, document_id=None, *
 
 def ti_filename(english_title=None, chinese_title=None, document_id=None, *,
                 role, english_document_id=None, version=None):
-    """TI wrapper; callers must now specify the actual file role explicitly."""
+    """TI wrapper; callers must specify the actual file role explicitly."""
     return document_filename(english_title, chinese_title, document_id, role=role,
                              version=version, vendor='TI',
                              english_document_id=english_document_id)
@@ -146,11 +167,11 @@ def pagination_items(state):
             raise ValueError('Invalid source page label')
         if not isinstance(text, str):
             raise ValueError('Page label text must be a string')
-        total = state.get('source',{}).get('page_count',len(pages)) if state.get('schema_version') == 3 else len(pages)
+        total = state['source']['page_count']
         expected = (original or '') if strategy == 'preserve-source' else '%s/%s' % (n, total)
         if text != expected or (strategy == 'physical-total' and original is not None):
             raise ValueError('Page label conflicts with confirmed numbering strategy')
-        if not text or (state.get('schema_version') == 3 and strategy == 'preserve-source'):
+        if not text or strategy == 'preserve-source':
             continue
         bid = label.get('id')
         box = label.get('target_bbox')
@@ -171,7 +192,7 @@ def pagination_items(state):
 def check_fonts(state_path, assignments_path):
     from fontTools.ttLib import TTFont
     state_path, assignments_path = Path(state_path), Path(assignments_path)
-    state, assignments = load(state_path), load(assignments_path)
+    state, assignments = require_state(load(state_path)), load(assignments_path)
     errors, unverified = [], []
     fonts, font_records = {}, []
     for reg in state['layout']['fonts']:
@@ -220,7 +241,7 @@ def check_fonts(state_path, assignments_path):
                            'block': bid, 'font': name,
                            'codepoints': [f'U+{x:04X}' for x in missing]})
     for bid, (n, block) in blocks.items():
-        if state.get('schema_version') == 3 and block.get('method') == 'preserve':
+        if block.get('method') == 'preserve':
             continue
         if normalized_text(texts.get(bid, '')) != normalized_text(block_text(block)):
             errors.append({'code': 'font_run_text_mismatch', 'page': n, 'block': bid})
@@ -299,50 +320,9 @@ def validate_reviews(state, state_path):
     return errors
 
 
-def validate_relocation(state, state_path, content_hash):
-    """Verify each path-only hop back to an unchanged original acceptance."""
-    try:
-        current = state
-        base = Path(state_path).resolve().parent
-        seen = {Path(state_path).resolve()}
-        traversed = False
-        while 'migration' in current:
-            migration = current['migration']
-            if (migration['kind'] != 'path-only' or not migration.get('performed_at') or
-                    not migration.get('reason')):
-                return False
-            ref = migration['previous_state']
-            previous_path = resolve(base, ref['path']).resolve()
-            if previous_path in seen or digest(previous_path) != ref['sha256']:
-                return False
-            seen.add(previous_path)
-            previous = load(previous_path)
-            if (current['qc'] != previous['qc'] or
-                    current['source']['sha256'] != previous['source']['sha256'] or
-                    current['output']['sha256'] != previous['output']['sha256'] or
-                    migration['old_source'] != previous['source']['path'] or
-                    migration['new_source'] != current['source']['path']):
-                return False
-            normalized = copy.deepcopy(current)
-            normalized['source']['path'] = previous['source']['path']
-            if content_hash(normalized) != content_hash(previous):
-                return False
-            # A snapshot may retain references relative to its former authoring directory.
-            # Resolve that explicitly without rewriting any historical snapshot bytes.
-            base = (resolve(base, ref['base_path']).resolve() if 'base_path' in ref
-                    else previous_path.parent)
-            if not base.is_dir():
-                return False
-            current = previous
-            traversed = True
-        return traversed and current['qc']['content_sha256'] == content_hash(current)
-    except (KeyError, ValueError, TypeError, OSError, RuntimeError):
-        return False
-
-
 def audit_accepted(report, state):
     """Keep raw audit findings; practical readers may explicitly retain right-pane differences."""
-    profile=state.get('layout',{}).get('review_profile','strict')
+    profile=state.get('layout',{}).get('review_profile')
     if profile not in ('strict','practical'):return False
     if profile=='strict':return bool(report.get('mechanical_pass'))
     retained={d.get('finding_sha256'):d for d in state.get('qc',{}).get('audit_dispositions',[])

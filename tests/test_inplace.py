@@ -363,7 +363,7 @@ class Inplace(unittest.TestCase):
         self.assertEqual([c['page'] for c in conflicts],[1,2])
         self.assertTrue(all(c['source_link']==0 and c['source_bbox'] for c in conflicts))
 
-    def test_overlay_colors_and_legacy_default_preserve_left_and_values(self):
+    def test_overlay_colors_and_default_preserve_left_and_values(self):
         self.make_basic();s=self.extract();b=s['pages'][0]['blocks'][0]
         b.update(method='cover',cover_bbox=[15,25,125,60],reason='Local image label fixture',
                  cover_fill=[.2,.4,.6],cover_text_color=[1,0,0])
@@ -373,7 +373,7 @@ class Inplace(unittest.TestCase):
             self.assertIn('12 + 34 = 46',d[0].get_text())
             spans=[v for block in d[0].get_text('dict')['blocks'] if 'lines' in block for line in block['lines'] for v in line['spans']]
             self.assertTrue(any('中文' in v['text'] and v['color']==0xFF0000 for v in spans))
-        b.pop('cover_fill');b.pop('cover_text_color');r=self.build(s,'legacy-overlay')
+        b.pop('cover_fill');b.pop('cover_text_color');r=self.build(s,'default-overlay')
         with fitz.open(r['output']) as d:self.assertEqual(d[0].get_pixmap().pixel(256,26),(255,255,255))
     def test_overlay_rejects_invalid_rgb(self):
         self.make_basic();s=self.extract();b=s['pages'][0]['blocks'][0]

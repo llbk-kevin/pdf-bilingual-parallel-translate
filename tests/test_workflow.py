@@ -12,7 +12,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'scripts'))
 import pdf_tools as t
 import workflow as w
-import example_build as builder
+import inplace as builder
 from test_pdf_tools import source_pdf, bilingual
 from fontTools.fontBuilder import FontBuilder
 from fontTools.pens.ttGlyphPen import TTGlyphPen
@@ -43,29 +43,33 @@ def make_font(dest, symbols=False):
     fb.setupPost();fb.setupMaxp();fb.save(dest)
 
 
-class Upgrade(unittest.TestCase):
+class Workflow(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.root=Path(self.temp.name)
         self.source=self.root/'source.pdf';source_pdf(self.source)
         for name in ('Body','Symbols'):make_font(self.root/(name+'.ttf'),name=='Symbols')
-        self.state={'schema_version':2,'document':{'source_kind':'english-original'},
-            'source':{'path':'source.pdf','sha256':w.digest(self.source)},
-            'layout':{'pane_width_pt':240,'fonts':[{'name':n,'source':n+'.ttf','sha256':w.digest(self.root/(n+'.ttf')),'purpose':'Synthetic fixture'}for n in ('Body','Symbols')]},
-            'glossary':[],'issues':[],'qc':{},'pages':[]}
-        for n in (1,2):
-            bid=f'p{n}-body'
-            self.state['pages'].append({'source_page':n,'output_page':n,'source_rect':[0,0,240,300],
-                'kind':'translated','inventory_reviewed':True,'expected_blocks':[bid],'reading_order':[bid],
-                'context_reviewed':True,'context_pages':[n],
-                'blocks':[{'id':bid,'kind':'paragraph','source_bbox':[20,20,220,70],
-                    'target_bbox':[260,20,460,90],'source_text':'distance approximately 12 km','translation':'距离 ≃ 12 km <sub>h</sub>',
-                    'font_size':10,'status':'translated'}]})
-        self.sp=self.root/'state.json';self.save(self.state)
+        self.sp=self.root/'state.json'
+        self.extract()
+    def extract(self):
+        builder.extract(self.source, self.sp, overwrite=True)
+        self.state = w.load(self.sp)
+        self.state['layout']['fonts'] = [
+            {'name': name, 'source': name+'.ttf', 'sha256': w.digest(self.root/(name+'.ttf')),
+             'purpose': 'Synthetic fixture'} for name in ('Body', 'Symbols')]
+        for page in self.state['pages']:
+            page['inventory_reviewed'] = True
+            page['context_reviewed'] = True
+            page['context_pages'] = [page['source_page']]
+            for block in page['blocks']:
+                block.update(method='replace', translation='距离 ≃ 12 km <sub>h</sub>',
+                             font_size=8, status='translated')
+        self.save(self.state)
+
     def tearDown(self):self.temp.cleanup()
     def save(self,s):self.sp.write_text(json.dumps(s,ensure_ascii=False),encoding='utf-8')
     def built(self,name='output'):
         result=builder.build(self.source,self.sp,self.root/(name+'.pdf'))
-        return result,w.load(result['state'])
+        return {**result, 'sha256': w.digest(result['output'])}, w.load(result['state'])
     def test_ti_names_and_missing_numbers(self):
         self.assertEqual(w.ti_filename('Designing A SEPIC Converter','设计 SEPIC 转换器','SNVA168E',role='original'),
             'snva168e_Designing A SEPIC Converter_设计 SEPIC 转换器.pdf')
@@ -97,20 +101,11 @@ class Upgrade(unittest.TestCase):
         newer,_=self.built('second');self.assertNotEqual(r['sha256'],newer['sha256'])
         self.assertIn('24 km',PdfReader(newer['output']).pages[0].extract_text())
         self.assertIn('24 km',w.load(self.sp)['pages'][0]['blocks'][0]['translation'])
-    def test_table_reads_full_cells_and_overflow(self):
-        b=self.state['pages'][0]['blocks'][0]
-        b.update(kind='table',translation='Table summary',target_bbox=[260,20,460,160],
-                 table={'source_rows':[['A','B'],['C','D']],'translated_rows':[['项目','数值'],['距离','73 km']]})
-        self.save(self.state);r,s=self.built()
-        self.assertIn('73 km',PdfReader(r['output']).pages[0].extract_text())
-        self.assertTrue(w.check_fonts(r['state'],r['assignments'])['mechanical_pass'])
-        b['target_bbox']=[260,20,270,22];self.save(self.state)
-        with self.assertRaisesRegex(ValueError,'overflow'):self.built('overflow')
     def test_external_inputs_preserved_and_changed_input_rejected(self):
         dependency=self.root/'layout.json';dependency.write_text('{}',encoding='utf-8')
         self.state['layout']['inputs']=[{'path':'layout.json','sha256':w.digest(dependency)}]
         self.save(self.state);r,s=self.built()
-        self.assertIn(str(dependency.resolve()),[x['path']for x in s['layout']['inputs']])
+        self.assertIn(dependency.resolve(),[w.resolve(Path(r['state']).parent,x['path']).resolve() for x in s['layout']['inputs']])
         dependency.write_text('{"changed":true}',encoding='utf-8')
         with self.assertRaisesRegex(ValueError,'External input'):self.built('changed')
     def test_same_basename_different_directory_and_duplicate_font(self):
@@ -216,7 +211,7 @@ class Upgrade(unittest.TestCase):
         self.assertNotIn('new_uncompressed_page_contents',{x['code']for x in t.audit(self.source,out)['findings']})
 
 
-    def accepted_v2(self):
+    def accepted_candidate(self):
         r,s=self.built()
         self.render_records(r,s,'accepted-render')
         audit=t.audit(self.source,r['output'],s,dpi=72)
@@ -226,19 +221,32 @@ class Upgrade(unittest.TestCase):
         s['qc'].update(content_sha256=t.content_hash(s),source_sha256=s['source']['sha256'],
             output_sha256=s['output']['sha256'],translation_pages=[1,2],visual_pages=[1,2],
             reviewer='synthetic fixture',reviewed_at='2000-01-01T00:00:00Z',structure='passed',
-            audit_path='audit.json',structure_notes='Synthetic font shapes; no real semantic certification.',
+            audit_path='audit.json',structure_notes='Synthetic fixture.',
             font_report={'path':'fonts.json','sha256':w.digest(self.root/'fonts.json')},
             font_assignments=Path(r['assignments']).name)
         Path(r['state']).write_text(json.dumps(s),encoding='utf-8')
         return r,s
-    def test_v2_final_acceptance_requires_bound_fonts_and_viewing(self):
-        r,s=self.accepted_v2()
+    def test_final_acceptance_requires_bound_fonts_and_viewing(self):
+        r,s=self.accepted_candidate()
         report=t.check_state(r['state'],True)
         self.assertTrue(report['ready_for_delivery'],report)
         self.assertFalse(report['quality_certified'])
         s['qc']['page_reviews'][0]['mode']='rendered'
         Path(r['state']).write_text(json.dumps(s),encoding='utf-8')
         self.assertFalse(t.check_state(r['state'],True)['ready_for_delivery'])
+    def test_stale_content_output_builder_and_review_coverage(self):
+        result, state = self.accepted_candidate()
+        output = Path(result['output'])
+        output.write_bytes(output.read_bytes() + b'\n% revision\n')
+        state['layout']['builder']['sha256'] = '0' * 64
+        state['pages'][0]['blocks'][0]['translation'] = '中文'
+        state['qc']['visual_pages'] = [1]
+        Path(result['state']).write_text(json.dumps(state), encoding='utf-8')
+        errors = {entry['code'] for entry in t.check_state(result['state'], True)['errors']}
+        self.assertTrue({'stale_qc_content', 'output_fingerprint_changed',
+                         'builder_fingerprint_changed', 'incomplete_visual_pages',
+                         'stale_audit'} <= errors, errors)
+
     def test_sibling_delivery_survives_working_folder_removal(self):
         task = self.root / self.source.stem
         recovery, work = task / 'recovery', task / 'work'
@@ -269,7 +277,7 @@ class Upgrade(unittest.TestCase):
             source_sha256=state['source']['sha256'], output_sha256=state['output']['sha256'],
             translation_pages=[1, 2], visual_pages=[1, 2], reviewer='synthetic fixture',
             reviewed_at='2000-01-01T00:00:00Z', structure='passed',
-            structure_notes='Synthetic fixture attestations; no real translation review.',
+            structure_notes='Synthetic fixture.',
             audit_path='../work/audit.json', font_assignments='../work/candidate.font-runs.json',
             font_report={'path': '../work/fonts.json', 'sha256': w.digest(work / 'fonts.json')})
         current.write_text(json.dumps(state, ensure_ascii=False), encoding='utf-8')
@@ -280,7 +288,7 @@ class Upgrade(unittest.TestCase):
         delivery = self.root / (self.source.stem + '_双语左右对照翻译.pdf')
         with delivery.open('xb') as dest, Path(result['output']).open('rb') as source:
             shutil.copyfileobj(source, dest)
-        self.assertEqual(w.digest(delivery), result['sha256'])
+        self.assertEqual(w.digest(delivery), w.digest(result['output']))
         state['output']['path'] = '../../' + delivery.name
         current.write_text(json.dumps(state, ensure_ascii=False), encoding='utf-8')
         report = t.check_state(current, True)
@@ -317,30 +325,3 @@ class Upgrade(unittest.TestCase):
             shutil.rmtree(target)
             self.assertEqual({p.name for p in clone.iterdir()}, {self.source.name, delivery.name})
             self.assertEqual(before, {p.name: observable_pdf(p) for p in clone.iterdir()})
-
-    def test_path_only_migration_retains_original_review_but_rejects_content_edits(self):
-        r,s=self.accepted_v2();previous=self.root/'before-migration.json'
-        previous.write_bytes(Path(r['state']).read_bytes())
-        newsource=self.root/'renamed-source.pdf';self.source.rename(newsource)
-        old=s['source']['path'];s['source']['path']=str(newsource)
-        s['migration']={'kind':'path-only','performed_at':'2000-01-01T00:00:00Z','reason':'Explicit approved rename',
-            'previous_state':{'path':previous.name,'sha256':w.digest(previous)},
-            'old_source':old,'new_source':str(newsource)}
-        Path(r['state']).write_text(json.dumps(s),encoding='utf-8')
-        result=t.check_state(r['state'],True)
-        self.assertTrue(result['ready_for_delivery'],result)
-        self.assertIn('verified_path_only_migration',{x['code']for x in result['warnings']})
-        s['pages'][0]['blocks'][0]['translation']='changed'
-        Path(r['state']).write_text(json.dumps(s),encoding='utf-8')
-        self.assertIn('stale_qc_content',{x['code']for x in t.check_state(r['state'],True)['errors']})
-
-    def test_invalid_migration_is_checked_even_when_content_hash_matches(self):
-        r,s=self.accepted_v2()
-        s['migration']={'kind':'path-only','performed_at':'2000-01-01T00:00:00Z','reason':'Synthetic invalid chain',
-                        'previous_state':{'path':'missing.json','sha256':'0'*64},
-                        'old_source':s['source']['path'],'new_source':s['source']['path']}
-        Path(r['state']).write_text(json.dumps(s),encoding='utf-8')
-        self.assertIn('stale_qc_content',{x['code']for x in t.check_state(r['state'],True)['errors']})
-
-if __name__=='__main__':unittest.main()
-
