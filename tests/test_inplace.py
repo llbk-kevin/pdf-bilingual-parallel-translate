@@ -267,6 +267,33 @@ class Inplace(unittest.TestCase):
             page=out[0];left=page.get_pixmap(clip=fitz.Rect(15,69,35,85));right=page.get_pixmap(clip=fitz.Rect(255,69,275,85))
             self.assertEqual(left.samples,right.samples)
             self.assertIn('F',page.get_text(clip=fitz.Rect(240,0,480,180)))
+    def test_redaction_blocks_loss_of_preserved_formula_before_saving(self):
+        from fontTools.ttLib import TTFont
+        tall = self.root/'tall.ttf'
+        make_font(tall)
+        with TTFont(tall) as font:
+            font['hhea'].ascent, font['hhea'].descent = 6000, -3000
+            font['OS/2'].sTypoAscender, font['OS/2'].sTypoDescender = 6000, -3000
+            font['OS/2'].usWinAscent, font['OS/2'].usWinDescent = 6000, 3000
+            font.save(tall)
+        doc = fitz.open()
+        page = doc.new_page(width=240, height=180)
+        page.insert_text((20, 54), 'Label')
+        page.insert_font(fontname='MathFixture', fontfile=str(tall))
+        page.insert_text((30, 80), 'F=F', fontname='MathFixture', fontsize=10)
+        self.save_source(doc)
+        state = self.extract()
+        label, formula = state['pages'][0]['blocks']
+        formula.update(method='preserve', translation='F=F', reason='Formula')
+        with self.assertRaises(ValueError) as failure:
+            self.build(state)
+        findings = [x for x in json.loads(str(failure.exception))['layout_conflicts']
+                    if x.get('code') == 'preserved_glyph_removed']
+        self.assertTrue(any(x['character'] == '=' for x in findings), findings)
+        self.assertEqual({x['block'] for x in findings}, {formula['id']})
+        self.assertEqual({b for x in findings for b in x['related_replacement_blocks']}, {label['id']})
+        self.assertFalse(list(self.root.glob('output*')))
+
     def test_external_dependency_and_generated_numbering(self):
         self.make_basic();s=self.extract();dep=self.root/'notes.json';dep.write_text('{}',encoding='utf8')
         s['layout']['inputs']=[{'path':'notes.json','sha256':wf.digest(dep)}]

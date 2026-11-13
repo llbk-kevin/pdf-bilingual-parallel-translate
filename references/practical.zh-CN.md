@@ -12,7 +12,7 @@ python SKILL/scripts/pipeline.py prepare --source ORIGINAL.pdf --state recovery/
 
 --pages 为原文物理页号，从 1 开始，默认 all。选页明确标为 sample：输出连续编号，source_page 保留源页号；样本外书签及链接记为省略，不重定向。整本仍要求完整源页。字体以路径和哈希登记，重建需可用；PDF 内嵌实际用字子集，阅读不需外部字体。
 
-prepare 冻结脚本到状态旁，写 inventory.json 与 preflight.json。后续包括 verify/review/publish 均使用冻结入口，不把命令变量改回 SKILL/scripts/pipeline.py。维护时如需替换当前任务的脚本，另建恢复目录。先读简洁 inventory，不反复读巨大的字形状态。source_group/source_line 辅助段落归属但不决定阅读顺序。可用 pdf_tools.py render ORIGINAL.pdf --pages SELECTION --out work/source 查看原页，再决定覆盖与公式。风险仅为提示，不是自动翻译结论。公式密集提示属于非阻断启发式，编码异常和实际可见原文优先。
+prepare 冻结脚本到状态旁，写 inventory.json 与 preflight.json。后续包括 verify/review/publish 均使用冻结入口，不把命令变量改回 SKILL/scripts/pipeline.py。维护时如需替换当前任务的脚本，另建恢复目录。先读简洁 inventory，不反复读巨大的字形状态。source_group/source_line 辅助段落归属但不决定阅读顺序。可用 pdf_tools.py render ORIGINAL.pdf --pages SELECTION --out work/source 查看原页，再决定覆盖与公式。风险仅为提示，不是自动翻译结论。公式密集提示属于非阻断启发式，编码异常和实际可见原文优先。AES 支持随 requirements.txt 安装。missing_encryption_dependency 提示补齐依赖，password_required 提示需要源文件密码。目录跳转按声明的选页范围检查，样本外目标报告 sample_link_omitted。
 
 批量 edits.json 原生段落示例：
 
@@ -20,7 +20,7 @@ prepare 冻结脚本到状态旁，写 inventory.json 与 preflight.json。后�
 {"blocks":[{"page":1,"id":"paragraph-1","merge_ids":["EXTRACTED-ID-1","EXTRACTED-ID-2"],"method":"replace","translation":"完整段落的中文。","font_size":10,"font_size_min":9},{"page":1,"id":"EXTRACTED-FORMULA-ID","method":"preserve","reason":"保留原公式及数值"}],"inventory_reviewed_pages":[1]}
 ~~~
 
-替换真实 ID 并核对原文。合并的新 ID 必须唯一，或属于本次 merge_ids；不能借用别的段落 ID。merge_ids 合并字形引用与原框，不跨栏或跨单元格；普通块编辑省略 merge_ids。上述合并成功后再次修改，直接指定新 ID，例如 {"blocks":[{"page":1,"id":"paragraph-1","font_size":9,"font_size_min":8}]}；不要重复已经移除的原 merge_ids。公式混合正文确需拆字形时查 inplace.md，可写小型 JSON 编辑操作处理例外，不从乱码重绘整式。每个原文字形必须且只由一块拥有。短标识、单位、尺寸、公式保留，说明性正文翻译，不能为了省事把正文 preserve。
+替换真实 ID 并核对原文。合并的新 ID 必须唯一，或属于本次 merge_ids；不能借用别的段落 ID。merge_ids 合并字形引用与原框，不跨栏或跨单元格；普通块编辑省略 merge_ids。上述合并成功后再次修改，直接指定新 ID，例如 {"blocks":[{"page":1,"id":"paragraph-1","font_size":9,"font_size_min":8}]}；不要重复已经移除的原 merge_ids。公式混合正文确需拆字形时查 inplace.md，可写小型 JSON 编辑操作处理例外，不从乱码重绘整式。每个原文字形必须且只由一块拥有。短标识、单位、尺寸、公式保留，说明性正文翻译，不能为了省事把正文 preserve。用 apply 返回的 unresolved_count 和 unresolved_by_page 对照待处理块。已预置 preserve 的块仍须核实，只有改变处理方式时才提交编辑。失效 merge_ids 诊断列出源页、目标块和缺失 ID。
 
 图片/转曲新覆盖示例，坐标为可见页左上角 PDF 点：
 
@@ -39,7 +39,7 @@ python recovery/pipeline.py build --state recovery/state.json
 
 apply 返回 preview_argv 参数数组，使用当前冻结入口、authoring state 和变化页。直接传给子进程 API，不拼成未转义的 shell 命令。局部调整使用该预览，最终完整候选省略 --pages。后续 build 省略 --source，冻结状态已经标识源文件；覆盖路径不一致时报告期望/传入路径和传入文件是否存在，不代表可以修改源指纹。
 
-build 返回 PDF、生成状态及字形运行记录。verify/review/publish 必须用返回的生成状态。使用 --pages 3 局部预览，交付时构建完整声明范围。同类冲突从 last-error.json 集中修复后重建。链接映射错误按选定页集中写入 link_conflicts，包含 page、source_link 和 source_bbox，一批修完，不为逐条报错重复全本构建。降低字号时同时检查 font_size 和 font_size_min，下限不能高于指定字号。font_size_min 空或缺省为固定字号，不为强制通过不断缩小到不可读。
+build 返回 PDF、生成状态及字形运行记录。verify/review/publish 必须用返回的生成状态。使用 --pages 3 局部预览，交付时构建完整声明范围。同类冲突从 last-error.json 集中修复后重建。链接映射错误按选定页集中写入 link_conflicts，包含 page、source_link 和 source_bbox，一批修完，不为逐条报错重复全本构建。降低字号时同时检查 font_size 和 font_size_min，下限不能高于指定字号。font_size_min 空或缺省为固定字号，不为强制通过不断缩小到不可读。preserved_glyph_removed 会指出缺失字符、原页位置、保留块及相邻替换块。先修相邻替换，预览受影响页并核对整条公式。
 
 ## 集中检查与真实记录
 
@@ -49,10 +49,10 @@ python recovery/pipeline.py verify --state work/RETURNED.state.json
 
 verify 检查状态、字体、审计，一次生成原文、输出及相关差异图，返回 render_index、错误汇总、review_needed 源页。详细日志按需读。相同输入复用哈希匹配证据，不重复渲染。保留差异也不修改原始测量和 mechanical_pass。
 
-实际打开需查看的页，检查主要正文、图形及覆盖，有阻断疑问才放大。一次不是次数上限：有具体问题可重看，不为消灭小瑕疵重看。observations.json 写真实查看事件或具体观察：
+打开 review_needed 中的双栏页检查主要图文。遇到疑点再看差分图或放大局部。若安排独立复核，由实际查看者登记观察。发现阻断项时，先为已查看且无阻断的页提交 observations.json，另报待修页。复制本次 verify 返回的 output_sha256 和 render_index_sha256。
 
 ~~~json
-{"reviewer":"实际代理或人员","pages":[{"page":1,"evidence":"实际图片查看记录及观察","retained":["保留轻微断行"],"retain_right_difference":"仅确实检查了审计右侧差异时填写：为何不影响阅读"}],"structure_notes":"已检查基本可读性及所需范围"}
+{"output_sha256":"COPY_FROM_VERIFY","render_index_sha256":"COPY_FROM_VERIFY","reviewer":"实际代理或人员","pages":[{"page":1,"evidence":"实际图片查看记录及观察","retained":["保留轻微断行"],"retain_right_difference":"仅确实检查了审计右侧差异时填写：为何不影响阅读"}],"structure_notes":"已检查基本可读性及所需范围"}
 ~~~
 
 ~~~text
@@ -63,7 +63,7 @@ verify 列出 cover_review_needed。逐处对照原图与右侧浮层，确认�
 
 不可预填观察，不手改 qc。渲染不会生成已查看记录。retain_right_difference 仅在 practical 下处理当前精确匹配的 right_graphics_changed_outside_recorded_regions，不能豁免原文损坏、字体、缺页或其他错误，更不能用于主要图形遮挡。strict 仍要求原始审计通过。
 
-编辑重建后 verify --previous-state OLD_ACCEPTED.state.json，仅像素、渲染设置及页依赖完全相同才复用。保留原查看者、时间和证据；复用页上精确匹配的已保留审计决定及页说明一并沿用，不豁免变化后的发现。只复查变更/依赖页；最终完整候选仍自动检查。共享字体、布局、上下文确实影响其他页时失效，不编辑指纹伪造复用。
+集中修改后先预览受影响页，再构建完整候选。运行 verify --previous-state PREVIOUS.state.json，上一版只登记部分页面时也可复用。脚本逐页检查像素、设置和依赖，保留有效记录的原查看者、时间和证据。当前候选的有效观察优先。按 review_needed 补查，并为变化后的差分记录新的判断。完整候选仍执行自动检查。
 
 review 返回 observations_saved、saved_pages、reviewed_pages 和 review_needed。查看 ready 和 errors 确认能否交付。局部审核可通过 verify --previous-state 复用。
 

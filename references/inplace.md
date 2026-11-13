@@ -56,7 +56,7 @@ The font-run sidecar uses schema_version 1, output_sha256 and runs with page, bl
 
 ## Geometry, resources and interactions
 
-Both panes are placed with show_pdf_page from the **same opened source document**, sharing its graft map. Text redaction is applied only to the right-hand rectangles after both placements, with images=0, graphics=0, text=0 and fill=False. Adjacent center masks are merged only when their union cannot touch preserved glyphs. This leaves image pixels, soft masks, curves, colored fills and table rules in place. Non-image streams are losslessly compressed; source image streams are not re-encoded.
+Both panes are placed with show_pdf_page from the **same opened source document**, sharing its graft map. Text redaction is applied only to the right-hand rectangles after both placements, with images=0, graphics=0, text=0 and fill=False. Adjacent center masks are merged only when their union cannot touch preserved glyphs. This leaves image pixels, soft masks, curves, colored fills and table rules in place. Non-image streams are losslessly compressed; source image streams are not re-encoded. Before saving, compare locatable preserved glyphs in the right pane before and after redaction. preserved_glyph_removed reports the missing positions and related replacements.
 
 The builder temporarily clears source Rotate and supplies the inverse rotation explicitly to show_pdf_page. Crop/rotation/UserUnit and mixed physical page sizes are tested. PDFium ignores UserUnit, so diagnostic rendering normalizes only an in-memory copy before uniform-scale comparison. The original file is never changed.
 

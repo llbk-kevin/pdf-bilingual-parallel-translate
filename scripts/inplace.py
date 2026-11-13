@@ -9,6 +9,7 @@ import math
 import os
 import re
 import sys
+from collections import Counter, defaultdict
 from pathlib import Path
 import pymupdf as fitz
 from workflow import digest, canonical, resolve, pagination_items, state_header_error
@@ -47,7 +48,8 @@ def selected_pages(value, count):
 def open_source(source, password=None):
     doc = fitz.open(source)
     if doc.needs_pass and not doc.authenticate(password or ''):
-        raise ValueError('A valid explicitly supplied password is required')
+        doc.close()
+        raise ValueError('password_required: A valid explicitly supplied password is required')
     return doc
 
 def relative(path, base):
@@ -302,48 +304,69 @@ def annotation_policy(annotation,page,page_state=None):
             raise ValueError('Text-markup annotation touches replaced text; provide a custom translated-anchor appearance')
     return source_rect
 
-def check_interactions(doc, selected, state=None):
-    # Text clipping changes following paint operations when removed; refuse it in
-    # nested forms too rather than treating its glyphs as ordinary visible text.
+def check_interactions(doc, selected, state=None, *, collect=False):
     from pypdf import PdfReader
     from pypdf.generic import ContentStream
-    reader=PdfReader(io.BytesIO(doc.tobytes()))
-    def check_stream(stream,resources,seen):
+
+    reader = PdfReader(io.BytesIO(doc.tobytes()))
+    findings = []
+
+    def report(code, detail, page=None):
+        if not collect:
+            raise ValueError(detail)
+        finding = {'code': code, 'detail': detail}
+        if page is not None:
+            finding['page'] = page
+        findings.append(finding)
+
+    def check_stream(stream, resources, seen):
         if stream is not None:
-            for operands,operator in ContentStream(stream,reader).operations:
-                if operator==b'Tr' and operands and int(operands[0])>=4:
+            for operands, operator in ContentStream(stream, reader).operations:
+                if operator == b'Tr' and operands and int(operands[0]) >= 4:
                     raise ValueError('Text clipping render modes 4-7 are unsupported; refusing to change clipped graphics')
-        for ref in resources.get('/XObject',{}).values():
-            obj=ref.get_object()
-            if obj.get('/Subtype')!='/Form':continue
-            key=getattr(ref,'idnum',id(obj))
-            if key in seen:continue
-            seen.add(key);check_stream(obj,obj.get('/Resources',resources),seen)
-    page_states={p['source_page']:p for p in state['pages']} if state else {}
-    for n in selected:
-        p=reader.pages[n-1];check_stream(p.get_contents(),p.get('/Resources',{}),set())
-        for ref in p.get('/Annots',[]):
-            annotation=ref.get_object()
-            if annotation.get('/Subtype')!='/Link':annotation_policy(annotation,doc[n-1],page_states.get(n))
-    # show_pdf_page copies page graphics, not annotations or document structures.
+        for ref in resources.get('/XObject', {}).values():
+            obj = ref.get_object()
+            if obj.get('/Subtype') != '/Form':
+                continue
+            key = getattr(ref, 'idnum', id(obj))
+            if key not in seen:
+                seen.add(key)
+                check_stream(obj, obj.get('/Resources', resources), seen)
+
     if doc.embfile_count() or doc.get_ocgs():
-        raise ValueError('Attachments/optional-content layers require explicit preservation support; refusing to flatten')
-    for n in selected:
-        page = doc[n-1]
-        if list(page.widgets() or []):
-            raise ValueError('Interactive widgets are unsupported on source page %d; refusing to discard them' % n)
-        for link in page.get_links():
-            if link['kind'] not in (fitz.LINK_URI,fitz.LINK_GOTO):
-                raise ValueError('Unsupported link kind on page %d' % n)
-            if link['kind'] == fitz.LINK_GOTO and link.get('page',-1)+1 not in selected and not (state and state.get('document',{}).get('delivery_scope')=='sample'):
-                raise ValueError('Selected pages exclude a link destination from page %d; include its destination' % n)
-    for item in doc.get_toc(simple=False):
-        dest = item[3]
-        point=dest.get('to')
+        report('interaction_preflight', 'Attachments/optional-content layers require explicit preservation support; refusing to flatten')
+    for _, _, _, dest in doc.get_toc(simple=False):
+        point = dest.get('to')
         if point is not None and not all(math.isfinite(v) for v in point):
-            raise ValueError('Nonfinite bookmark axes require a raw-destination custom migration')
-        if dest.get('kind',fitz.LINK_GOTO) not in (fitz.LINK_NONE,fitz.LINK_GOTO,fitz.LINK_URI):
-            raise ValueError('Unsupported bookmark action; refusing to discard it')
+            report('interaction_preflight', 'Nonfinite bookmark axes require a raw-destination custom migration')
+        if dest.get('kind', fitz.LINK_GOTO) not in (fitz.LINK_NONE, fitz.LINK_GOTO, fitz.LINK_URI):
+            report('interaction_preflight', 'Unsupported bookmark action; refusing to discard it')
+
+    page_states = {p['source_page']: p for p in state['pages']} if state else {}
+    scope = set(selected)
+    sample = state and state.get('document', {}).get('delivery_scope') == 'sample'
+    for n in selected:
+        original, page = reader.pages[n-1], doc[n-1]
+        try:
+            check_stream(original.get_contents(), original.get('/Resources', {}), set())
+            for ref in original.get('/Annots', []):
+                annotation = ref.get_object()
+                if annotation.get('/Subtype') != '/Link':
+                    annotation_policy(annotation, page, page_states.get(n))
+            if list(page.widgets() or []):
+                raise ValueError(f'Interactive widgets are unsupported on source page {n}; refusing to discard them')
+        except (ValueError, KeyError, TypeError) as exc:
+            report('interaction_preflight', str(exc), n)
+        for link in page.get_links():
+            if link['kind'] not in (fitz.LINK_URI, fitz.LINK_GOTO):
+                report('interaction_preflight', f'Unsupported link kind on page {n}', n)
+            if link['kind'] == fitz.LINK_GOTO and link.get('page', -1)+1 not in scope:
+                if not sample:
+                    report('link_destination_outside_scope',
+                           f'Selected pages exclude a link destination from page {n}; include its destination', n)
+                elif collect:
+                    report('sample_link_omitted', f'Link target {link.get("page", -1)+1} is outside the sample', n)
+    return findings
 
 def migrate_raw_links(source_doc,source_path,pdf_bytes,selected,password=None,state=None):
     """Preserve destination modes and nullable axes that get_links cannot represent."""
@@ -718,6 +741,42 @@ def verify_draw_collisions(block,boxes,index):
     return sorted(conflicts)
 
 
+def glyph_location(code, origin):
+    return code, round(origin[0], 2), round(origin[1], 2)
+
+
+def right_visible_trace(page, width):
+    """Count visible, positioned glyphs in the reused right pane."""
+    return Counter(
+        glyph_location(code, (origin[0]-width, origin[1]))
+        for trace in page.get_texttrace()
+        if trace['type'] in (0, 1) and trace.get('opacity', 1) > 0
+        for code, gid, origin, bounds in trace['chars']
+        if gid >= 0 and origin[0] >= width and not fitz.Rect(bounds).is_empty
+    )
+
+
+def preserved_glyph_conflicts(page_number, protected, before, after, mask_index):
+    conflicts = []
+    for location, glyphs in protected.items():
+        expected = min(before[location], len(glyphs))
+        missing = expected - after[location]
+        if missing <= 0:
+            continue
+        # MuPDF can remove text using font-wide boxes. The raw boxes help
+        # identify replacement masks that may have triggered the removal.
+        related = sorted({bid for g, _ in glyphs
+                          for _, bid in mask_index.intersections(g['bbox'], 0)})
+        conflicts.append({
+            'page': page_number, 'code': 'preserved_glyph_removed',
+            'block': glyphs[0][1], 'preserved_blocks': sorted({bid for _, bid in glyphs}),
+            'character': chr(location[0]), 'origin': list(location[1:]),
+            'missing_count': missing, 'related_replacement_blocks': related,
+            'detail': 'Right-pane redaction removed preserved text; inspect the nearby replacements before rebuilding.',
+        })
+    return conflicts
+
+
 def build(source,state_path,output,pages='all',overwrite=False,password=None):
     source,state_path,output=map(lambda p:Path(p).resolve(),(source,state_path,output))
     destinations=[output,output.with_suffix('.state.json'),output.with_suffix('.font-runs.json')]
@@ -765,6 +824,7 @@ def build(source,state_path,output,pages='all',overwrite=False,password=None):
             by_id={g['id']:g for g in pstate['glyphs']}
             pstate['redaction_regions']=[]
             deleted=set();masks=[];carriers=ligature_carriers(pstate['glyphs'])
+            owners = {g['id']: b['id'] for b in pstate['blocks'] for g in selected_glyphs(b, by_id)}
             for b in pstate['blocks']:
                 if b['method'] not in ('replace','cover'):continue
                 glyphs=selected_glyphs(b,by_id)
@@ -795,7 +855,21 @@ def build(source,state_path,output,pages='all',overwrite=False,password=None):
                 if collisions:build_errors.append({'page':n,'block':'redaction','glyph':gid,'detail':'Redaction mask intersects preserved glyphs: '+','.join(collisions)})
                 page.add_redact_annot(mask+fitz.Rect(w,0,w,0),fill=False,cross_out=False)
             if masks:
+                protected = defaultdict(list)
+                for g in pstate['glyphs']:
+                    if (g['id'] not in deleted and g['id'] not in carriers
+                            and not g['hidden'] and g['text'].strip() and g['id'] in owners):
+                        protected[glyph_location(ord(g['text']), g['origin'])].append((g, owners[g['id']]))
+                before = right_visible_trace(page, w) if protected else None
                 page.apply_redactions(images=0,graphics=0,text=0)
+                if before:
+                    after = right_visible_trace(page, w)
+                    if any(min(before[key], len(gs)) > after[key] for key, gs in protected.items()):
+                        mask_index = CollisionIndex()
+                        for ids, mask in merged:
+                            for bid in {owners[gid] for gid in ids.split(',')}:
+                                mask_index.add('replacement', bid, mask)
+                        build_errors.extend(preserved_glyph_conflicts(n, protected, before, after, mask_index))
             collision_index=CollisionIndex()
             for g in pstate['glyphs']:
                 if g['id'] not in deleted and not g['hidden'] and g['text'].strip():collision_index.add('preserved',g['id'],effective_boxes[g['id']])

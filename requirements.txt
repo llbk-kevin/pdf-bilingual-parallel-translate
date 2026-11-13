@@ -1,5 +1,5 @@
 # Runtime dependencies for in-place building and verification.
-pypdf>=6.10,<7
+pypdf[crypto]>=6.10,<7
 pypdfium2>=5.13,<6
 Pillow>=12,<13
 fonttools>=4.50,<5

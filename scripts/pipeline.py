@@ -31,6 +31,10 @@ def compact_inventory(state):
 
 def prepare(args):
     sp=Path(args.state).resolve()
+    # Check the original reader before writing a recovery package. The builder
+    # uses it for raw destinations even when MuPDF already opens the document.
+    reader = pt.checked_reader(args.source)
+    reader.close()
     result=ip.extract(args.source,sp,args.pages,args.overwrite,profile=args.profile or 'practical')
     state=load(sp)
     selected=result['pages']
@@ -50,7 +54,7 @@ def prepare(args):
     risks=[]
     with ip.open_source(args.source) as doc:
         for page in state['pages']:
-            n=page['source_page'];pdf_page=doc[n-1]
+            n=page['source_page']
             if not page['glyphs']:risks.append({'page':n,'code':'image_or_outline_page','action':'Inspect source image; add local covers without hiding artwork'})
             math_blocks=[b for b in page['blocks'] if sum(c in '=±∑√∫≤≥×÷' for c in b['source_text'])>=2]
             if len(math_blocks)>=2:
@@ -62,8 +66,7 @@ def prepare(args):
                 if any(ord(c)<32 and c not in '\n\r\t' for c in text):
                     risks.append({'page':n,'block':b['id'],'code':'unreliable_text_encoding','action':'Read source crop; preserve formula/identifier instead of guessing'})
                 if b.get('hidden_ocr'):risks.append({'page':n,'block':b['id'],'code':'hidden_ocr','action':'Cover visible scan only after checking local bounds'})
-            try:ip.check_interactions(doc,[n],state)
-            except (ValueError,KeyError,TypeError) as exc:risks.append({'page':n,'code':'interaction_preflight','detail':str(exc)})
+        risks.extend(ip.check_interactions(doc, selected, state, collect=True))
     save(sp,state);save(sp.parent/'inventory.json',compact_inventory(state));save(sp.parent/'preflight.json',{'risks':risks})
     return {'state':str(sp),'runner':str(sp.parent/'pipeline.py'),'inventory':str(sp.parent/'inventory.json'),
             'preflight':str(sp.parent/'preflight.json'),'pages':selected,'profile':state['layout']['review_profile'],
@@ -132,7 +135,12 @@ def apply_edits(args):
         merge=edit.get('merge_ids')
         if merge:
             parts=[next((b for b in page['blocks'] if b['id']==x),None) for x in merge]
-            if any(b is None for b in parts) or len(set(merge))!=len(merge):raise ValueError('Invalid merge_ids')
+            missing = [source_id for source_id, part in zip(merge, parts) if part is None]
+            if missing or len(set(merge)) != len(merge):
+                raise ValueError(json.dumps({
+                    'code': 'invalid_merge_ids', 'page': n, 'block': bid, 'missing_ids': missing,
+                    'detail': 'Merge requires unique current source IDs. After a successful merge, edit the merged ID without merge_ids.',
+                }, ensure_ascii=False))
             if existing is not None and bid not in merge:raise ValueError('Merged ID collides with another block')
             pos=min(page['blocks'].index(b) for b in parts)
             existing=copy.deepcopy(parts[0]);existing['id']=bid
@@ -158,7 +166,7 @@ def apply_edits(args):
     for n in changes.get('inventory_reviewed_pages',[]):
         pages[n]['inventory_reviewed']=True;pages[n]['visual_text_review']='reviewed';changed.add(n)
     for n,values in changes.get('context_pages',{}).items():
-        pages[int(n)]['context_pages']=values;pages[int(n)]['context_reviewed']=True
+        pages[int(n)]['context_pages']=values;pages[int(n)]['context_reviewed']=True;changed.add(int(n))
     if set(changes.get('link_overrides',{})) & set(changes.get('link_overrides_patch',{})):
         raise ValueError('Use either full link_overrides or link_overrides_patch for a page')
     for n,values in changes.get('link_overrides',{}).items():
@@ -181,8 +189,15 @@ def apply_edits(args):
     save(sp,state);save(sp.parent/'inventory.json',compact_inventory(state))
     preview=[sys.executable,str(Path(__file__).resolve()),'build','--state',str(sp)]
     if changed:preview+=['--pages',','.join(map(str,sorted(changed)))]
+    unresolved = [
+        {'page': page['source_page'], 'blocks': [b['id'] for b in page['blocks'] if b['method'] == 'unresolved']}
+        for page in state['pages']
+    ]
+    unresolved = [row for row in unresolved if row['blocks']]
     return {'state':str(sp),'changed_pages':sorted(changed),'preview_argv':preview,
-            'next':'Use preview_argv for local adjustments; omit --pages for final full selection. After rebuilding, verify --previous-state OLD_ACCEPTED.state.json to retain unchanged reviews.'}
+            'unresolved_count':sum(len(row['blocks']) for row in unresolved),
+            'unresolved_by_page':unresolved,
+            'next':'Use preview_argv for local adjustments; omit --pages for final full selection. After rebuilding, verify --previous-state PREVIOUS.state.json to retain unchanged reviews.'}
 
 
 def build(args):
@@ -215,23 +230,34 @@ def rebase_record(record,base):
     return value
 
 
-def reuse_reviews(sp, index, index_path, previous_path, old):
-    if wf.validate_reviews(old,previous_path):return []
-    by_page={r['page']:r for r in old.get('qc',{}).get('page_reviews',[])};records=[]
+def reuse_reviews(sp, index, index_path, index_hash, previous_path, old, current):
+    by_page, _ = wf.checked_page_reviews(old, previous_path)
+    records = []
     for row in index['pages']:
         n=row['source_page'];original=by_page.get(n)
-        if not original:continue
+        if not original or n in current:continue
         if original.get('mode')=='reused':original=original['previous']
         if (original['settings_sha256']!=index['settings_sha256'] or
             original['pixel_sha256']!=row['pixel_sha256'] or original['page_content_sha256']!=row['page_content_sha256']):continue
         records.append({'page':n,'mode':'reused','output_sha256':index['output_sha256'],
-                        'render_index':{'path':ref(index_path,sp.parent),'sha256':wf.digest(index_path)},
+                        'render_index':{'path':ref(index_path,sp.parent),'sha256':index_hash},
                         'settings_sha256':index['settings_sha256'],
                         **{k:row[k] for k in ('image_sha256','pixel_sha256','page_content_sha256')},
                         'reviewer':original['reviewer'],'reviewed_at':original['reviewed_at'],
                         'evidence':original['evidence'],'previous':rebase_record(original,previous_path.parent),
+                        'covers_checked':original.get('covers_checked', []),
                         'reuse_reason':'Identical pixels, settings and declared page dependencies; original observation retained.'})
     return records
+
+
+def pages_needing_review(state, report, index, records):
+    pending = {r['source_page'] for r in index['pages']} - records.keys()
+    if state['layout']['review_profile'] == 'practical':
+        decisions = {d['finding_sha256'] for d in state['qc']['audit_dispositions']}
+        pending.update(f['page'] for f in report['findings']
+                       if f['code'] == 'right_graphics_changed_outside_recorded_regions'
+                       and wf.canonical(f) not in decisions)
+    return sorted(pending)
 
 
 def verification_paths(sp,state):
@@ -260,39 +286,53 @@ def verify(args):
         files={str(p):wf.digest(p) for p in checkdir.rglob('*') if p.is_file()}
         save(manifest,{'files':files,'created_at':now()})
     report=load(checkdir/'audit.json');index_path=checkdir/'renders'/'index.json';index=load(index_path)
-    records=state.get('qc',{}).get('page_reviews',[])
-    if prior and not records:
-        records = reuse_reviews(sp, index, index_path, previous_path, prior)
+    index_hash = wf.digest(index_path)
+    current, _ = wf.checked_page_reviews(state, sp)
+    reused = reuse_reviews(sp, index, index_path, index_hash, previous_path, prior, current) if prior else []
+    records = sorted([*current.values(), *reused], key=lambda record: record['page'])
+    current_findings = {wf.canonical(f) for f in report['findings'] if f.get('page') in current}
     old_qc=state.get('qc',{})
     state['qc']={'content_sha256':pt.content_hash(state),'source_sha256':state['source']['sha256'],
                  'output_sha256':state['output']['sha256'],'audit_path':ref(checkdir/'audit.json',sp.parent),
                  'font_assignments':ref(output.with_suffix('.font-runs.json'),sp.parent),
                  'font_report':{'path':ref(checkdir/'fonts.json',sp.parent),'sha256':wf.digest(checkdir/'fonts.json')},
-                 'page_reviews':records,'audit_dispositions':old_qc.get('audit_dispositions',[]),
-                 'retained_notes':old_qc.get('retained_notes',[])}
-    if records:
-        state['qc'].update({k:old_qc[k] for k in ('translation_pages','visual_pages','reviewer','reviewed_at','structure','structure_notes') if k in old_qc})
-    if prior and records:
-        reused={r['page'] for r in records if r.get('mode')=='reused'}
-        eligible={wf.canonical(f) for f in report['findings'] if f.get('page') in reused}
+                 'page_reviews':records,
+                 'audit_dispositions':[d for d in old_qc.get('audit_dispositions',[])
+                                       if d['finding_sha256'] in current_findings],
+                 'retained_notes':[note for note in old_qc.get('retained_notes',[])
+                                   if note.get('page') in current]}
+    if reused:
+        reused_pages = {record['page'] for record in reused}
+        eligible={wf.canonical(f) for f in report['findings'] if f.get('page') in reused_pages}
         known={d['finding_sha256'] for d in state['qc']['audit_dispositions']}
         for decision in prior.get('qc',{}).get('audit_dispositions',[]):
             h=decision['finding_sha256']
             if h in eligible and h not in known:
                 state['qc']['audit_dispositions'].append(copy.deepcopy(decision));known.add(h)
         for note in prior.get('qc',{}).get('retained_notes',[]):
-            if note.get('page') in reused and note not in state['qc']['retained_notes']:
+            if note.get('page') in reused_pages and note not in state['qc']['retained_notes']:
                 state['qc']['retained_notes'].append(copy.deepcopy(note))
+    if records:
+        review_pages = [r['page'] for r in records]
+        latest = max(records, key=lambda r: r['reviewed_at'])
+        state['qc'].update(translation_pages=review_pages, visual_pages=review_pages,
+                           reviewer=latest['reviewer'], reviewed_at=latest['reviewed_at'],
+                           structure='passed' if wf.audit_accepted(report, state) else 'pending',
+                           structure_notes=old_qc.get('structure_notes')
+                           or (prior['qc'].get('structure_notes') if reused else None))
     save(sp,state)
     fonts=load(checkdir/'fonts.json')
     hard=[f for f in report['findings'] if f['severity']=='error' and not
           (state['layout']['review_profile']=='practical' and f['code']=='right_graphics_changed_outside_recorded_regions')]
-    reviewed={r['page'] for r in records}
+    pending = pages_needing_review(state, report, index, {r['page']: r for r in records})
     return {'ok':not hard and fonts['mechanical_pass'],'state':str(sp),'cached':cached,'profile':state['layout']['review_profile'],
             'blocking_findings':hard,'font_pass':fonts['mechanical_pass'],
-            'cover_review_needed':[{'page':p['source_page'],'blocks':[b['id'] for b in p['blocks'] if b['method']=='cover']} for p in state['pages'] if p['source_page'] not in reviewed and any(b['method']=='cover' for b in p['blocks'])],
+            'cover_review_needed':[{'page':p['source_page'],'blocks':[b['id'] for b in p['blocks'] if b['method']=='cover']} for p in state['pages'] if p['source_page'] in pending and any(b['method']=='cover' for b in p['blocks'])],
             'finding_counts':counts(report['findings']),'audit':str(checkdir/'audit.json'),
-            'render_index':str(index_path),'review_needed':[r['source_page'] for r in index['pages'] if r['source_page'] not in reviewed],
+            'output':str(output), 'output_sha256':index['output_sha256'],
+            'render_index':str(index_path), 'render_index_sha256':index_hash,
+            'reused_pages':[r['page'] for r in records if r['mode']=='reused'],
+            'review_needed':pending,
             'next':'Open listed full-page renders once; zoom only an actual readability concern. Submit observations via review --observations FILE.'}
 
 
@@ -302,22 +342,41 @@ def review(args):
     if not reviewer:raise ValueError('Actual reviewer required')
     # Use the evidence bound by verify, not a path recomputed from today's runner.
     checkdir=wf.resolve(sp.parent,state['qc']['audit_path']).resolve().parent
-    index_path=checkdir/'renders'/'index.json';index=load(index_path)
-    if index.get('output_sha256')!=state['output']['sha256'] or index.get('source_sha256')!=state['source']['sha256']:
-        raise ValueError('Review evidence belongs to another source/output')
-    audit=load(checkdir/'audit.json');qc=state['qc'];records={r['page']:r for r in qc.get('page_reviews',[])}
+    index_path = checkdir/'renders'/'index.json'
+    index_hash = wf.digest(index_path)
+    output = wf.resolve(sp.parent, state['output']['path'])
+    if (observations.get('output_sha256') != state['output']['sha256']
+            or observations.get('render_index_sha256') != index_hash
+            or wf.digest(output) != state['output']['sha256']):
+        raise ValueError('Observations must match the candidate and render index fingerprints returned by verify')
+    manifest = load(checkdir/'verification.json')
+    if manifest['files'].get(str(index_path)) != index_hash:
+        raise ValueError('Bound render index changed after verify')
+    index = load(index_path)
+    if (index['output_sha256'] != state['output']['sha256']
+            or index['source_sha256'] != state['source']['sha256']
+            or any(row['page_content_sha256'] != wf.page_fingerprint(state, row['source_page'])
+                   for row in index['pages'])):
+        raise ValueError('Review evidence belongs to another source, output or state')
+    audit=load(checkdir/'audit.json');qc=state['qc']
+    records, _ = wf.checked_page_reviews(state, sp)
+    pages = observations['pages']
+    page_numbers = [row.get('page') for row in pages]
+    if (any(type(n) is not int or not any(row['source_page'] == n for row in index['pages']) for n in page_numbers)
+            or len(set(page_numbers)) != len(page_numbers)):
+        raise ValueError('Observations must address distinct pages in the candidate')
     dispositions={d['finding_sha256']:d for d in qc.get('audit_dispositions',[])}
     for observation in observations['pages']:
         n=observation['page'];evidence=observation.get('evidence','').strip()
         if not evidence:raise ValueError('Actual image-view event or observation reference required')
-        if observation.get('blocking'):raise ValueError('Do not record acceptance for a page with blocking problems')
+        if observation.get('blocking'):raise ValueError('Submit only unblocked observations; report pages needing repair separately')
         page=next(p for p in state['pages'] if p['source_page']==n)
         covers=[b['id'] for b in page['blocks'] if b['method']=='cover']
         if covers and observation.get('covers_checked') is not True:
             raise ValueError('Page '+str(n)+' has cover blocks: compare source and output for hidden diagrams/table values, then set covers_checked=true in actual observations')
         row=next(r for r in index['pages'] if r['source_page']==n)
         records[n]={'page':n,'mode':'viewed','output_sha256':index['output_sha256'],
-                    'render_index':{'path':ref(index_path,sp.parent),'sha256':wf.digest(index_path)},
+                    'render_index':{'path':ref(index_path,sp.parent),'sha256':index_hash},
                     'settings_sha256':index['settings_sha256'],
                     **{k:row[k] for k in ('image_sha256','pixel_sha256','page_content_sha256')},
                     'reviewer':reviewer,'reviewed_at':observation.get('viewed_at') or now(),'evidence':evidence,'covers_checked':covers}
@@ -334,10 +393,15 @@ def review(args):
               structure_notes=observations.get('structure_notes') or 'Basic page readability reviewed; diagnostic warnings retained in the audit. See retained notes and explicit difference dispositions.',
               review_scope='basic-readability' if state['layout']['review_profile']=='practical' else 'strict')
     qc['structure']='passed' if wf.audit_accepted(audit,state) else 'pending'
+    saved_pages = sorted(page_numbers)
+    # Check the newly submitted evidence before committing any page records.
+    submitted_state = {**state, 'qc': {'page_reviews': [records[n] for n in saved_pages]}}
+    _, errors = wf.checked_page_reviews(submitted_state, sp)
+    if errors:
+        raise ValueError(json.dumps(errors, ensure_ascii=False))
     save(sp,state);result=pt.check_state(sp,True);save(checkdir/'final-check.json',result)
-    saved_pages=sorted(o['page'] for o in observations['pages'])
     return {'state':str(sp),'observations_saved':True,'saved_pages':saved_pages,
-            'reviewed_pages':sorted(records),'review_needed':[r['source_page'] for r in index['pages'] if r['source_page'] not in records],
+            'reviewed_pages':sorted(records),'review_needed':pages_needing_review(state, audit, index, records),
             'ready':result['ready_for_delivery'],'errors':result['errors'],
             'next':('Publish accepted sample/full PDF.' if result['ready_for_delivery'] else
                     'Observations saved; final delivery is not ready. Review remaining pages or rebuild full selection, then verify --previous-state '+str(sp)+' to reuse eligible evidence. Do not repeat saved page viewing without a changed dependency.')}
@@ -445,7 +509,10 @@ def main(argv=None):
         except (ValueError,TypeError):pass
         log=Path(args.state).resolve().parent/'last-error.json';save(log,{'command':args.command,'detail':detail})
         conflicts=(detail.get('layout_conflicts',[])+detail.get('link_conflicts',[])) if isinstance(detail,dict) else []
-        summary={'ok':False,'command':args.command,'report':str(log),'affected_pages':sorted({x['page'] for x in conflicts})}
+        affected = {x['page'] for x in conflicts}
+        if isinstance(detail,dict) and 'page' in detail:
+            affected.add(detail['page'])
+        summary={'ok':False,'command':args.command,'report':str(log),'affected_pages':sorted(affected)}
         summary['error']=str(exc)[:1200] if not conflicts else 'Batch build conflicts: '+str(len(conflicts))
         message=json.dumps(summary,ensure_ascii=False)
         print(message);print(message,file=sys.stderr)

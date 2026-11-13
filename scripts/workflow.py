@@ -3,6 +3,7 @@ import hashlib
 import json
 import math
 import re
+from collections import Counter
 from html import unescape
 from pathlib import Path
 
@@ -253,26 +254,34 @@ def check_fonts(state_path, assignments_path):
                     'Unsupported fonts remain unverified; inspect the final rendered pages.'}
 
 
-def validate_reviews(state, state_path):
-    """Validate records against real render files. Does not manufacture reviews."""
-    errors = []
+def checked_page_reviews(state, state_path):
+    """Return each independently valid review and diagnostics for rejected records."""
+    errors, valid = [], {}
     base = Path(state_path).parent
     records = state.get('qc', {}).get('page_reviews', [])
-    expected = {p['source_page'] for p in state['pages']}
-    if not isinstance(records, list) or len(records) != len(expected):
-        return [{'code': 'incomplete_page_review_evidence'}]
-    seen = set()
+    expected = {p['source_page']: p for p in state['pages']}
+    if not isinstance(records, list):
+        return valid, [{'code': 'invalid_page_review_evidence', 'detail': 'Records must be a list'}]
+    counts = Counter(record.get('page') for record in records
+                     if isinstance(record, dict) and type(record.get('page')) is int)
+    indices = {}
     def evidence(record):
         ref = record['render_index']
         index_path = resolve(base, ref['path'])
-        if digest(index_path) != ref['sha256']:
+        if index_path not in indices:
+            index_bytes = index_path.read_bytes()
+            index = json.loads(index_bytes.decode('utf-8'))
+            if canonical(index['settings']) != index['settings_sha256']:
+                raise ValueError('Render settings fingerprint invalid')
+            indices[index_path] = (hashlib.sha256(index_bytes).hexdigest(), index)
+        index_hash, index = indices[index_path]
+        if index_hash != ref['sha256']:
             raise ValueError('Render index changed')
-        index = load(index_path)
-        row = next(x for x in index['pages'] if x.get('source_page', x['output_page']) == record['page'])
+        row = next(x for x in index['pages'] if x['source_page'] == record['page'])
         if index['output_sha256'] != record['output_sha256']:
             raise ValueError('Review references another PDF')
-        if canonical(index['settings']) != index['settings_sha256']:
-            raise ValueError('Render settings fingerprint invalid')
+        if index['source_sha256'] != state['source']['sha256']:
+            raise ValueError('Review references another source')
         if index['settings_sha256'] != record['settings_sha256']:
             raise ValueError('Render settings changed')
         if digest(index_path.parent / row['image']) != row['image_sha256']:
@@ -293,9 +302,11 @@ def validate_reviews(state, state_path):
             continue
         try:
             n = record['page']
-            if n not in expected or n in seen:
+            if type(n) is not int or n not in expected or counts[n] != 1:
                 raise ValueError('Invalid or duplicate review page')
-            seen.add(n)
+            covers = [b['id'] for b in expected[n]['blocks'] if b.get('method') == 'cover']
+            if covers and record.get('covers_checked') != covers:
+                raise ValueError('Missing review of current covers')
             evidence(record)
             if record['output_sha256'] != state['output']['sha256']:
                 raise ValueError('Stale review output')
@@ -307,15 +318,22 @@ def validate_reviews(state, state_path):
                 evidence(previous)
                 if previous['mode'] != 'viewed' or not record.get('reuse_reason'):
                     raise ValueError('Reuse requires an original viewed record and reason')
-                for k in ('page', 'pixel_sha256', 'page_content_sha256', 'settings_sha256'):
+                for k in ('page', 'pixel_sha256', 'page_content_sha256', 'settings_sha256',
+                          'reviewer', 'reviewed_at', 'evidence'):
                     if previous[k] != record[k]:
                         raise ValueError('Reused page differs: ' + k)
             elif mode != 'viewed':
                 raise ValueError('Page was not actually viewed')
-        except (KeyError, ValueError, TypeError, OSError, StopIteration) as exc:
+            valid[n] = record
+        except (KeyError, ValueError, TypeError, OSError, StopIteration, AttributeError) as exc:
             errors.append({'code': 'invalid_page_review_evidence', 'page': record.get('page'),
                            'detail': str(exc)})
-    if seen != expected:
+    return valid, errors
+
+
+def validate_reviews(state, state_path):
+    valid, errors = checked_page_reviews(state, state_path)
+    if set(valid) != {p['source_page'] for p in state['pages']}:
         errors.append({'code': 'incomplete_page_review_evidence'})
     return errors
 

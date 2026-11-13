@@ -39,6 +39,8 @@ class PracticalPipeline(unittest.TestCase):
     def observations(self,result):
         sp=Path(result['state']);s=wf.load(sp)
         obs={'reviewer':'synthetic fixture, not human QA','pages':[{'page':p['source_page'],'evidence':'Synthetic pipeline attestation for regression only','viewed_at':'2020-01-01T00:00:00+00:00'} for p in s['pages']]}
+        index = wf.resolve(sp.parent, s['qc']['audit_path']).parent/'renders'/'index.json'
+        obs.update(output_sha256=s['output']['sha256'], render_index_sha256=wf.digest(index))
         op=self.root/'observations.json';pl.save(op,obs)
         return Namespace(state=str(sp),observations=str(op))
     def test_prepare_apply_and_source_preservation(self):
@@ -368,5 +370,156 @@ class PracticalPipeline(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'Rebuild parent'):
             pl.publish(Namespace(state=result['state'],output=str(destination),overwrite=False))
         self.assertFalse(destination.exists());self.assertEqual(blocked.read_text(encoding='utf-8'),'Not a directory')
+
+    def test_partial_reviews_survive_local_repair_and_merge_with_current_observations(self):
+        source = self.root/'three-pages.pdf'
+        with fitz.open(self.source) as doc:
+            page = doc.new_page(width=240, height=180)
+            page.insert_text((20, 40), 'Another label')
+            doc.save(source)
+        self.source = source
+        self.prepared()
+        previous = self.built()
+        verified = pl.verify(Namespace(state=previous['state'], previous_state=None))
+        self.assertEqual(verified['review_needed'], [1, 2, 3])
+        obs = self.observations(previous)
+        data = wf.load(obs.observations)
+        data['pages'] = data['pages'][1:2]
+        pl.save(obs.observations, data)
+        self.assertFalse(pl.review(obs)['ready'])
+        original = wf.load(previous['state'])['qc']['page_reviews'][0]
+
+        state = wf.load(self.sp)
+        block = next(b for b in state['pages'][0]['blocks'] if b['method'] == 'replace')
+        edits = self.root/'repair.json'
+        pl.save(edits, {'blocks': [{'page': 1, 'id': block['id'], 'translation': '项目'}]})
+        preview = pl.apply_edits(self.args(edits=str(edits)))
+        preview_args = self.args()
+        preview_args.pages = preview['preview_argv'][-1]
+        self.assertEqual(pl.build(preview_args)['pages'], [1])
+        final = self.built()
+        self.assertEqual(final['pages'], [1, 2, 3])
+        args = Namespace(state=final['state'], previous_state=None)
+        pl.verify(args)
+        stale_args = Namespace(state=final['state'], observations=obs.observations)
+        before = Path(final['state']).read_bytes()
+        with self.assertRaisesRegex(ValueError, 'fingerprints returned by verify'):
+            pl.review(stale_args)
+        self.assertEqual(Path(final['state']).read_bytes(), before)
+
+        current = self.observations(final)
+        bound = wf.load(current.observations)
+        for field in ('output_sha256', 'render_index_sha256'):
+            pl.save(current.observations, {**bound, field: '0' * 64})
+            with self.assertRaisesRegex(ValueError, 'fingerprints returned by verify'):
+                pl.review(current)
+            self.assertEqual(Path(final['state']).read_bytes(), before)
+        pl.save(current.observations, bound)
+        data = wf.load(current.observations)
+        page1 = data['pages'][0]
+        data['reviewer'] = 'Current fixture'
+        data['pages'] = data['pages'][2:]
+        pl.save(current.observations, data)
+        self.assertFalse(pl.review(current)['ready'])
+        args.previous_state = previous['state']
+        checked = pl.verify(args)
+        self.assertTrue(checked['cached'])
+        self.assertEqual(checked['reused_pages'], [2])
+        self.assertEqual(checked['review_needed'], [1])
+        records = wf.load(final['state'])['qc']['page_reviews']
+        for field in ('reviewer', 'reviewed_at', 'evidence'):
+            self.assertEqual(records[0][field], original[field])
+        self.assertEqual(records[1]['reviewer'], 'Current fixture')
+        dest = self.root/'accepted.pdf'
+        with self.assertRaises(ValueError):
+            pl.publish(Namespace(state=final['state'], output=str(dest), overwrite=False))
+        self.assertFalse(dest.exists())
+        data['pages'] = [page1]
+        pl.save(current.observations, data)
+        self.assertTrue(pl.review(current)['ready'])
+        self.assertTrue(pl.publish(Namespace(state=final['state'], output=str(dest), overwrite=False))['ready'])
+
+    def test_one_bad_previous_page_does_not_discard_other_observations(self):
+        self.prepared()
+        old = self.built()
+        old_check = pl.verify(Namespace(state=old['state'], previous_state=None))
+        pl.review(self.observations(old))
+        state = wf.load(self.sp)
+        state['pages'][0]['blocks'][0]['translation'] = '项目'
+        pl.save(self.sp, state)
+        current = self.built()
+        index_path = Path(old_check['render_index'])
+        index = wf.load(index_path)
+        old_state = wf.load(old['state'])
+        duplicate = old_state['qc']['page_reviews'][0].copy()
+        old_state['qc']['page_reviews'].append(duplicate)
+        valid, _ = wf.checked_page_reviews(old_state, old['state'])
+        self.assertEqual(set(valid), {2})
+        old_state['qc']['page_reviews'].pop()
+        (index_path.parent/index['pages'][0]['image']).write_bytes(b'changed')
+        valid, errors = wf.checked_page_reviews(old_state, old['state'])
+        self.assertEqual(set(valid), {2})
+        self.assertEqual([x['page'] for x in errors], [1])
+        result = pl.verify(Namespace(state=current['state'], previous_state=old['state']))
+        self.assertEqual(result['reused_pages'], [2])
+        self.assertEqual(result['review_needed'], [1])
+
+    def test_aes_preflight_uses_declared_link_scope(self):
+        from pypdf import PdfWriter
+        plain = self.root/'plain.pdf'
+        with fitz.open(self.source) as doc:
+            doc[0].insert_link({'kind': fitz.LINK_GOTO, 'from': fitz.Rect(20, 60, 80, 80), 'page': 1})
+            doc.save(plain)
+        writer = PdfWriter(clone_from=plain)
+        writer.encrypt('', algorithm='AES-128')
+        writer.write(self.source)
+        self.prepared()
+        risks = wf.load(self.sp.parent/'preflight.json')['risks']
+        self.assertFalse(any('link' in r['code'] or r['code'] == 'interaction_preflight' for r in risks))
+        with fitz.open(self.built()['output']) as doc:
+            self.assertEqual([link['page'] for link in doc[0].get_links()], [1, 1])
+        self.sp = self.root/'sample'/'recovery'/'state.json'
+        self.prepared('1')
+        risks = wf.load(self.sp.parent/'preflight.json')['risks']
+        self.assertIn('sample_link_omitted', {r['code'] for r in risks})
+        sample = wf.load(self.built()['state'])
+        self.assertEqual(len(sample['pages'][0]['omitted_links']), 1)
+
+    def test_encryption_dependency_and_password_errors_are_distinct(self):
+        from pypdf import PdfWriter
+        from pypdf.errors import DependencyError
+        locked = self.root/'locked.pdf'
+        writer = PdfWriter(clone_from=self.source)
+        writer.encrypt('test-password', algorithm='AES-128')
+        writer.write(locked)
+        self.source = locked
+        with patch('pdf_tools.PdfReader.decrypt', side_effect=DependencyError('Missing AES backend')):
+            with self.assertRaisesRegex(ValueError, 'missing_encryption_dependency'):
+                self.prepared()
+        with self.assertRaisesRegex(ValueError, 'password_required'):
+            self.prepared()
+        self.assertFalse(self.sp.exists())
+
+    def test_edit_reports_remaining_blocks_and_stale_merge_sources(self):
+        pl.prepare(Namespace(source=str(self.source), state=str(self.sp), pages='all',
+                             profile='practical', overwrite=False, font=[str(self.font)]))
+        state = wf.load(self.sp)
+        first, numeric = state['pages'][0]['blocks']
+        edits = self.root/'edits.json'
+        pl.save(edits, {'blocks': [{'page': 1, 'id': 'merged', 'merge_ids': [first['id']],
+                                    'method': 'replace', 'translation': '中文', 'font_size': 8}]})
+        result = pl.apply_edits(self.args(edits=str(edits)))
+        self.assertEqual(result['unresolved_count'], 1)
+        self.assertEqual(result['unresolved_by_page'], [
+            {'page': 2, 'blocks': [state['pages'][1]['blocks'][0]['id']]}])
+        self.assertEqual(wf.load(self.sp)['pages'][0]['blocks'][1]['id'], numeric['id'])
+        before = self.sp.read_bytes()
+        with self.assertRaises(ValueError) as failure:
+            pl.apply_edits(self.args(edits=str(edits)))
+        error = json.loads(str(failure.exception))
+        self.assertEqual((error['code'], error['page'], error['block']), ('invalid_merge_ids', 1, 'merged'))
+        self.assertEqual(error['missing_ids'], [first['id']])
+        self.assertEqual(self.sp.read_bytes(), before)
+
 
 if __name__=='__main__':unittest.main()

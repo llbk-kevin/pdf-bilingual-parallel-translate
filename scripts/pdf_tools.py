@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 
 from pypdf import PdfReader
+from pypdf.errors import DependencyError
 from pypdf.generic import IndirectObject, StreamObject
 import pypdfium2 as pdfium
 import pypdfium2.raw as pdfium_c
@@ -59,9 +60,12 @@ def write_json(value, path=None, overwrite=False):
 
 def checked_reader(path):
     r = PdfReader(path)
-    if r.is_encrypted and not r.decrypt(""):
-        if not _PASSWORD or not r.decrypt(_PASSWORD):
-            raise ValueError("PDF requires a valid user-provided password; use --password-env. No guessing.")
+    if r.is_encrypted:
+        try:
+            if not r.decrypt("") and (not _PASSWORD or not r.decrypt(_PASSWORD)):
+                raise ValueError("password_required: Supply a valid password with --password-env to a supported command.")
+        except DependencyError as exc:
+            raise ValueError("missing_encryption_dependency: Install the skill requirements (pypdf[crypto]).") from exc
     return r
 
 
