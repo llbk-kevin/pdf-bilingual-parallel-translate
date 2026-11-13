@@ -2,14 +2,15 @@
 """Extract and build source-faithful in-place bilingual pages (state v3)."""
 from __future__ import annotations
 import argparse
-import copy
 import io
 import json
 import math
 import os
 import re
 import sys
+import tempfile
 from collections import Counter, defaultdict
+from contextlib import closing
 from pathlib import Path
 import pymupdf as fitz
 from workflow import digest, canonical, resolve, pagination_items, state_header_error
@@ -56,8 +57,19 @@ def relative(path, base):
     return os.path.relpath(Path(path).resolve(), Path(base).resolve()).replace('\\', '/')
 
 def write_json(path, value):
-    Path(path).parent.mkdir(parents=True, exist_ok=True)
-    Path(path).write_text(json.dumps(value, ensure_ascii=False, indent=2)+'\n', encoding='utf-8')
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    compact = isinstance(value, dict) and value.get('schema_version') == 3 and 'layout' in value
+    text = json.dumps(value, ensure_ascii=False, **(
+        {'separators': (',', ':')} if compact else {'indent': 2})) + '\n'
+    fd, name = tempfile.mkstemp(dir=path.parent, prefix='.' + path.name + '.', suffix='.tmp')
+    temporary = Path(name)
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8', newline='\n') as stream:
+            stream.write(text)
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 def geometry(page):
     return {'width': page.rect.width, 'height': page.rect.height,
@@ -223,7 +235,7 @@ def validate_page(page, fresh, final=False):
                     raise ValueError('Glyph assigned twice: '+g['id'])
                 owned[g['id']] = method
             allowed = rect(block['allowed_bbox'])
-            if not contains(bounds,allowed):
+            if method != 'preserve' and not contains(bounds,allowed):
                 raise ValueError('Allowed box outside visible page: '+block['id'])
             if not contains(rect(block['source_bbox']),allowed) and not block.get('expansion_reason'):
                 raise ValueError('Expanded box requires an explicit adjacent-blank-space reason: '+block['id'])
@@ -259,7 +271,7 @@ def validate_page(page, fresh, final=False):
         fail(str(exc))
     return errors
 
-def validate_state(state, source, password=None, final=False):
+def validate_state(state, source, password=None, final=False, *, pages=None):
     problem = state_header_error(state)
     if problem:
         code, detail = problem
@@ -270,13 +282,15 @@ def validate_state(state, source, password=None, final=False):
     with open_source(source,password) as doc:
         for page in state['pages']:
             n = page['source_page']
+            if pages is not None and n not in pages:
+                continue
             if not 1 <= n <= len(doc):
                 errors.append({'code':'invalid_source_page','page':n}); continue
             glyphs, _ = text_inventory(doc[n-1],n)
             errors.extend(validate_page(page,{'geometry':geometry(doc[n-1]),'glyphs':glyphs},final))
     return errors
 
-STATIC_ANNOTATIONS={'/Highlight','/Underline','/StrikeOut','/Squiggly','/Square','/Circle','/Ink','/Stamp'}
+STATIC_ANNOTATIONS={'/Text','/Highlight','/Underline','/StrikeOut','/Squiggly','/Square','/Circle','/Ink','/Stamp'}
 TEXT_MARKUP_ANNOTATIONS={'/Highlight','/Underline','/StrikeOut','/Squiggly'}
 
 def annotation_policy(annotation,page,page_state=None):
@@ -286,8 +300,10 @@ def annotation_policy(annotation,page,page_state=None):
         raise ValueError('Unsupported visible annotation type '+subtype+'; no appearance is silently discarded')
     if page.rotation:
         raise ValueError('Rotated-page annotation appearances need a custom migration')
-    if any(k in annotation for k in ('/A','/AA','/Popup','/IRT','/OC')):
-        raise ValueError('Annotation actions, popup/reply threads or layers need a custom migration')
+    from pypdf.generic import NullObject
+    if any(not isinstance(raw_object(annotation.get(k, NullObject())), NullObject)
+           for k in ('/A','/AA','/Popup','/IRT')):
+        raise ValueError('Annotation actions or popup/reply threads need a custom migration')
     appearance=annotation.get('/AP')
     normal=appearance.get_object().get('/N') if appearance else None
     normal=normal.get_object() if hasattr(normal,'get_object') else normal
@@ -304,17 +320,298 @@ def annotation_policy(annotation,page,page_state=None):
             raise ValueError('Text-markup annotation touches replaced text; provide a custom translated-anchor appearance')
     return source_rect
 
-def check_interactions(doc, selected, state=None, *, collect=False):
+
+def raw_object(value):
+    return value.get_object() if hasattr(value, 'get_object') else value
+
+
+class RawNavigation:
+    """Interpret the same raw actions in preflight and composition."""
+
+    modes = {'/XYZ': 3, '/FitH': 1, '/FitBH': 1, '/FitV': 1, '/FitBV': 1,
+             '/FitR': 4, '/Fit': 0, '/FitB': 0}
+
+    def __init__(self, reader):
+        self.reader = reader
+        self.numbers = {(p.indirect_reference.idnum, p.indirect_reference.generation): i
+                        for i, p in enumerate(reader.pages)}
+        self.names = reader.named_destinations
+
+    @staticmethod
+    def numeric(value):
+        from pypdf.generic import NullObject
+
+        if isinstance(value, NullObject):
+            return None
+        if not isinstance(value, (int, float)) or not math.isfinite(value):
+            raise ValueError('Invalid raw destination coordinate')
+        return float(value)
+
+    def parse(self, item, *, heading=False):
+        action = raw_object(item.get('/A', {}))
+        value = item.get('/Dest')
+        if '/AA' in item or '/Next' in action:
+            raise ValueError('Unsupported chained or additional navigation action')
+        if action:
+            kind = action.get('/S')
+            if kind == '/URI' and isinstance(action.get('/URI'), str):
+                return kind, action
+            if kind != '/GoTo':
+                raise ValueError(f'Unsupported raw navigation action: {kind}')
+            value = action.get('/D')
+        if value is None and heading and not action:
+            return None, None
+        value = raw_object(value)
+        if isinstance(value, str):
+            named = self.names.get(value) or self.names.get(value.lstrip('/'))
+            if named is None:
+                raise ValueError('Unknown named link destination: ' + value)
+            value = named.dest_array
+        if not isinstance(value, list) or len(value) < 2:
+            raise ValueError('Unsupported raw link destination')
+        ref, mode, *args = value
+        target = self.numbers.get((ref.idnum, ref.generation)) if hasattr(ref, 'idnum') else ref
+        if not isinstance(target, int) or not 0 <= target < len(self.numbers):
+            raise ValueError('Unknown raw destination page')
+        if mode not in self.modes or len(args) != self.modes[mode]:
+            raise ValueError('Unsupported raw destination mode: ' + str(mode))
+        args = [self.numeric(raw_object(arg)) for arg in args]
+        if mode == '/FitR' and None in args:
+            raise ValueError('Null FitR rectangle unsupported')
+        return '/GoTo', (target, mode, args)
+
+    def outlines(self):
+        root = self.reader.trailer['/Root']
+        first = raw_object(root.get('/Outlines', {})).get('/First')
+        stack = [(0, first)]
+        seen = set()
+        while stack:
+            depth, link = stack.pop()
+            if link is None:
+                continue
+            identity = (link.idnum, link.generation) if hasattr(link, 'idnum') else id(link)
+            if identity in seen:
+                raise ValueError('Cyclic raw bookmark tree')
+            seen.add(identity)
+            item = raw_object(link)
+            yield depth, item
+            stack.extend(((depth, item.get('/Next')), (depth + 1, item.get('/First'))))
+
+
+
+_LAYER_ID = '/BilingualTemporaryLayerID'
+
+
+def layer_catalog(reader):
+    """Validate the supported single default configuration."""
+    root = reader.trailer['/Root']
+    catalog = raw_object(root.get('/OCProperties'))
+    if catalog is None:
+        return None
+    if set(catalog) - {'/OCGs', '/D'} or not catalog.get('/OCGs') or '/D' not in catalog:
+        raise ValueError('Optional-content layers require a single default configuration')
+    config = raw_object(catalog['/D'])
+    if set(config) - {'/Name', '/Creator', '/BaseState', '/ON', '/OFF', '/Order', '/RBGroups', '/Locked', '/Intent'}:
+        raise ValueError('Optional-content usage rules or alternate configurations require explicit support')
+    groups = catalog['/OCGs']
+    if len(set(groups)) != len(groups) or any(
+            raw_object(group).get('/Type') != '/OCG' or _LAYER_ID in raw_object(group)
+            for group in groups):
+        raise ValueError('Invalid or unsupported optional-content group identity')
+    return catalog
+
+
+def native_left_supported(page):
+    # A zero-origin visible box permits byte-preserving inclusion with only a clip.
+    # Keep rotated or offset pages on the existing transform path.
+    media, crop = page.mediabox, page.cropbox
+    return (not page.rotation and media == crop and crop.x0 == crop.y0 == 0
+            and page.rect == crop)
+
+
+
+def probe_left_pane(doc, source, selected, reader):
+    """Test representative high-risk pages before the translation is written."""
+    from pdf_tools import compare_images, open_document, render_image
+    import pypdfium2 as pdfium
+
+    # Form nesting and page transparency can affect rendering. Test the first
+    # and last page and pages carrying these resources.
+    representatives = {selected[0], selected[-1]}
+    representatives.update(n for n in selected if '/Group' in reader.pages[n-1]
+                           or doc[n-1].get_xobjects())
+    findings = []
+    with open_document(source) as original:
+        for n in sorted(representatives):
+            page = doc[n-1]
+            if not page.get_contents() or any(
+                    raw_object(ref).get('/Subtype') != '/Link' or raw_object(ref).get('/AP')
+                    or (len(raw_object(ref).get('/Border', [])) >= 3 and raw_object(ref)['/Border'][2] != 0)
+                    or raw_object(raw_object(ref).get('/BS', {})).get('/W', 0) != 0
+                    for ref in reader.pages[n-1].get('/Annots', [])):
+                continue
+            width, height = page.rect.width, page.rect.height
+            rotation = page.rotation
+            with fitz.open() as probe:
+                left = probe.new_page(width=2*width, height=height)
+                page.set_rotation(0)
+                try:
+                    left.show_pdf_page(fitz.Rect(0, 0, width, height), doc, n-1, rotate=-rotation)
+                finally:
+                    page.set_rotation(rotation)
+                # Layered files are compared after their catalog is mapped.
+                with pdfium.PdfDocument(probe.tobytes()) as candidate:
+                    with closing(original[n-1]) as a, closing(candidate[0]) as b:
+                        with render_image(a) as src, render_image(b) as dst:
+                            comparison, difference = compare_images(src, dst, (0, 0, width, height), 144, 16, .001)
+                            if difference is not None:
+                                difference.close()
+            if not comparison['passed']:
+                supported = native_left_supported(page)
+                findings.append({'page': n,
+                                 'code': 'native_left_required' if supported else 'source_pane_probe_failed',
+                                 'object_type': 'page content / Form XObject',
+                                 'comparison': comparison})
+    return findings
+
+
+def attach_native_left(writer, composed_page, original, width, height):
+    """Prefix isolated raw source streams, keeping original resource names."""
+    from pypdf.generic import ArrayObject, DecodedStreamObject, DictionaryObject, NameObject
+    from pypdf._page import PageObject
+
+    resources_key = NameObject('/Resources')
+    left_resources = raw_object(original.get('/Resources', DictionaryObject())).clone(writer)
+    # Copy the resource dictionaries before adding names; the originals can be
+    # shared by multiple source pages or nested Forms.
+    resources = DictionaryObject(left_resources)
+    right_resources = composed_page[resources_key]
+    renamed = {}
+    for category, right in right_resources.items():
+        if category == '/ProcSet':
+            continue
+        left = DictionaryObject(raw_object(resources.get(category, DictionaryObject())))
+        for name, ref in raw_object(right).items():
+            target = name
+            while target in left and left.raw_get(target) != ref:
+                target = NameObject(str(target) + '_R')
+            if target != name:
+                renamed[name] = target
+            left[target] = ref
+        resources[category] = left
+
+    def stream(data):
+        obj = DecodedStreamObject()
+        obj.set_data(data)
+        return writer._add_object(obj.flate_encode())
+
+    contents = original.get('/Contents')
+    if contents is not None:
+        contents = contents if isinstance(contents, ArrayObject) else [original.raw_get('/Contents')]
+        # q/Q preserve each pane's graphics state; the clip keeps existing marks
+        # outside the original page box out of the expanded right pane.
+        before = stream(f'q\n0 0 {width:.9g} {height:.9g} re W n\n'.encode('ascii'))
+        after = stream(b'Q\n')
+        result = ArrayObject([before, *(ref.clone(writer) for ref in contents), after])
+    else:
+        result = ArrayObject()
+    right = composed_page.get_contents()
+    if right is not None:
+        if renamed:
+            right = PageObject._content_stream_rename(right, renamed, writer)
+        result.append(stream(right.get_data()))
+    composed_page[NameObject('/Contents')] = result
+    composed_page[resources_key] = resources
+    if '/Group' in original:
+        composed_page[NameObject('/Group')] = original['/Group'].clone(writer)
+
+
+
+def share_native_images(writer):
+    """Reuse images and masks even when their equivalent resource refs differ."""
+    from pypdf.generic import ArrayObject, DictionaryObject, IndirectObject
+    from pdf_tools import canonical_object
+
+    images = {}
+    refs = {}
+    for obj in writer._objects:
+        if isinstance(obj, DictionaryObject) and obj.get('/Subtype') == '/Image':
+            signature = canonical(canonical_object(obj))
+            ref = obj.indirect_reference
+            refs[ref] = images.setdefault(signature, ref)
+
+    def rebind(obj):
+        if isinstance(obj, DictionaryObject):
+            values = obj.items()
+        elif isinstance(obj, ArrayObject):
+            values = enumerate(obj)
+        else:
+            return
+        for key, child in values:
+            if isinstance(child, IndirectObject):
+                if child in refs and child != refs[child]:
+                    obj[key] = refs[child]
+            else:
+                rebind(child)
+
+    for obj in writer._objects:
+        rebind(obj)
+
+
+def attach_layer_catalog(writer, catalog):
+    """Bind all right-pane copies to the original OCG identities before deduplication."""
+    from pypdf.generic import ArrayObject, DictionaryObject, IndirectObject, NameObject, NumberObject
+
+    if catalog is None:
+        return []
+    output_catalog = catalog.clone(writer)
+    output_groups = output_catalog['/OCGs']
+    markers = {}
+    for i, ref in enumerate(output_groups):
+        raw_object(ref)[NameObject(_LAYER_ID)] = NumberObject(i)
+        markers[i] = ref
+
+    def rebind(obj):
+        if isinstance(obj, DictionaryObject):
+            values = list(obj.items())
+        elif isinstance(obj, ArrayObject):
+            values = list(enumerate(obj))
+        else:
+            return
+        for key, child in values:
+            resolved = raw_object(child)
+            if isinstance(resolved, DictionaryObject) and resolved.get('/Type') == '/OCG':
+                marker = resolved.get(_LAYER_ID)
+                if marker not in markers or not isinstance(child, IndirectObject):
+                    raise ValueError('Unmapped optional-content group in composed PDF')
+                obj[key] = markers[marker]
+            elif not isinstance(child, IndirectObject):
+                rebind(child)
+
+    for obj in writer._objects:
+        rebind(obj)
+    writer.root_object[NameObject('/OCProperties')] = output_catalog
+    return output_groups
+
+
+def interaction_reader(doc, source=None, password=None):
     from pypdf import PdfReader
+
+    reader = PdfReader(source if source is not None else io.BytesIO(doc.tobytes()))
+    if reader.is_encrypted and not reader.decrypt(password or ''):
+        raise ValueError('password_required: A valid explicitly supplied password is required')
+    return reader
+
+
+def check_interactions(doc, selected, state=None, *, collect=False, preview=False, reader=None):
     from pypdf.generic import ContentStream
 
-    reader = PdfReader(io.BytesIO(doc.tobytes()))
+    reader = interaction_reader(doc) if reader is None else reader
+    nav = RawNavigation(reader)
     findings = []
 
-    def report(code, detail, page=None):
-        if not collect:
-            raise ValueError(detail)
-        finding = {'code': code, 'detail': detail}
+    def report(code, detail, page=None, **location):
+        finding = {'code': code, 'detail': detail, **location}
         if page is not None:
             finding['page'] = page
         findings.append(finding)
@@ -324,120 +621,162 @@ def check_interactions(doc, selected, state=None, *, collect=False):
             for operands, operator in ContentStream(stream, reader).operations:
                 if operator == b'Tr' and operands and int(operands[0]) >= 4:
                     raise ValueError('Text clipping render modes 4-7 are unsupported; refusing to change clipped graphics')
-        for ref in resources.get('/XObject', {}).values():
-            obj = ref.get_object()
+        for ref in raw_object(resources.get('/XObject', {})).values():
+            obj = raw_object(ref)
             if obj.get('/Subtype') != '/Form':
                 continue
-            key = getattr(ref, 'idnum', id(obj))
+            child_resources = raw_object(obj.get('/Resources', resources))
+            key = (getattr(ref, 'idnum', id(obj)), id(child_resources))
             if key not in seen:
                 seen.add(key)
-                check_stream(obj, obj.get('/Resources', resources), seen)
+                try:
+                    check_stream(obj, child_resources, seen)
+                except Exception:
+                    seen.discard(key)
+                    raise
 
-    if doc.embfile_count() or doc.get_ocgs():
-        report('interaction_preflight', 'Attachments/optional-content layers require explicit preservation support; refusing to flatten')
-    for _, _, _, dest in doc.get_toc(simple=False):
-        point = dest.get('to')
-        if point is not None and not all(math.isfinite(v) for v in point):
-            report('interaction_preflight', 'Nonfinite bookmark axes require a raw-destination custom migration')
-        if dest.get('kind', fitz.LINK_GOTO) not in (fitz.LINK_NONE, fitz.LINK_GOTO, fitz.LINK_URI):
-            report('interaction_preflight', 'Unsupported bookmark action; refusing to discard it')
+    catalog = None
+    try:
+        catalog = layer_catalog(reader)
+    except ValueError as exc:
+        report('interaction_preflight', str(exc))
+    layer_refs = set(catalog['/OCGs']) if catalog is not None else set()
+    if doc.embfile_count():
+        report('interaction_preflight', 'Embedded attachments require explicit preservation support')
+    form = raw_object(reader.trailer['/Root'].get('/AcroForm', {}))
+    if form.get('/Fields') or form.get('/XFA'):
+        report('interaction_preflight', 'Interactive forms require explicit preservation support')
 
     page_states = {p['source_page']: p for p in state['pages']} if state else {}
     scope = set(selected)
-    sample = state and state.get('document', {}).get('delivery_scope') == 'sample'
+    allow_omission = preview or state and state.get('document', {}).get('delivery_scope') == 'sample'
+    try:
+        for i, (_, item) in enumerate(nav.outlines()):
+            try:
+                nav.parse(item, heading=True)
+            except (ValueError, KeyError, TypeError) as exc:
+                report('bookmark_action', str(exc), bookmark=i, title=str(item.get('/Title', '')))
+    except ValueError as exc:
+        report('bookmark_tree', str(exc))
+    seen = set()
     for n in selected:
         original, page = reader.pages[n-1], doc[n-1]
         try:
-            check_stream(original.get_contents(), original.get('/Resources', {}), set())
-            for ref in original.get('/Annots', []):
-                annotation = ref.get_object()
-                if annotation.get('/Subtype') != '/Link':
-                    annotation_policy(annotation, page, page_states.get(n))
-            if list(page.widgets() or []):
-                raise ValueError(f'Interactive widgets are unsupported on source page {n}; refusing to discard them')
+            check_stream(original.get_contents(), raw_object(original.get('/Resources', {})), seen)
         except (ValueError, KeyError, TypeError) as exc:
             report('interaction_preflight', str(exc), n)
-        for link in page.get_links():
-            if link['kind'] not in (fitz.LINK_URI, fitz.LINK_GOTO):
-                report('interaction_preflight', f'Unsupported link kind on page {n}', n)
-            if link['kind'] == fitz.LINK_GOTO and link.get('page', -1)+1 not in scope:
-                if not sample:
-                    report('link_destination_outside_scope',
-                           f'Selected pages exclude a link destination from page {n}; include its destination', n)
-                elif collect:
-                    report('sample_link_omitted', f'Link target {link.get("page", -1)+1} is outside the sample', n)
+        link_number = -1
+        for ref in original.get('/Annots', []):
+            annotation = raw_object(ref)
+            if annotation.get('/Subtype') != '/Link':
+                try:
+                    annotation_policy(annotation, page, page_states.get(n))
+                    if '/OC' in annotation and annotation.raw_get('/OC') not in layer_refs:
+                        raise ValueError('Annotation uses an unsupported optional-content membership')
+                except (ValueError, KeyError, TypeError) as exc:
+                    report('interaction_preflight', str(exc), n, subtype=str(annotation.get('/Subtype')))
+                continue
+            link_number += 1
+            try:
+                if annotation.get('/AP'):
+                    raise ValueError('Link appearance streams require explicit preservation support')
+                if '/OC' in annotation and annotation.raw_get('/OC') not in layer_refs:
+                    raise ValueError('Link uses an unsupported optional-content membership')
+                coords = [float(v) for v in annotation['/Rect']]
+                if len(coords) != 4 or not all(math.isfinite(v) for v in coords):
+                    raise ValueError('Invalid raw link rectangle')
+                kind, target = nav.parse(annotation)
+                if kind == '/GoTo' and target[0]+1 not in scope:
+                    code = 'sample_link_omitted' if allow_omission else 'link_destination_outside_scope'
+                    report(code, f'Selected pages exclude a link destination from page {n}', n,
+                           source_link=link_number, target_page=target[0]+1)
+            except (ValueError, KeyError, TypeError) as exc:
+                report('link_action', str(exc), n, source_link=link_number)
+    blockers = [finding for finding in findings if finding['code'] != 'sample_link_omitted']
+    if blockers and not collect:
+        raise ValueError(json.dumps({'code': 'interaction_preflight', 'findings': blockers}, ensure_ascii=False))
     return findings
 
-def migrate_raw_links(source_doc,source_path,pdf_bytes,selected,password=None,state=None):
+
+def migrate_raw_links(source_doc,source_path,pdf_bytes,selected,password=None,state=None, *, reader=None, native_pages=()):
     """Preserve destination modes and nullable axes that get_links cannot represent."""
     from pypdf import PdfReader, PdfWriter
     from pypdf.generic import ArrayObject, DictionaryObject, NameObject, NullObject, FloatObject
-    reader=PdfReader(source_path)
-    if reader.is_encrypted:reader.decrypt(password or '')
+    reader = interaction_reader(source_doc, source_path, password) if reader is None else reader
     composed=PdfReader(io.BytesIO(pdf_bytes))
-    # append shares cloned resources while avoiding clone_from's source /Size
-    # heuristic (direct objects may become additional indirect objects).
-    writer=PdfWriter();writer.append(composed,import_outline=False)
-    # Clone the original tree: append's outline importer drops no-action headings.
-    if composed.trailer["/Root"].get("/Outlines"):
-        writer._root_object[NameObject("/Outlines")]=composed.trailer["/Root"]["/Outlines"].clone(writer)
-    if composed.metadata:writer.add_metadata(composed.metadata)
-    source_numbers={(p.indirect_reference.idnum,p.indirect_reference.generation):i for i,p in enumerate(reader.pages)}
+    writer=PdfWriter()
+    writer.append(composed,import_outline=False)
+    if reader.metadata:
+        writer.add_metadata(reader.metadata)
+    if metadata := reader.trailer['/Root'].get('/Metadata'):
+        writer.root_object[NameObject('/Metadata')] = metadata.clone(writer)
+    nav = RawNavigation(reader)
     mapping={n-1:i for i,n in enumerate(selected)}
     transforms={}
     for n in selected:
         p=source_doc[n-1];rotation=p.rotation;rm=p.rotation_matrix
         p.set_rotation(0);tm=p.transformation_matrix;p.set_rotation(rotation)
         transforms[n-1]=tm*rm
-    def numeric(value):
-        if value is None or isinstance(value,NullObject):return None
-        number=float(value)
-        if not math.isfinite(number):raise ValueError('Nonfinite raw link coordinate')
-        return number
     def number(value):return NullObject() if value is None else FloatObject(value)
     def coordinate(x,y,a,b,offset):
-        x,y=numeric(x),numeric(y)
         if (abs(a)>1e-8 and x is None) or (abs(b)>1e-8 and y is None):return None
         return a*(x or 0)+b*(y or 0)+offset
-    def destination(value,pane):
-        value=value.get_object() if hasattr(value,'get_object') else value
-        if isinstance(value,str):
-            names=reader.named_destinations
-            named=names.get(value) or names.get(value.lstrip('/'))
-            if named is None:raise ValueError('Unknown named link destination: '+value)
-            value=named.dest_array
-        if not isinstance(value,(list,ArrayObject)) or len(value)<2:raise ValueError('Unsupported raw link destination')
-        ref=value[0]
-        if hasattr(ref,'idnum'):target=source_numbers.get((ref.idnum,ref.generation))
-        else:target=int(ref) if isinstance(ref,int) else None
+    def destination(target, pane):
+        target, mode, args = target
         if target not in mapping:
-            if state and state.get('document',{}).get('delivery_scope')=='sample':return None
-            raise ValueError('Selected pages exclude raw link destination')
+            return None
         p=source_doc[target];w,h=p.rect.width,p.rect.height
         m=transforms[target]*fitz.Matrix(1,0,0,1,pane*w,0)*fitz.Matrix(1,0,0,-1,0,h)
-        mode=str(value[1]);args=list(value[2:])
-        if mode=='/XYZ' and len(args)==3:
+        if mode=='/XYZ':
             x,y,z=args
-            args=[number(coordinate(x,y,m.a,m.c,m.e)),number(coordinate(x,y,m.b,m.d,m.f)),number(numeric(z))]
-        elif mode in ('/FitH','/FitBH') and len(args)==1:
+            args=[number(coordinate(x,y,m.a,m.c,m.e)),number(coordinate(x,y,m.b,m.d,m.f)),number(z)]
+        elif mode in ('/FitH','/FitBH'):
             if abs(m.d)>1e-8:args=[number(coordinate(None,args[0],m.b,m.d,m.f))]
             else:
                 args=[number(coordinate(None,args[0],m.a,m.c,m.e))]
                 mode='/FitBV' if mode=='/FitBH' else '/FitV'
-        elif mode in ('/FitV','/FitBV') and len(args)==1:
+        elif mode in ('/FitV','/FitBV'):
             if abs(m.a)>1e-8:args=[number(coordinate(args[0],None,m.a,m.c,m.e))]
             else:
                 args=[number(coordinate(args[0],None,m.b,m.d,m.f))]
                 mode='/FitBH' if mode=='/FitBV' else '/FitH'
-        elif mode=='/FitR' and len(args)==4:
-            if any(numeric(a) is None for a in args):raise ValueError('Null FitR rectangle unsupported')
-            r=fitz.Rect([float(a) for a in args])*m;args=[FloatObject(v) for v in r]
-        elif mode in ('/Fit','/FitB') and not args:pass
-        else:raise ValueError('Unsupported raw destination mode: '+mode)
+        elif mode=='/FitR':
+            r=fitz.Rect(args)*m;args=[FloatObject(v) for v in r]
         return ArrayObject([writer.pages[mapping[target]].indirect_reference,NameObject(mode),*args])
+
+    parents = []
+    omitted_bookmarks = 0
+    for depth, item in nav.outlines():
+        parents = parents[:depth]
+        parent = parents[-1] if parents else None
+        kind, target = nav.parse(item, heading=True)
+        mapped = destination(target, 0) if kind == '/GoTo' else None
+        if kind == '/GoTo' and mapped is None:
+            omitted_bookmarks += 1
+            parents.append(parent)
+            continue
+        entry = writer.add_outline_item(str(item['/Title']), None, parent=parent,
+                                        is_open=item.get('/Count', 0) >= 0)
+        copied = raw_object(entry)
+        for key in ('/Title', '/C', '/F'):
+            if key in item:
+                copied[NameObject(key)] = item[key].clone(writer)
+        if kind == '/URI':
+            copied[NameObject('/A')] = target.clone(writer)
+        elif mapped is not None:
+            copied[NameObject('/Dest')] = mapped
+        parents.append(entry)
+    if state is not None:
+        state['layout']['omitted_bookmarks_for_unselected_pages'] = omitted_bookmarks
+    for n in sorted(native_pages):
+        page = source_doc[n-1]
+        attach_native_left(writer, writer.pages[mapping[n-1]], reader.pages[n-1],
+                           page.rect.width, page.rect.height)
     page_states={p['source_page']:p for p in state['pages']} if state else {}
     for ps in page_states.values():
         ps.pop('link_mappings',None);ps.pop('omitted_links',None)
+    link_geometry = {}
+
     def right_rectangles(n,link_number,source_rect):
         if n not in page_states:return [source_rect]
         ps=page_states[n]
@@ -461,9 +800,23 @@ def migrate_raw_links(source_doc,source_path,pdf_bytes,selected,password=None,st
             boxes=[rect(v) for v in values]
             if any(not contains(source_doc[n-1].rect,r) for r in boxes):raise ValueError('Right link override outside pane')
             return boxes
-        effective=effective_glyph_boxes(source_doc[n-1],ps['glyphs'])
-        linked=[g for g in ps['glyphs'] if g['text'].strip() and source_rect.contains((fitz.Rect(effective[g['id']]).tl+fitz.Rect(effective[g['id']]).br)/2)]
-        ids={g['id'] for g in linked}
+        if n not in link_geometry:
+            effective = effective_glyph_boxes(source_doc[n-1], ps['glyphs'])
+            centers = CollisionIndex()
+            glyphs = {g['id']: g for g in ps['glyphs'] if g['text'].strip()}
+            for gid in glyphs:
+                bounds = fitz.Rect(effective[gid])
+                point = (bounds.tl + bounds.br) / 2
+                centers.add('glyph', gid, fitz.Rect(point.x-.001, point.y-.001, point.x+.001, point.y+.001))
+            link_geometry[n] = centers, glyphs, effective
+        centers, glyphs, effective = link_geometry[n]
+        ids = set()
+        search = source_rect + fitz.Rect(-.002, -.002, .002, .002)
+        for _, gid in centers.intersections(search, 0):
+            bounds = fitz.Rect(effective[gid])
+            if source_rect.contains((bounds.tl + bounds.br) / 2):
+                ids.add(gid)
+        linked = [glyphs[gid] for gid in sorted(ids, key=lambda gid: int(gid.rsplit('-g', 1)[1]))]
         affected=[b for b in ps['blocks'] if b['method'] in ('replace','cover') and ids.intersection(b.get('glyph_ids',[]))]
         if not affected:return [source_rect]
         needle=''.join(g['text'] for g in linked if not g['text'].isspace())
@@ -474,7 +827,7 @@ def migrate_raw_links(source_doc,source_path,pdf_bytes,selected,password=None,st
             if len(visible)!=len(boxes):raise ValueError('Actual link glyph mapping incomplete: '+block['id'])
             if needle and visible.count(needle)==1:
                 index=visible.index(needle);matches.append(boxes[index:index+len(needle)])
-            elif ids.issuperset(g for g in block.get('glyph_ids',[]) if next((v['text'].strip() for v in ps['glyphs'] if v['id']==g),False)):
+            elif ids.issuperset(g for g in block.get('glyph_ids',[]) if g in glyphs):
                 matches.append(boxes)
         if len(matches)!=1 or not matches[0]:
             raise ValueError('Right link text cannot be mapped uniquely on page %d link %d; provide page.link_overrides right_bbox' % (n,link_number))
@@ -483,17 +836,18 @@ def migrate_raw_links(source_doc,source_path,pdf_bytes,selected,password=None,st
         return [union]
     link_conflicts=[]
     for n in selected:
+        link_geometry.clear()
         p=source_doc[n-1];w,h=p.rect.width,p.rect.height
         link_number=-1
         for ref in reader.pages[n-1].get('/Annots',[]):
             annotation=ref.get_object()
             if annotation.get('/Subtype')!='/Link':continue
             link_number+=1
-            raw_action=annotation.get('/A')
-            raw_action=raw_action.get_object() if raw_action else {}
-            raw_dest=raw_action.get('/D') if raw_action.get('/S')=='/GoTo' else annotation.get('/Dest')
-            if raw_dest is not None and destination(raw_dest,0) is None:
-                page_states.get(n,{}).setdefault('omitted_links',[]).append({'source_link':link_number,'reason':'Destination outside explicitly selected sample'})
+            kind, target = nav.parse(annotation)
+            if kind == '/GoTo' and target[0] not in mapping:
+                page_states.get(n, {}).setdefault('omitted_links', []).append({
+                    'source_link': link_number, 'target_page': target[0]+1,
+                    'reason': 'Destination outside the selected preview or sample'})
                 continue
             if annotation.get('/AP'):raise ValueError('Link appearance streams require explicit preservation support')
             source_rect=fitz.Rect([float(a) for a in annotation['/Rect']])*transforms[n-1]
@@ -520,14 +874,10 @@ def migrate_raw_links(source_doc,source_path,pdf_bytes,selected,password=None,st
                     for j in range(0,len(values),2):
                         point=fitz.Point(float(values[j]),float(values[j+1]))*m;points.extend([FloatObject(point.x),FloatObject(point.y)])
                     copied[NameObject('/QuadPoints')]=ArrayObject(points)
-                action=annotation.get('/A')
-                if action:
-                    action=action.get_object()
-                    if action.get('/S')=='/URI':copied[NameObject('/A')]=action.clone(writer)
-                    elif action.get('/S')=='/GoTo':copied[NameObject('/Dest')]=destination(action['/D'],pane)
-                    else:raise ValueError('Unsupported raw link action')
-                elif '/Dest' in annotation:copied[NameObject('/Dest')]=destination(annotation['/Dest'],pane)
-                else:raise ValueError('Link has no supported destination')
+                if kind == '/URI':
+                    copied[NameObject('/A')] = target.clone(writer)
+                else:
+                    copied[NameObject('/Dest')] = destination(target, pane)
                 writer.add_annotation(mapping[n-1],copied)
                 for extra_rect in destination_rects[1:]:
                     extra=DictionaryObject(copied)
@@ -545,7 +895,7 @@ def migrate_raw_links(source_doc,source_path,pdf_bytes,selected,password=None,st
                 copied=DictionaryObject()
                 m=transforms[n-1]*fitz.Matrix(1,0,0,1,pane*w,0)*fitz.Matrix(1,0,0,-1,0,h)
                 for key,value in annotation.items():
-                    if key not in ('/P','/Rect','/QuadPoints','/InkList','/NM'):
+                    if key not in ('/P','/Rect','/QuadPoints','/InkList','/NM','/Popup','/IRT','/A','/AA'):
                         copied[NameObject(key)]=value.clone(writer) if hasattr(value,'clone') else value
                 copied[NameObject('/Rect')]=ArrayObject([FloatObject(v) for v in fitz.Rect([float(v) for v in annotation['/Rect']])*m])
                 def points(values):
@@ -562,10 +912,17 @@ def migrate_raw_links(source_doc,source_path,pdf_bytes,selected,password=None,st
                     'subtype':str(annotation['/Subtype']),'source_bbox':box(source_rect),
                     'right_bbox':box(source_rect),'appearance':'preserved-normal-stream'})
     if link_conflicts:raise ValueError(json.dumps({'link_conflicts':link_conflicts},ensure_ascii=False))
+    layers = attach_layer_catalog(writer, layer_catalog(reader))
+    if native_pages:
+        share_native_images(writer)
     # Consolidate page instructions so tiny q/Q wrapper streams are compressed
     # too; image streams remain untouched. Drop their now-unreferenced fragments.
-    for page in writer.pages:page.compress_content_streams()
+    for i, page in enumerate(writer.pages):
+        if selected[i] not in native_pages:
+            page.compress_content_streams()
     writer.compress_identical_objects(remove_duplicates=True,remove_unreferenced=True)
+    for ref in layers:
+        raw_object(ref).pop(_LAYER_ID)
     buf=io.BytesIO();writer.write(buf);return buf.getvalue()
 
 def load_fonts(state,state_path):
@@ -777,15 +1134,16 @@ def preserved_glyph_conflicts(page_number, protected, before, after, mask_index)
     return conflicts
 
 
-def build(source,state_path,output,pages='all',overwrite=False,password=None):
+def build(source,state_path,output,pages='all',overwrite=False,password=None, *, preview=False):
     source,state_path,output=map(lambda p:Path(p).resolve(),(source,state_path,output))
     destinations=[output,output.with_suffix('.state.json'),output.with_suffix('.font-runs.json')]
     if source in destinations or state_path in destinations:
         raise ValueError('Output must not overwrite source or authoring state')
     if any(p.exists() for p in destinations) and not overwrite:
         raise ValueError('Output exists; use --overwrite explicitly')
-    state=copy.deepcopy(json.loads(state_path.read_text(encoding='utf-8')))
-    errors=validate_state(state,source,password,False)
+    state=json.loads(state_path.read_text(encoding='utf-8'))
+    validation_pages = set(selected_pages(pages, state['source']['page_count'])) if pages != 'all' else None
+    errors=validate_state(state,source,password,False,pages=validation_pages)
     if errors:raise ValueError(json.dumps(errors,ensure_ascii=False))
     dependencies=[]
     for item in state['layout'].get('inputs',[]):
@@ -801,25 +1159,35 @@ def build(source,state_path,output,pages='all',overwrite=False,password=None):
         if any(n not in available for n in selected):
             raise ValueError('Selected page missing from state')
         state['pages']=[available[n] for n in selected]
-        for p in state['pages']:
-            errors=validate_page(p,p,True)
-            if errors:raise ValueError(json.dumps(errors,ensure_ascii=False))
-        check_interactions(src,selected,state)
+        errors = [error for p in state['pages'] for error in validate_page(p,p,True)]
+        if errors:
+            raise ValueError(json.dumps({'code':'layout_preflight','findings':errors},ensure_ascii=False))
+        reader = interaction_reader(src, source, password)
+        check_interactions(src, selected, state, preview=preview, reader=reader)
         fonts=load_fonts(state,state_path)
         labels=dict(pagination_items(state))
         build_errors=[]
-        runs=[];saved_links={n:src[n-1].get_links() for n in selected};toc=src.get_toc(simple=False)
+        runs=[]
+        catalog = layer_catalog(reader)
+        if catalog is not None:
+            for i, ref in enumerate(catalog['/OCGs']):
+                src.xref_set_key(ref.idnum, _LAYER_ID[1:], str(i))
+        native_pages = set()
         # Capture source rotation before zeroing it. show_pdf_page does not account for
         # the source page Rotate entry; an explicit inverse rotation is required.
         for j,n in enumerate(selected):
             pstate=available[n];pstate['output_page']=j+1
             original=src[n-1];w,h=original.rect.width,original.rect.height;rotation=original.rotation
+            native = pstate.get('native_left') is True
+            if native and not native_left_supported(original):
+                raise ValueError(f'Native left cannot preserve the visible page box: source page {n}')
+            if native:
+                native_pages.add(n)
             effective_boxes=effective_glyph_boxes(original,pstate['glyphs'])
             original.set_rotation(0)
             page=out.new_page(width=2*w,height=h)
             page_fonts=set()
             if original.get_contents():
-                page.show_pdf_page(fitz.Rect(0,0,w,h),src,n-1,rotate=-rotation)
                 page.show_pdf_page(fitz.Rect(w,0,2*w,h),src,n-1,rotate=-rotation)
             by_id={g['id']:g for g in pstate['glyphs']}
             pstate['redaction_regions']=[]
@@ -916,24 +1284,11 @@ def build(source,state_path,output,pages='all',overwrite=False,password=None):
                             page.insert_text(point,ch,fontname=font['alias'],fontsize=b['actual_font_size']*scale,
                                              rotate=b.get('rotation',0),color=tuple(b.get('cover_text_color',(0,0,0))) if b['method']=='cover' else tuple(b.get('color',(0,0,0))),overlay=True)
                             advance+=char_width
+            if not native and original.get_contents():
+                # Graft after redaction so MuPDF only rewrites the right-pane stream.
+                page.show_pdf_page(fitz.Rect(0,0,w,h),src,n-1,rotate=-rotation,overlay=False)
             original.set_rotation(rotation)
         if build_errors:raise ValueError(json.dumps({'layout_conflicts':build_errors},ensure_ascii=False))
-        mapping={n-1:j for j,n in enumerate(selected)}
-        new_toc=[]
-        for level,title,n,dest in toc:
-            if dest.get('kind')==fitz.LINK_NONE:
-                new_toc.append([level,title,-1,{'kind':fitz.LINK_NONE}]);continue
-            if dest.get('kind')==fitz.LINK_URI:
-                new_toc.append([level,title,-1,dest]);continue
-            if n in selected:
-                d={k:v for k,v in dest.items() if k not in ('xref','id')};d['page']=mapping[n-1]
-                new_toc.append([level,title,mapping[n-1]+1,d])
-        # A subset may omit ancestor bookmarks. Rebase only retained hierarchy.
-        previous=0
-        for entry in new_toc:
-            entry[0]=min(entry[0],previous+1);previous=entry[0]
-        if new_toc:out.set_toc(new_toc)
-        state['layout']['omitted_bookmarks_for_unselected_pages']=len(toc)-len(new_toc)
         out.set_metadata(src.metadata)
         out.subset_fonts()
         output.parent.mkdir(parents=True,exist_ok=True)
@@ -942,10 +1297,11 @@ def build(source,state_path,output,pages='all',overwrite=False,password=None):
             if out.xref_is_stream(xref) and out.xref_get_key(xref,'Subtype')[1] != '/Image':
                 out.update_stream(xref,out.xref_stream(xref),compress=True)
         data=out.tobytes(garbage=4,deflate=False,no_new_id=True)
-        data=migrate_raw_links(src,source,data,selected,password,state)
+        data=migrate_raw_links(src,source,data,selected,password,state,reader=reader,native_pages=native_pages)
         output.write_bytes(data)
         state['source']['path']=relative(source,output.parent)
         state['output']={'path':output.name,'sha256':digest(output)}
+        if preview:state['output']['preview']=True
         for reg in state['layout']['fonts']:
             reg['source']=relative(resolve(state_path.parent,reg['source']),output.parent)
         state['layout']['builder']={'path':relative(__file__,output.parent),'sha256':digest(__file__)}
@@ -956,7 +1312,9 @@ def build(source,state_path,output,pages='all',overwrite=False,password=None):
         state['qc']={}
         write_json(destinations[1],state)
         write_json(destinations[2],{'schema_version':1,'output_sha256':state['output']['sha256'],'runs':runs})
-        return {'output':str(output),'state':str(destinations[1]),'assignments':str(destinations[2]),'pages':selected}
+        return {'output':str(output),'state':str(destinations[1]),'assignments':str(destinations[2]),'pages':selected,
+                'state_written_bytes':destinations[1].stat().st_size,
+                'omitted_link_pages': [p['source_page'] for p in state['pages'] if p.get('omitted_links')]}
     finally:
         src.close();out.close()
 

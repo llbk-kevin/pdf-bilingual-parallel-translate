@@ -10,7 +10,7 @@ Keep each page's expected_blocks and reading_order aligned with the inspected so
 
 ## Scope and display page labels
 
-The final output maps each page in the declared delivery scope exactly once. A full delivery covers the source document. An explicit sample covers document.selected_source_pages and records omitted destinations. Local preview candidates may cover fewer pages than the declared scope.
+The final output maps each page in the declared delivery scope exactly once. A full delivery covers the source document. An explicit sample covers document.selected_source_pages and records omitted destinations. Local preview candidates can cover fewer pages than the declared scope and cannot be published.
 
 The output geometry is 2W × H and the source rectangle is [0,0,W,H]. Printed page labels remain in the reused source artwork. Optional layout.pagination_strategy is preserve-source or physical-total. Each page then records pagination.source_label and pagination.text. Preserve-source uses the confirmed original string or null for an unnumbered page, with empty text for null. Physical-total applies to wholly unnumbered documents, uses null source labels and displays physical source_page/total source page count, including covers and blank pages.
 
@@ -18,7 +18,7 @@ For a generated label add an id, target_bbox in output visible top-left points, 
 
 ## Fingerprints and review
 
-content_hash includes source, document, layout, glossary, pages and issues. Output bytes and qc are bound separately. If a fingerprinted input changes, rebuild and verify from authoring state. Changes to shared fonts, layout, glossary, issues or relevant context can invalidate multiple pages. Practical review uses page-local dependencies plus declared context_pages. Strict review uses the complete document unless context is explicitly reviewed and declared.
+content_hash includes source, document, layout, glossary, pages and issues. Output bytes and qc are bound separately. Mechanical evidence is keyed by the candidate and source bytes, comparison state, fonts, assignments and tool versions. Source-inventory acknowledgements and observations are recorded separately. A verified candidate can reuse the existing audit and images after those acknowledgements. Large v3 states use compact UTF-8 JSON and atomic replacement. If a fingerprinted input changes, rebuild and verify from authoring state. Changes to shared fonts, layout, glossary, issues or relevant context can invalidate multiple pages. Practical review uses page-local dependencies plus declared context_pages. Strict review uses the complete document unless context is explicitly reviewed and declared.
 
 verify binds the exact output to the audit, actual font runs, font report and render index. Open review_needed pages and register observations with review. A viewed record binds source page, output hash, index path/hash, settings, image/pixel hashes and page content hash to the actual viewer, time and evidence. A reused record keeps current render hashes plus the original viewed record and a reuse reason. Keep both referenced indices and images. Reuse requires matching pixels, settings and page dependencies. Observation files carry the output and render index SHA-256 from verify. A partially reviewed candidate can supply records through --previous-state. Missing, duplicate or invalid records on one page leave other independently valid records eligible.
 

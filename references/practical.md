@@ -44,13 +44,24 @@ apply returns preview_argv as an argument array using the current frozen runner,
 
 Build returns candidate PDF, generated state and font runs. Always use returned generated state in verify/review/publish. Use --pages 3 for a local preview, then build the complete declared scope for delivery. Group conflicts by page/type from last-error.json, fix together, then rebuild. Link mapping failures are collected across selected pages as link_conflicts with page, source_link and source_bbox; fix the batch instead of rebuilding once per link. Set both font_size and font_size_min when lowering the requested size; the minimum must not exceed it. Null/absent font_size_min means fixed requested size. Never repeatedly lower a size below readability to force success. preserved_glyph_removed identifies missing characters, source positions, preserved blocks and related replacements. Fix the adjacent replacement, preview the affected page, and check the whole formula.
 
+## Resume a long document
+
+Use the frozen runner to find missing work by original physical page:
+
+~~~shell
+python recovery/pipeline.py status --state recovery/state.json --pages 1-40
+python recovery/pipeline.py apply --state recovery/state.json --edits work/chapter-1.json --edits work/chapter-2.json
+~~~
+
+Use the authoring state for translation progress and the returned candidate state for verification and review progress. Assign consecutive pages or chapters, with one coordinator committing edits and observations in order. Keep each package's edits and actual observations in the task folder so it can be resumed from disk. A failing edit file leaves the authoring state unchanged. A preview can omit links to unselected pages and cannot be published. Use a complete build of the declared scope for delivery.
+
 ## Check once and record real observations
 
 ~~~text
 python recovery/pipeline.py verify --state work/RETURNED.state.json
 ~~~
 
-verify performs state/font/audit checks and produces the source, output and relevant difference images in one pass. It returns a render_index, grouped findings and review_needed source pages. Read detailed audit only for actionable findings. Repeating verify on identical inputs reuses hashed evidence instead of rendering. Raw pixel values and mechanical_pass remain unchanged even when a practical difference is retained.
+verify performs state/font/audit checks and produces the source, output and relevant difference images in one pass. It returns a render_index, grouped findings and review_needed source pages. Read detailed audit only for actionable findings. The first verify reports `inventory_review_needed`. Include `"inventory_reviewed": true` in a page observation only after confirming its source inventory against the visible page. Recording this on the same candidate reuses the audit and renders. Verify reports `rendered_pages` and `state_written_bytes`; inspect the event log for elapsed times. Raw pixel values and mechanical_pass remain unchanged even when a practical difference is retained.
 
 Open the bilingual pages listed in review_needed. Use difference images and local zoom to investigate specific concerns. When an independent reviewer is assigned, have that reviewer record their observations. If a page needs repair, submit observations for the pages already viewed and clear, and report the repair separately. Copy output_sha256 and render_index_sha256 from this verify result.
 

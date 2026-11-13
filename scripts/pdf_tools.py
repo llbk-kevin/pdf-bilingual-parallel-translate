@@ -20,7 +20,7 @@ import pypdfium2 as pdfium
 import pypdfium2.raw as pdfium_c
 from PIL import Image, ImageChops, ImageDraw
 
-from workflow import check_fonts, page_fingerprint, validate_reviews, pagination_items, require_state, state_header_error
+from workflow import check_fonts, page_fingerprint, validate_reviews, pagination_items, require_state, state_header_error, mechanical_page
 
 SCHEMA_VERSION = 2
 _PASSWORD = None
@@ -282,38 +282,22 @@ def outline_items(reader):
     return result
 
 
-def link_target(reader, annot):
-    a = deref(annot.get("/A", {}))
-    if a.get("/S") == "/URI":
-        return {"kind": "uri", "uri": str(a.get("/URI", ""))}
-    dest = annot.get("/Dest", a.get("/D"))
-    if dest is None:
-        return {"kind": str(a.get("/S", "unknown")), "detail": str(a)}
-    dest = deref(dest)
-    if isinstance(dest, str):
-        named = reader.named_destinations.get(dest)
-        if named:
-            p = reader.get_destination_page_number(named)
-            return {"kind": "internal", "page": None if p is None else p + 1,
-                    "name": dest}
-        return {"kind": "named", "name": dest}
-    if isinstance(dest, (list, tuple)) and dest:
-        first = dest[0]
-        target = None
-        if isinstance(first, IndirectObject):
-            for i, p in enumerate(reader.pages):
-                if object_key(p) == object_key(first):
-                    target = i + 1
-                    break
-        elif isinstance(first, int):
-            target = int(first) + 1
-        return {"kind": "internal", "page": target,
-                "view": canonical_object(dest[1:])}
-    return {"kind": "unknown", "detail": canonical_object(dest)}
+def link_target(nav, annot):
+    try:
+        kind, target = nav.parse(annot)
+    except (ValueError, TypeError, KeyError) as exc:
+        return {"kind": "unsupported", "detail": str(exc)}
+    if kind == "/URI":
+        return {"kind": "uri", "uri": str(target["/URI"])}
+    page, mode, axes = target
+    return {"kind": "internal", "page": page+1, "view": [str(mode), *axes]}
 
 
 def pdf_metadata(path, reader=None, with_char_summary=True):
+    from inplace import RawNavigation
+
     reader = reader or checked_reader(path)
+    nav = RawNavigation(reader)
     doc = open_document(path)
     pages, findings = [], []
     try:
@@ -329,7 +313,7 @@ def pdf_metadata(path, reader=None, with_char_summary=True):
                 annot = deref(ref)
                 if annot.get("/Subtype") == "/Link":
                     links.append({"rect": [float(x) for x in annot.get("/Rect", [])],
-                                  "target": link_target(reader, annot)})
+                                  "target": link_target(nav, annot)})
             size = list(rendered.get_size())
             item = {"page": i+1, "visible_size_pt": size, "rotation": page.rotation,
                     "mediabox": list(map(float, page.mediabox)),
@@ -607,6 +591,7 @@ def audit(source, output, state=None, dpi=144, pixel_tolerance=16,
         issue("warning", "large_added_font_payload", bytes=new_font_bytes,
               note="Investigation trigger only; inspect used glyphs and subset lifecycle.")
     mapping = page_mapping(state, sm["page_count"])
+    target_map = {a+1: int(b["output_page"]) for a,b in mapping.items()}
     source_doc, result_doc = open_document(source), open_document(output)
     try:
         for i in range(len(source_doc)):
@@ -695,9 +680,11 @@ def audit(source, output, state=None, dpi=144, pixel_tolerance=16,
             if diff:
                 diff.close()
             # Compare source links by destination AND clickable rectangle; additions are allowed.
-            target_map = {a+1: int(b["output_page"]) for a,b in mapping.items()}
             expected_links = []
-            for link in sm["pages"][i]["links"]:
+            omitted = {item['source_link'] for item in m.get('omitted_links', [])}
+            for number, link in enumerate(sm["pages"][i]["links"]):
+                if number in omitted:
+                    continue
                 expected = json.loads(json.dumps(link))
                 target = expected["target"]
                 if target.get("kind") == "internal" and target.get("page") is not None:
@@ -749,10 +736,13 @@ def audit(source, output, state=None, dpi=144, pixel_tolerance=16,
                             "Link matching is conservative for normalized rotation/crop coordinates; verify flagged targets."]}
 
 
-def content_hash(state):
+def content_hash(state, *, mechanical=False):
     require_state(state)
     keys = ["source", "layout", "glossary", "pages", "issues", "document"]
-    return canonical_hash({k: state.get(k) for k in keys})
+    content = {k: state.get(k) for k in keys}
+    if mechanical:
+        content['pages'] = [mechanical_page(page) for page in state['pages']]
+    return canonical_hash(content)
 
 
 def resolve_state_file(base, value):
@@ -762,9 +752,10 @@ def resolve_state_file(base, value):
     return p if p.is_absolute() else base/p
 
 
-def check_state(state_path, final=False):
+def check_state(state_path, final=False, *, state=None):
     state_path = Path(state_path)
-    state = read_json(state_path)
+    if state is None:
+        state = read_json(state_path)
     problem = state_header_error(state)
     if problem:
         code, detail = problem
@@ -934,6 +925,8 @@ def check_state(state_path, final=False):
     output = state.get("output", {})
     actual_output_sha = None
     if output:
+        if final and output.get('preview'):
+            error('preview_cannot_be_published')
         try:
             outpath = resolve_state_file(base, output["path"])
             actual_output_sha = sha256_file(outpath)
@@ -987,7 +980,7 @@ def check_state(state_path, final=False):
             if sha256_file(font_report_path) != qc["font_report"]["sha256"]:
                 error("font_report_changed")
             fr = read_json(font_report_path)
-            fresh = check_fonts(state_path, resolve_state_file(base, qc["font_assignments"]))
+            fresh = check_fonts(state_path, resolve_state_file(base, qc["font_assignments"]), state=state)
             if fr != fresh or not fresh["mechanical_pass"]:
                 error("font_check_not_passed_or_stale")
         except (KeyError, ValueError, OSError) as exc:

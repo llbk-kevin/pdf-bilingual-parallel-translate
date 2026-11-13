@@ -10,7 +10,7 @@
 
 ## 交付范围与显示页码
 
-最终输出对交付范围内的每一页建立一一映射。完整交付覆盖全部源页。显式样本覆盖 document.selected_source_pages，并记录省略的跳转目标。局部预览可以少于交付范围。
+最终输出对交付范围内的每一页建立一一映射。完整交付覆盖全部源页。显式样本覆盖 document.selected_source_pages，并记录省略的跳转目标。局部预览可以少于交付范围，不能直接发布。
 
 输出尺寸为 2W × H，原文区域为 [0,0,W,H]。印刷页码随原页图形保留。可选 layout.pagination_strategy 为 preserve-source 或 physical-total，使用时每页记录 pagination.source_label 和 pagination.text。preserve-source 记录已确认的原页码，未编号页用 null 和空文本。physical-total 仅适用于全书无印刷页码的文档，source_label 为 null，显示物理源页号/源文件总页数，封面和空白页均计入。
 
@@ -18,7 +18,7 @@
 
 ## 指纹与审核
 
-content_hash 包含 source、document、layout、glossary、pages 和 issues。输出字节与 qc 另行绑定。参与指纹的输入变化后，从编辑状态重新构建并检查。共享字体、版式、术语、问题或相关上下文变化可能影响多页。practical 使用本页及声明的 context_pages。strict 默认考虑整份文档，除非已检查并明确声明上下文依赖。
+content_hash 包含 source、document、layout、glossary、pages 和 issues。输出字节与 qc 另行绑定。机械证据按候选、原文、比较状态、字体、字体分配和工具版本绑定。原文清点确认和实际观察独立登记，同一候选补记清点可复用原审计和图像。大型 v3 状态使用紧凑 UTF-8 JSON 并原子替换。参与指纹的输入变化后，从编辑状态重新构建并检查。共享字体、版式、术语、问题或相关上下文变化可能影响多页。practical 使用本页及声明的 context_pages。strict 默认考虑整份文档，除非已检查并明确声明上下文依赖。
 
 verify 将确切输出绑定到审计、实际字体片段、字体报告和渲染索引。实际打开 review_needed 页面，再通过 review 登记观察。viewed 记录将源页、输出哈希、索引路径及哈希、渲染设置、图片与像素哈希、页面内容哈希绑定到实际查看者、时间及证据。reused 记录保留当前渲染哈希、原始 viewed 记录和复用理由。保留引用的两份索引及图片。像素、设置和页面依赖均匹配时方可复用。 观察文件携带 verify 返回的输出和渲染索引 SHA-256。部分候选观察也可用 --previous-state 逐页复用；某页记录缺失、重复或证据失效时，独立验证其余页面。
 

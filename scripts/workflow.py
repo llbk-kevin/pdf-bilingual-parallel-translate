@@ -9,7 +9,11 @@ from pathlib import Path
 
 
 def digest(path):
-    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    sha = hashlib.sha256()
+    with Path(path).open('rb') as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+            sha.update(chunk)
+    return sha.hexdigest()
 
 
 def canonical(value):
@@ -132,6 +136,11 @@ def ti_filename(english_title=None, chinese_title=None, document_id=None, *,
                              english_document_id=english_document_id)
 
 
+def mechanical_page(page):
+    # Inventory acknowledgement belongs to the reviewer, not the PDF or comparison.
+    return {k: v for k, v in page.items() if k not in ('inventory_reviewed', 'visual_text_review')}
+
+
 def page_fingerprint(state, page_number):
     """Conservative semantic dependency hash; default context is the whole book."""
     page = next(p for p in state['pages'] if p['source_page'] == page_number)
@@ -143,7 +152,7 @@ def page_fingerprint(state, page_number):
         nums = {p['source_page'] for p in state['pages']}
     return canonical({'source_sha256': state['source']['sha256'], 'layout': state['layout'],
                       'glossary': state['glossary'], 'issues': state['issues'],
-                      'pages': [p for p in state['pages'] if p['source_page'] in nums]})
+                      'pages': [mechanical_page(p) for p in state['pages'] if p['source_page'] in nums]})
 
 
 def pagination_items(state):
@@ -190,10 +199,11 @@ def pagination_items(state):
     return items
 
 
-def check_fonts(state_path, assignments_path):
+def check_fonts(state_path, assignments_path, *, state=None):
     from fontTools.ttLib import TTFont
     state_path, assignments_path = Path(state_path), Path(assignments_path)
-    state, assignments = require_state(load(state_path)), load(assignments_path)
+    state = require_state(load(state_path) if state is None else state)
+    assignments = load(assignments_path)
     errors, unverified = [], []
     fonts, font_records = {}, []
     for reg in state['layout']['fonts']:
@@ -254,7 +264,7 @@ def check_fonts(state_path, assignments_path):
                     'Unsupported fonts remain unverified; inspect the final rendered pages.'}
 
 
-def checked_page_reviews(state, state_path):
+def checked_page_reviews(state, state_path, *, pages=None):
     """Return each independently valid review and diagnostics for rejected records."""
     errors, valid = [], {}
     base = Path(state_path).parent
@@ -302,6 +312,8 @@ def checked_page_reviews(state, state_path):
             continue
         try:
             n = record['page']
+            if pages is not None and n not in pages:
+                continue
             if type(n) is not int or n not in expected or counts[n] != 1:
                 raise ValueError('Invalid or duplicate review page')
             covers = [b['id'] for b in expected[n]['blocks'] if b.get('method') == 'cover']

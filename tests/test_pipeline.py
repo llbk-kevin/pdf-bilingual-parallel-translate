@@ -43,6 +43,97 @@ class PracticalPipeline(unittest.TestCase):
         obs.update(output_sha256=s['output']['sha256'], render_index_sha256=wf.digest(index))
         op=self.root/'observations.json';pl.save(op,obs)
         return Namespace(state=str(sp),observations=str(op))
+
+    def test_inventory_acknowledgement_reuses_mechanical_evidence_and_status(self):
+        self.prepared()
+        state = pl.load(self.sp)
+        state['pages'][0].update(inventory_reviewed=False, visual_text_review='pending')
+        pl.save(self.sp, state)
+        candidate = self.built()
+        args = Namespace(state=candidate['state'], previous_state=None)
+        with patch.object(pt, 'audit', wraps=pt.audit) as audit:
+            verified = pl.verify(args)
+            self.assertEqual(verified['inventory_review_needed'], '1')
+            self.assertEqual(verified['rendered_pages'], 2)
+            before = {p: p.stat().st_mtime_ns for p in self.root.rglob('*') if p.is_file()}
+            with patch.object(sys, 'stdout', new_callable=__import__('io').StringIO) as stdout:
+                self.assertEqual(pl.main(['status', '--state', args.state, '--pages', '1-2']), 0)
+                self.assertEqual(json.loads(stdout.getvalue())['inventory_review_needed'], '1')
+            self.assertEqual(before, {p: p.stat().st_mtime_ns for p in self.root.rglob('*') if p.is_file()})
+            observations = self.observations(candidate)
+            observation = pl.load(observations.observations)
+            observation['pages'] = [dict(observation['pages'][0], inventory_reviewed=True)]
+            pl.save(observations.observations, observation)
+            self.assertFalse(pl.review(observations)['ready'])
+            for _ in range(2):
+                again = pl.verify(args)
+                self.assertEqual(again['render_index_sha256'], verified['render_index_sha256'])
+                self.assertEqual(again['inventory_review_needed'], '')
+                self.assertEqual(again['rendered_pages'], 0)
+                self.assertEqual(again['state_written_bytes'], 0)
+                self.assertEqual(again['review_needed'], [2])
+            self.assertEqual(audit.call_count, 1)
+        output = Path(candidate['output'])
+        output.write_bytes(output.read_bytes() + b'\n')
+        with self.assertRaisesRegex(ValueError, 'Candidate fingerprint changed'):
+            pl.verify(args)
+
+    def test_batches_are_ordered_atomic_and_retry_after_interruption(self):
+        self.prepared()
+        state = pl.load(self.sp)
+        first = self.root / 'chapter-1.json'
+        second = self.root / 'chapter-2.json'
+        p = state['pages'][0]
+        pl.save(first, {'blocks': [{'page': 1, 'id': 'joined',
+                                   'merge_ids': [b['id'] for b in p['blocks']],
+                                   'method': 'replace', 'translation': '中文'}]})
+        pl.save(second, {'blocks': [{'page': 1, 'id': 'missing', 'method': 'replace'}]})
+        before = self.sp.read_bytes()
+        with self.assertRaisesRegex(ValueError, 'chapter-2.json'):
+            pl.apply_edits(self.args(edits=[str(first), str(second)]))
+        self.assertEqual(self.sp.read_bytes(), before)
+        pl.save(second, {'blocks': [{'page': 1, 'id': 'joined', 'translation': '中文中文'}]})
+        with patch.object(Path, 'replace', side_effect=OSError('simulated interruption')):
+            with self.assertRaises(OSError):
+                pl.apply_edits(self.args(edits=[str(first), str(second)]))
+        self.assertEqual(self.sp.read_bytes(), before)
+        result = pl.apply_edits(self.args(edits=[str(first), str(second)]))
+        self.assertEqual(result['changed_pages'], [1])
+        self.assertEqual(pl.load(self.sp)['pages'][0]['blocks'][0]['translation'], '中文中文')
+        self.assertEqual(len(self.sp.read_text(encoding='utf-8').splitlines()), 1)
+
+    def test_verify_retries_after_interrupted_audit_and_detects_modified_evidence(self):
+        self.prepared()
+        candidate = self.built()
+        args = Namespace(state=candidate['state'], previous_state=None)
+        with patch.object(pt, 'audit', side_effect=OSError('simulated interrupted audit')):
+            with self.assertRaises(OSError):
+                pl.verify(args)
+        result = pl.verify(args)
+        self.assertEqual(result['rendered_pages'], 2)
+        image = Path(result['render_index']).parent / 'page-0001.png'
+        image.write_bytes(b'corrupted render')
+        with self.assertRaisesRegex(ValueError, 'Immutable verification evidence changed'):
+            pl.verify(args)
+
+    def test_full_scope_link_is_omitted_only_in_preview(self):
+        with fitz.open(self.source) as doc:
+            doc[0].insert_link({'kind': fitz.LINK_GOTO, 'from': fitz.Rect(160,50,210,80), 'page': 1})
+            doc.saveIncr()
+        self.prepared()
+        args = self.args()
+        args.pages = '1'
+        preview = pl.build(args)
+        s = pl.load(preview['state'])
+        self.assertEqual(s['pages'][0]['omitted_links'][0]['target_page'], 2)
+        pl.verify(Namespace(state=preview['state'], previous_state=None))
+        pl.review(self.observations(preview))
+        with self.assertRaisesRegex(ValueError, 'preview_cannot_be_published'):
+            pl.publish(Namespace(state=preview['state'], output=str(self.root/'preview-out.pdf'), overwrite=False))
+        final = self.built()
+        with fitz.open(final['output']) as doc:
+            self.assertEqual([link['page'] for link in doc[0].get_links()], [1, 1])
+
     def test_prepare_apply_and_source_preservation(self):
         before=wf.digest(self.source);s=self.prepared('2')
         self.assertEqual(s['layout']['review_profile'],'practical');self.assertEqual(s['document']['selected_source_pages'],[2])
@@ -220,17 +311,17 @@ class PracticalPipeline(unittest.TestCase):
         self.assertEqual(before,self.sp.read_bytes())
 
     def test_reuse_carries_exact_retained_finding_and_notes(self):
-        self.prepared();r1=self.built();pl.verify(Namespace(state=r1['state'],previous_state=None))
+        self.prepared();r1=self.built()
         finding={'code':'right_graphics_changed_outside_recorded_regions','severity':'error','page':2,'comparison':{'changed_pixels':3}}
-        old=wf.load(r1['state']);audit_path=wf.resolve(Path(r1['state']).parent,old['qc']['audit_path'])
-        audit=wf.load(audit_path);audit['findings'].append(finding);audit['mechanical_pass']=False;pl.save(audit_path,audit)
+        original_audit=pt.audit
+        def with_finding(*a,**kw):
+            report=original_audit(*a,**kw);report['findings'].append(finding);report['mechanical_pass']=False;return report
+        with patch.object(pt,'audit',side_effect=with_finding):
+            pl.verify(Namespace(state=r1['state'],previous_state=None))
         obs=self.observations(r1);data=wf.load(obs.observations)
         data['pages'][1].update(retain_right_difference='Synthetic harmless fringe',retained=['Synthetic note'])
         pl.save(obs.observations,data);self.assertTrue(pl.review(obs)['ready'])
         s=wf.load(self.sp);s['pages'][0]['blocks'][0]['translation']='项目';pl.save(self.sp,s);r2=self.built()
-        original_audit=pt.audit
-        def with_finding(*a,**kw):
-            report=original_audit(*a,**kw);report['findings'].append(finding);report['mechanical_pass']=False;return report
         with patch.object(pt,'audit',side_effect=with_finding):
             result=pl.verify(Namespace(state=r2['state'],previous_state=r1['state']))
         self.assertEqual(result['review_needed'],[1])

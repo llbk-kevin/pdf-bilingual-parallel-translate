@@ -41,13 +41,25 @@ apply 返回 preview_argv 参数数组，使用当前冻结入口、authoring st
 
 build 返回 PDF、生成状态及字形运行记录。verify/review/publish 必须用返回的生成状态。使用 --pages 3 局部预览，交付时构建完整声明范围。同类冲突从 last-error.json 集中修复后重建。链接映射错误按选定页集中写入 link_conflicts，包含 page、source_link 和 source_bbox，一批修完，不为逐条报错重复全本构建。降低字号时同时检查 font_size 和 font_size_min，下限不能高于指定字号。font_size_min 空或缺省为固定字号，不为强制通过不断缩小到不可读。preserved_glyph_removed 会指出缺失字符、原页位置、保留块及相邻替换块。先修相邻替换，预览受影响页并核对整条公式。
 
+## 长文档恢复与分包
+
+使用冻结入口，按原文件物理页号查询进度并依次提交编辑文件。
+
+~~~shell
+python recovery/pipeline.py status --state recovery/state.json --pages 1-40
+python recovery/pipeline.py apply --state recovery/state.json --edits work/chapter-1.json --edits work/chapter-2.json
+~~~
+
+使用编写状态查询翻译进度，使用构建返回的候选状态查询核验与复核。按连续页或章节分工，由一个协调者依序提交编辑和观察。每批编辑与实际观察保存在工作目录，便于从磁盘恢复。任一编辑失败时原编写状态保持原样。局部预览可省略范围外跳转，交付时构建完整声明范围。
+
+
 ## 集中检查与真实记录
 
 ~~~text
 python recovery/pipeline.py verify --state work/RETURNED.state.json
 ~~~
 
-verify 检查状态、字体、审计，一次生成原文、输出及相关差异图，返回 render_index、错误汇总、review_needed 源页。详细日志按需读。相同输入复用哈希匹配证据，不重复渲染。保留差异也不修改原始测量和 mechanical_pass。
+verify 检查状态、字体、审计，一次生成原文、输出及相关差异图，返回 render_index、错误汇总和 review_needed。首次 verify 同时报告 inventory_review_needed。将可见原页与清单对照确认后，在该页的实际观察中填 `"inventory_reviewed": true`。同一候选补记清点可复用审计和渲染。verify 返回 rendered_pages 和 state_written_bytes，耗时见事件日志。保留差异也不修改原始测量和 mechanical_pass。
 
 打开 review_needed 中的双栏页检查主要图文。遇到疑点再看差分图或放大局部。若安排独立复核，由实际查看者登记观察。发现阻断项时，先为已查看且无阻断的页提交 observations.json，另报待修页。复制本次 verify 返回的 output_sha256 和 render_index_sha256。
 

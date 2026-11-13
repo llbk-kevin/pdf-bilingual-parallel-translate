@@ -77,6 +77,12 @@ class Inplace(unittest.TestCase):
         self.assertEqual({x['signature'] for x in si['images']},{x['signature'] for x in oi['images']})
         self.assertEqual(len(si['images']),len(oi['images']))
         self.assertEqual(len(oi['images']),2) # image and alpha mask, each shared by both panes
+        s['pages'][0]['native_left'] = True
+        direct = self.build(s, 'native-left')
+        self.assert_left_same(direct)
+        images = pt.inventory(PdfReader(direct['output']))['images']
+        self.assertEqual(len(images), 2)
+        self.assertEqual({i['signature'] for i in images}, {i['signature'] for i in si['images']})
     def test_crop_rotation_userunit_and_mixed_sizes(self):
         doc=fitz.open()
         for rotation in (0,90,180,270):
@@ -124,6 +130,90 @@ class Inplace(unittest.TestCase):
         p['blocks'].append(keep);p['expected_blocks']=[b['id'],keep['id']];p['reading_order']=p['expected_blocks'][:]
         r=self.build(s)
         with fitz.open(r['output']) as out:self.assertIn('12 V',out[0].get_text(clip=fitz.Rect(240,0,480,180)))
+
+    def test_named_actions_nullable_outline_and_file_uri_use_raw_navigation(self):
+        from pypdf import PdfWriter
+        from pypdf.generic import ArrayObject, DictionaryObject, FloatObject, NameObject, NullObject, TextStringObject
+
+        self.make_basic()
+        writer = PdfWriter(clone_from=self.source)
+        writer.add_blank_page(240, 180)
+        writer.add_named_destination_array(TextStringObject('target'), ArrayObject([
+            writer.pages[1].indirect_reference, NameObject('/XYZ'), NullObject(), FloatObject(64), NullObject()]))
+        heading = writer.add_outline_item('Heading', None)
+        bookmark = writer.add_outline_item('Target', None, parent=heading).get_object()
+        bookmark[NameObject('/Dest')] = TextStringObject('target')
+        for action in [
+            DictionaryObject({NameObject('/S'): NameObject('/GoTo'), NameObject('/D'): TextStringObject('target')}),
+            DictionaryObject({NameObject('/S'): NameObject('/URI'), NameObject('/URI'): TextStringObject('file:///example.pdf')}),
+        ]:
+            writer.add_annotation(0, DictionaryObject({
+                NameObject('/Subtype'): NameObject('/Link'),
+                NameObject('/Rect'): ArrayObject([FloatObject(v) for v in (150, 10, 200, 35)]),
+                NameObject('/A'): action}))
+        writer.write(self.root / 'raw.pdf')
+        (self.root / 'raw.pdf').replace(self.source)
+        s = self.extract()
+        result = self.build(s)
+        reader = PdfReader(result['output'])
+        nav = ip.RawNavigation(reader)
+        outline = list(nav.outlines())
+        self.assertEqual([(depth, item['/Title']) for depth, item in outline], [(0, 'Heading'), (1, 'Target')])
+        self.assertEqual(nav.parse(outline[1][1]), ('/GoTo', (1, '/XYZ', [None, 64, None])))
+        links = [nav.parse(ref.get_object()) for ref in reader.pages[0]['/Annots']]
+        self.assertEqual([target for kind, target in links if kind == '/GoTo'], [(1, '/XYZ', [None, 64, None])]*2)
+        self.assertEqual([action['/URI'] for kind, action in links if kind == '/URI'], ['file:///example.pdf']*2)
+        unsupported = DictionaryObject({NameObject('/A'): DictionaryObject({NameObject('/S'): NameObject('/Launch')})})
+        with self.assertRaisesRegex(ValueError, '/Launch'):
+            nav.parse(unsupported)
+
+    def test_optional_layers_with_same_name_remain_independent_and_static_note_survives(self):
+        from pypdf.generic import NameObject
+
+        doc = fitz.open()
+        p = doc.new_page(width=240, height=180)
+        a = doc.add_ocg('Repeated')
+        b = doc.add_ocg('Repeated', on=False)
+        p.draw_rect(fitz.Rect(20, 55, 70, 85), fill=(1, 0, 0), color=None, oc=a)
+        p.draw_rect(fitz.Rect(20, 95, 70, 125), fill=(0, 1, 0), color=None, oc=b)
+        p.insert_text((20, 40), 'Label')
+        note = p.add_text_annot((120, 110), 'Static note')
+        note.set_oc(a)
+        note.update()
+        popup = note.popup_xref
+        doc.xref_set_key(note.xref, 'Popup', 'null')
+        doc.xref_set_key(p.xref, 'Annots', f'[{note.xref} 0 R]')
+        self.assertGreater(popup, 0)
+        self.save_source(doc)
+        s = self.extract()
+        s['pages'][0]['native_left'] = True
+        result = self.build(s)
+        source = PdfReader(self.source)
+        reader = PdfReader(result['output'])
+        source_groups = ip.layer_catalog(source)['/OCGs']
+        groups = ip.layer_catalog(reader)['/OCGs']
+        self.assertEqual(len(set(groups)), 2)
+        self.assertEqual([g.get_object()['/Name'] for g in groups], ['Repeated', 'Repeated'])
+        self.assertEqual(ip.layer_catalog(reader)['/D']['/OFF'], [groups[1]])
+        self.assertEqual(ip.layer_catalog(reader)['/D']['/Order'], groups)
+        self.assertEqual([r.get_object().raw_get('/OC') for r in reader.pages[0]['/Annots']], [groups[0]]*2)
+        self.assertEqual([r.get_object()['/Contents'] for r in reader.pages[0]['/Annots']], ['Static note']*2)
+        source_stream = source.pages[0].get_contents().get_data()
+        output_stream = reader.pages[0].get_contents().get_data()
+        self.assertIn(source_stream.strip(), output_stream)
+        self.assert_left_same(result)
+        with fitz.open(result['output']) as output:
+            def colors():
+                pix = output[0].get_pixmap(annots=False)
+                return [pix.pixel(x, y) for y in (70, 110) for x in (35, 275)]
+            self.assertEqual(colors(), [(255,0,0)]*2 + [(255,255,255)]*2)
+            # Make an in-memory configuration with the two layers inverted.
+            output.set_layer(-1, on=[groups[1].idnum], off=[groups[0].idnum])
+            with fitz.open(stream=output.tobytes(), filetype='pdf') as toggled:
+                pix = toggled[0].get_pixmap(annots=False)
+                self.assertEqual([pix.pixel(x, y) for y in (70,110) for x in (35,275)],
+                                 [(255,255,255)]*2 + [(0,255,0)]*2)
+
     def test_links_bookmarks_and_subset(self):
         doc=fitz.open();doc.new_page(width=240,height=180);doc.new_page(width=240,height=180)
         for p in doc:p.insert_text((20,40),'Label')

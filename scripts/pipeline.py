@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Small state-driven runner: prepare, apply, build, verify, review, publish."""
+"""State-driven runner for preparing, building, reviewing and publishing PDFs."""
 from __future__ import annotations
 import argparse
 import copy
@@ -33,8 +33,8 @@ def prepare(args):
     sp=Path(args.state).resolve()
     # Check the original reader before writing a recovery package. The builder
     # uses it for raw destinations even when MuPDF already opens the document.
-    reader = pt.checked_reader(args.source)
-    reader.close()
+    with pt.checked_reader(args.source):
+        pass
     result=ip.extract(args.source,sp,args.pages,args.overwrite,profile=args.profile or 'practical')
     state=load(sp)
     selected=result['pages']
@@ -52,7 +52,7 @@ def prepare(args):
         state['layout']['fonts'].append({'name':'Body' if i==0 else 'Fallback'+str(i),'source':ref(p,sp.parent),
                                         'sha256':wf.digest(p),'purpose':'User-selected translation font'})
     risks=[]
-    with ip.open_source(args.source) as doc:
+    with ip.open_source(args.source) as doc, pt.checked_reader(args.source) as reader:
         for page in state['pages']:
             n=page['source_page']
             if not page['glyphs']:risks.append({'page':n,'code':'image_or_outline_page','action':'Inspect source image; add local covers without hiding artwork'})
@@ -66,11 +66,21 @@ def prepare(args):
                 if any(ord(c)<32 and c not in '\n\r\t' for c in text):
                     risks.append({'page':n,'block':b['id'],'code':'unreliable_text_encoding','action':'Read source crop; preserve formula/identifier instead of guessing'})
                 if b.get('hidden_ocr'):risks.append({'page':n,'block':b['id'],'code':'hidden_ocr','action':'Cover visible scan only after checking local bounds'})
-        risks.extend(ip.check_interactions(doc, selected, state, collect=True))
+        risks.extend(ip.check_interactions(doc, selected, state, collect=True, reader=reader))
+        if not doc.get_ocgs() and not any(r['code'] in {'interaction_preflight','link_action','bookmark_action','bookmark_tree'} for r in risks):
+            fidelity = ip.probe_left_pane(doc, args.source, selected, reader)
+            risks.extend(fidelity)
+            native = {r['page'] for r in fidelity if r['code'] == 'native_left_required'}
+            for page in state['pages']:
+                if page['source_page'] in native:
+                    page['native_left'] = True
     save(sp,state);save(sp.parent/'inventory.json',compact_inventory(state));save(sp.parent/'preflight.json',{'risks':risks})
     return {'state':str(sp),'runner':str(sp.parent/'pipeline.py'),'inventory':str(sp.parent/'inventory.json'),
+            'state_written_bytes':sp.stat().st_size,
             'preflight':str(sp.parent/'preflight.json'),'pages':selected,'profile':state['layout']['review_profile'],
-            'risk_counts':counts(risks),'next':'Translate coherent groups using apply --edits; inspect source scans before adding covers.'}
+            'risk_counts':counts(risks), 'compatibility_blockers':counts(r for r in risks if r['code'] in
+                {'interaction_preflight','link_action','bookmark_action','bookmark_tree','link_destination_outside_scope','source_pane_probe_failed'}),
+            'next':'Resolve compatibility blockers in preflight.json before translation; then apply coherent groups.'}
 
 
 def counts(items):
@@ -118,19 +128,19 @@ def pixel_edits(changes,state,sp,edits_path):
     return result
 
 
-def apply_edits(args):
-    sp=Path(args.state).resolve();state=wf.require_state(load(sp));changes=load(args.edits)
+def apply_package(state, sp, edits_path, changed, location):
+    changes = load(edits_path)
     top_keys={'blocks','inventory_reviewed_pages','context_pages','link_overrides','link_overrides_patch','glossary','issues','source_render_index'}
     if not isinstance(changes,dict) or not changes or set(changes)-top_keys:
         raise ValueError('Edit JSON must be a nonempty object using blocks, inventory_reviewed_pages, context_pages, link_overrides, link_overrides_patch, glossary or issues; unknown top-level keys are not accepted')
-    changes=pixel_edits(changes,state,sp,args.edits)
+    changes=pixel_edits(changes,state,sp,edits_path)
     allowed={'translation','method','reason','font_size','font_size_min','font_size_step','leading','allowed_bbox',
              'cover_bbox','cover_fill','cover_text_color','expansion_reason','kind','figure_id','rotation','font','color','source_text','source_bbox','table'}
     pages={p['source_page']:p for p in state['pages']}
-    changed=set()
     for edit in changes.get('blocks',[]):
         n=edit.get('page');page=pages.get(n)
-        if page is None:raise ValueError('Edit must specify an inventoried source page')
+        location.update(page=n, block=edit.get('id'))
+        if page is None:raise ValueError(f'Edit must specify an inventoried source page: {n}, block {edit.get("id")}')
         bid=edit['id'];existing=next((b for b in page['blocks'] if b['id']==bid),None)
         merge=edit.get('merge_ids')
         if merge:
@@ -163,6 +173,7 @@ def apply_edits(args):
         for k in ('actual_bbox','target_bbox'):existing[k]=None
         for k in ('actual_glyph_boxes','actual_font_size','layout_lines'):existing.pop(k,None)
         changed.add(n)
+    location.clear()
     for n in changes.get('inventory_reviewed_pages',[]):
         pages[n]['inventory_reviewed']=True;pages[n]['visual_text_review']='reviewed';changed.add(n)
     for n,values in changes.get('context_pages',{}).items():
@@ -180,24 +191,96 @@ def apply_edits(args):
         page['link_overrides']=[merged[k] for k in sorted(merged)];changed.add(int(n))
     if 'glossary' in changes:state['glossary']=changes['glossary']
     if 'issues' in changes:state['issues']=changes['issues']
-    for page in state['pages']:
+    for n in changed:
+        page = pages[n]
         page['expected_blocks']=[b['id'] for b in page['blocks']];page['reading_order']=page['expected_blocks'][:]
         if page['blocks']:page['kind']='translated'
-    state['qc']={};state.pop('output',None)
-    errors=ip.validate_state(state,source_path(state,sp))
-    if errors:raise ValueError(json.dumps(errors,ensure_ascii=False))
-    save(sp,state);save(sp.parent/'inventory.json',compact_inventory(state))
+    errors = ip.validate_state(state, source_path(state, sp), pages=changed)
+    if errors:
+        raise ValueError(json.dumps(errors, ensure_ascii=False))
+
+
+def apply_edits(args):
+    sp = Path(args.state).resolve()
+    state = wf.require_state(load(sp))
+    changed = set()
+    paths = [args.edits] if isinstance(args.edits, (str, Path)) else args.edits
+    for edits_path in paths:
+        package_pages = set()
+        location = {}
+        try:
+            apply_package(state, sp, edits_path, package_pages, location)
+        except (ValueError, KeyError, TypeError, OSError) as exc:
+            try:
+                detail = json.loads(str(exc))
+            except ValueError:
+                detail = str(exc)
+            if not isinstance(detail, dict):
+                detail = {'detail': detail}
+            raise ValueError(json.dumps({**location, **detail, 'edit_file': str(edits_path)}, ensure_ascii=False)) from exc
+        changed.update(package_pages)
+    state['qc'] = {}
+    state.pop('output', None)
+    # The state is authoritative. Stage both files before committing the state.
+    with tempfile.TemporaryDirectory(prefix='.apply-', dir=sp.parent) as staging:
+        inventory = Path(staging) / 'inventory.json'
+        save(inventory, compact_inventory(state))
+        save(sp, state)
+        inventory.replace(sp.parent / inventory.name)
     preview=[sys.executable,str(Path(__file__).resolve()),'build','--state',str(sp)]
-    if changed:preview+=['--pages',','.join(map(str,sorted(changed)))]
+    if changed:preview+=['--pages',ranges(changed)]
+    else:preview=None
     unresolved = [
         {'page': page['source_page'], 'blocks': [b['id'] for b in page['blocks'] if b['method'] == 'unresolved']}
         for page in state['pages']
     ]
     unresolved = [row for row in unresolved if row['blocks']]
     return {'state':str(sp),'changed_pages':sorted(changed),'preview_argv':preview,
-            'unresolved_count':sum(len(row['blocks']) for row in unresolved),
+            'state_written_bytes':sp.stat().st_size,
+             'unresolved_count':sum(len(row['blocks']) for row in unresolved),
             'unresolved_by_page':unresolved,
             'next':'Use preview_argv for local adjustments; omit --pages for final full selection. After rebuilding, verify --previous-state PREVIOUS.state.json to retain unchanged reviews.'}
+
+
+def ranges(numbers):
+    parts = []
+    for number in sorted(set(numbers)):
+        if parts and parts[-1][1] == number - 1:
+            parts[-1][1] = number
+        else:
+            parts.append([number, number])
+    return ','.join(str(a) if a == b else f'{a}-{b}' for a, b in parts)
+
+
+def status(args):
+    sp = Path(args.state).resolve()
+    state = wf.require_state(load(sp))
+    selected = set(ip.selected_pages(args.pages, state['source']['page_count']))
+    pages = {p['source_page']: p for p in state['pages'] if p['source_page'] in selected}
+    pending = [n for n, p in pages.items() if any(b['method'] == 'unresolved' for b in p['blocks'])]
+    inventory = [n for n, p in pages.items() if not p.get('inventory_reviewed')]
+    qc = state.get('qc', {})
+    output = state.get('output', {})
+    path = wf.resolve(sp.parent, output['path']) if output else None
+    verified = bool(path and path.is_file() and qc.get('content_sha256') == pt.content_hash(state)
+                    and wf.digest(path) == output['sha256'] == qc.get('output_sha256'))
+    viewed = {}
+    audit_path = wf.resolve(sp.parent, qc['audit_path']) if verified else None
+    verified = verified and audit_path.is_file()
+    if verified:
+        viewed, _ = wf.checked_page_reviews(state, sp, pages=set(pages))
+    needs_review = set(pages) - viewed.keys()
+    if verified and state['layout']['review_profile'] == 'practical':
+        decisions = {d['finding_sha256'] for d in qc['audit_dispositions']}
+        needs_review.update(f['page'] for f in load(audit_path)['findings']
+                            if f['code'] == 'right_graphics_changed_outside_recorded_regions'
+                            and f['page'] in pages and wf.canonical(f) not in decisions)
+    action = ('apply --edits FILE' if pending else
+              'build --state AUTHORING_STATE' if not output or output.get('preview') else
+              'verify' if not verified else 'review --observations FILE' if needs_review or inventory else
+              'publish --output FILE (checks final readiness)')
+    return {'state': str(sp), 'pages': ranges(pages), 'translation_pending': ranges(pending),
+            'inventory_review_needed': ranges(inventory), 'review_needed': ranges(needs_review), 'next': action}
 
 
 def build(args):
@@ -216,8 +299,10 @@ def build(args):
         old=load(manifest)
         if (old.get('key')==key and all(Path(p).exists() and wf.digest(p)==h for p,h in old['files'].items())
             and Path(old['result']['state']).exists() and pt.content_hash(load(old['result']['state']))==old.get('state_content')):
-            return {**old['result'],'cached':True,'next':'verify --state '+old['result']['state']}
-    result=ip.build(source,sp,output,args.pages,args.overwrite)
+            return {**old['result'],'state_written_bytes':0,'cached':True,'next':'verify --state '+old['result']['state']}
+    declared = {p['source_page'] for p in state['pages']}
+    selected = declared if args.pages == 'all' else set(ip.selected_pages(args.pages, state['source']['page_count']))
+    result = ip.build(source, sp, output, args.pages, args.overwrite, preview=selected != declared)
     save(manifest,{'key':key,'result':result,'state_content':pt.content_hash(load(result['state'])),
                    'files':{result[k]:wf.digest(result[k]) for k in ('output','assignments')}})
     return {**result,'cached':False,'next':'verify --state '+result['state']}
@@ -260,10 +345,38 @@ def pages_needing_review(state, report, index, records):
     return sorted(pending)
 
 
-def verification_paths(sp,state):
-    key=wf.canonical({'output':state['output']['sha256'],'content':pt.content_hash(state),
-                      'auditor':wf.digest(Path(pt.__file__)),'helper':wf.digest(Path(wf.__file__)),'evidence_schema':'pipeline-v1'})
-    return sp.parent/('checks-'+key[:16])
+def verification_assignments(sp, state, output):
+    # Published states retain the verified assignment sidecar in the task folder.
+    assignments = state.get('qc', {}).get('font_assignments')
+    return wf.resolve(sp.parent, assignments) if assignments else output.with_suffix('.font-runs.json')
+
+
+def verification_paths(sp, state):
+    from importlib.metadata import version
+
+    output = wf.resolve(sp.parent, state['output']['path'])
+    source = source_path(state, sp)
+    if wf.digest(source) != state['source']['sha256']:
+        raise ValueError('Source fingerprint changed')
+    if wf.digest(output) != state['output']['sha256']:
+        raise ValueError('Candidate fingerprint changed')
+    layout = state['layout']
+    assets = [(font['source'], font['sha256']) for font in layout['fonts']]
+    assets.extend((item['path'], item['sha256']) for item in layout.get('inputs', []))
+    if layout.get('builder'):
+        assets.append((layout['builder']['path'], layout['builder']['sha256']))
+    for path, expected in assets:
+        if wf.digest(wf.resolve(sp.parent, path)) != expected:
+            raise ValueError(f'Verification dependency fingerprint changed: {path}')
+    key = wf.canonical({
+        'output': state['output']['sha256'], 'source': state['source']['sha256'],
+        'content': pt.content_hash(state, mechanical=True),
+        'assignments': wf.digest(verification_assignments(sp, state, output)),
+        'tools': [wf.digest(module.__file__) for module in (pt, wf, ip)],
+        'runtime': [version(package) for package in ('pypdf', 'pypdfium2', 'pymupdf', 'Pillow', 'fonttools')],
+        'renderer': str(pt.pdfium.PDFIUM_INFO), 'evidence_schema': 'pipeline-v2',
+    })
+    return sp.parent / ('checks-' + key[:16])
 
 
 def verify(args):
@@ -271,30 +384,39 @@ def verify(args):
     previous_path = Path(args.previous_state).resolve() if args.previous_state else None
     prior = wf.require_state(load(previous_path)) if previous_path else None
     output=wf.resolve(sp.parent,state['output']['path']).resolve();checkdir=verification_paths(sp,state)
+    assignments = verification_assignments(sp, state, output)
     manifest=checkdir/'verification.json';cached=False
     if manifest.exists():
         old=load(manifest)
         cached=all(Path(p).exists() and wf.digest(p)==h for p,h in old.get('files',{}).items()) and bool(old.get('files'))
         if not cached:raise ValueError('Immutable verification evidence changed; investigate instead of overwriting')
     if not cached:
-        draft=pt.check_state(sp)
+        if state.get('qc', {}).get('content_sha256') != pt.content_hash(state):
+            state['qc'] = {}
+        draft=pt.check_state(sp, state=state)
         if not draft['valid']:return {'ok':False,'stage':'state','errors':draft['errors'],'next':'Correct authoring state; no rendering performed.'}
-        checkdir.mkdir(parents=True,exist_ok=True)
-        assignments=output.with_suffix('.font-runs.json')
-        fonts=wf.check_fonts(sp,assignments);save(checkdir/'fonts.json',fonts)
-        report=pt.audit(source,output,state,render_dir=checkdir/'renders');save(checkdir/'audit.json',report)
-        files={str(p):wf.digest(p) for p in checkdir.rglob('*') if p.is_file()}
-        save(manifest,{'files':files,'created_at':now()})
+        with tempfile.TemporaryDirectory(prefix='.verify-', dir=sp.parent) as staging:
+            staged = Path(staging) / 'checks'
+            fonts = wf.check_fonts(sp, assignments, state=state)
+            save(staged / 'fonts.json', fonts)
+            report = pt.audit(source, output, state, render_dir=staged / 'renders')
+            save(staged / 'audit.json', report)
+            files = {str(checkdir / p.relative_to(staged)): wf.digest(p)
+                     for p in staged.rglob('*') if p.is_file()}
+            save(staged / manifest.name, {'files': files, 'created_at': now()})
+            staged.rename(checkdir)
     report=load(checkdir/'audit.json');index_path=checkdir/'renders'/'index.json';index=load(index_path)
     index_hash = wf.digest(index_path)
     current, _ = wf.checked_page_reviews(state, sp)
+    current = {n: record for n, record in current.items()
+               if record['render_index']['sha256'] == index_hash}
     reused = reuse_reviews(sp, index, index_path, index_hash, previous_path, prior, current) if prior else []
     records = sorted([*current.values(), *reused], key=lambda record: record['page'])
     current_findings = {wf.canonical(f) for f in report['findings'] if f.get('page') in current}
     old_qc=state.get('qc',{})
     state['qc']={'content_sha256':pt.content_hash(state),'source_sha256':state['source']['sha256'],
                  'output_sha256':state['output']['sha256'],'audit_path':ref(checkdir/'audit.json',sp.parent),
-                 'font_assignments':ref(output.with_suffix('.font-runs.json'),sp.parent),
+                 'font_assignments':ref(assignments,sp.parent),
                  'font_report':{'path':ref(checkdir/'fonts.json',sp.parent),'sha256':wf.digest(checkdir/'fonts.json')},
                  'page_reviews':records,
                  'audit_dispositions':[d for d in old_qc.get('audit_dispositions',[])
@@ -312,15 +434,21 @@ def verify(args):
         for note in prior.get('qc',{}).get('retained_notes',[]):
             if note.get('page') in reused_pages and note not in state['qc']['retained_notes']:
                 state['qc']['retained_notes'].append(copy.deepcopy(note))
+    if 'review_scope' in old_qc and records:
+        state['qc']['review_scope'] = old_qc['review_scope']
     if records:
         review_pages = [r['page'] for r in records]
         latest = max(records, key=lambda r: r['reviewed_at'])
         state['qc'].update(translation_pages=review_pages, visual_pages=review_pages,
-                           reviewer=latest['reviewer'], reviewed_at=latest['reviewed_at'],
+                           reviewer=old_qc.get('reviewer', latest['reviewer']) if current else latest['reviewer'],
+                           reviewed_at=old_qc.get('reviewed_at', latest['reviewed_at']) if current else latest['reviewed_at'],
                            structure='passed' if wf.audit_accepted(report, state) else 'pending',
                            structure_notes=old_qc.get('structure_notes')
                            or (prior['qc'].get('structure_notes') if reused else None))
-    save(sp,state)
+    state_written_bytes = 0
+    if state['qc'] != old_qc:
+        save(sp, state)
+        state_written_bytes = sp.stat().st_size
     fonts=load(checkdir/'fonts.json')
     hard=[f for f in report['findings'] if f['severity']=='error' and not
           (state['layout']['review_profile']=='practical' and f['code']=='right_graphics_changed_outside_recorded_regions')]
@@ -333,6 +461,8 @@ def verify(args):
             'render_index':str(index_path), 'render_index_sha256':index_hash,
             'reused_pages':[r['page'] for r in records if r['mode']=='reused'],
             'review_needed':pending,
+            'inventory_review_needed':ranges(p['source_page'] for p in state['pages'] if not p.get('inventory_reviewed')),
+            'rendered_pages':0 if cached else len(index['pages']), 'state_written_bytes':state_written_bytes,
             'next':'Open listed full-page renders once; zoom only an actual readability concern. Submit observations via review --observations FILE.'}
 
 
@@ -358,7 +488,10 @@ def review(args):
             or any(row['page_content_sha256'] != wf.page_fingerprint(state, row['source_page'])
                    for row in index['pages'])):
         raise ValueError('Review evidence belongs to another source, output or state')
-    audit=load(checkdir/'audit.json');qc=state['qc']
+    audit_path = checkdir / 'audit.json'
+    if manifest['files'].get(str(audit_path)) != wf.digest(audit_path):
+        raise ValueError('Bound audit changed after verify')
+    audit=load(audit_path);qc=state['qc']
     records, _ = wf.checked_page_reviews(state, sp)
     pages = observations['pages']
     page_numbers = [row.get('page') for row in pages]
@@ -374,6 +507,8 @@ def review(args):
         covers=[b['id'] for b in page['blocks'] if b['method']=='cover']
         if covers and observation.get('covers_checked') is not True:
             raise ValueError('Page '+str(n)+' has cover blocks: compare source and output for hidden diagrams/table values, then set covers_checked=true in actual observations')
+        if observation.get('inventory_reviewed') is True:
+            page.update(inventory_reviewed=True, visual_text_review='reviewed')
         row=next(r for r in index['pages'] if r['source_page']==n)
         records[n]={'page':n,'mode':'viewed','output_sha256':index['output_sha256'],
                     'render_index':{'path':ref(index_path,sp.parent),'sha256':index_hash},
@@ -399,9 +534,23 @@ def review(args):
     _, errors = wf.checked_page_reviews(submitted_state, sp)
     if errors:
         raise ValueError(json.dumps(errors, ensure_ascii=False))
-    save(sp,state);result=pt.check_state(sp,True);save(checkdir/'final-check.json',result)
+    qc['content_sha256'] = pt.content_hash(state)
+    pending = pages_needing_review(state, audit, index, records)
+    missing_inventory = ranges(p['source_page'] for p in state['pages'] if not p.get('inventory_reviewed'))
+    if pending or missing_inventory:
+        # An unfinished handoff can be recorded without scanning the whole book.
+        errors = []
+        if pending:
+            errors.append({'code': 'incomplete_page_review_evidence', 'pages': ranges(pending)})
+        if missing_inventory:
+            errors.append({'code': 'inventory_not_reviewed', 'pages': missing_inventory})
+        result = {'ready_for_delivery': False, 'errors': errors}
+    else:
+        result = pt.check_state(sp, True, state=state)
+    save(sp, state)
+    save(checkdir / 'final-check.json', result)
     return {'state':str(sp),'observations_saved':True,'saved_pages':saved_pages,
-            'reviewed_pages':sorted(records),'review_needed':pages_needing_review(state, audit, index, records),
+            'state_written_bytes':sp.stat().st_size,'reviewed_pages':sorted(records),'review_needed':pending,'inventory_review_needed':missing_inventory,
             'ready':result['ready_for_delivery'],'errors':result['errors'],
             'next':('Publish accepted sample/full PDF.' if result['ready_for_delivery'] else
                     'Observations saved; final delivery is not ready. Review remaining pages or rebuild full selection, then verify --previous-state '+str(sp)+' to reuse eligible evidence. Do not repeat saved page viewing without a changed dependency.')}
@@ -444,21 +593,24 @@ def preflight_publication(targets,overwrite):
 
 
 def publish(args):
-    sp=Path(args.state).resolve();state=wf.require_state(load(sp));result=pt.check_state(sp,True)
+    sp=Path(args.state).resolve();state=wf.require_state(load(sp));result=pt.check_state(sp,True,state=state)
     if not result['ready_for_delivery']:raise ValueError(json.dumps(result['errors'],ensure_ascii=False))
     destination=Path(args.output).resolve();source=source_path(state,sp)
     candidate=wf.resolve(sp.parent,state['output']['path']).resolve()
     task_dir,note,rebuild,record=publication_paths(sp,getattr(args,'task_dir',None))
     if destination in (source,sp,note,record,rebuild):raise ValueError('Publication must not overwrite source, state or support paths')
     if len({source,sp,note,record,rebuild})!=5:raise ValueError('Publication support paths collide with an input')
-    report=load(wf.resolve(sp.parent,state['qc']['audit_path']))
+    audit_path = wf.resolve(sp.parent, state['qc']['audit_path']).resolve()
+    manifest = load(audit_path.parent / 'verification.json')
+    if manifest['files'].get(str(audit_path)) != wf.digest(audit_path):
+        raise ValueError('Bound audit changed after verify')
+    report = load(audit_path)
     runner=wf.resolve(sp.parent,state['layout']['builder']['path']).resolve().with_name('pipeline.py')
     preflight_publication([note,record]+([destination] if destination!=candidate else []),args.overwrite)
     if destination!=candidate:shutil.copyfile(candidate,destination)
     if wf.digest(destination)!=state['output']['sha256']:raise ValueError('Publication fingerprint changed')
     state['output']['path']=ref(destination,sp.parent);save(sp,state)
-    final=pt.check_state(sp,True)
-    if not final['ready_for_delivery']:raise ValueError('Published state failed final consistency')
+    final=result
     scope=state['document'].get('delivery_scope','full')
     lines=['# 双语 PDF 交付说明','',f'- 模式：{state["layout"]["review_profile"]}。范围：{scope}。',
            f'- 原文：{source}',f'- 成品：{destination}',f'- 状态：{sp}',
@@ -483,34 +635,41 @@ def publish(args):
               '请保留工作目录；删除它会丢失可编辑状态和审核证据。']
     note.write_text('\n'.join(lines)+'\n',encoding='utf-8')
     save(record,{'source':str(source),'output':str(destination),'state':str(sp),'check':final,'notes':str(note),'task_dir':str(task_dir),'recovery_argv':recovery_argv})
-    return {'output':str(destination),'notes':str(note),'state':str(sp),'ready':True,'scope':scope,'task_dir':str(task_dir),'recovery_argv':recovery_argv}
+    return {'output':str(destination),'notes':str(note),'state':str(sp),'ready':True,'scope':scope,'task_dir':str(task_dir),'recovery_argv':recovery_argv,
+            'state_written_bytes':sp.stat().st_size}
 
 
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__);subs=parser.add_subparsers(dest='command',required=True)
-    for name in ('prepare','apply','build','verify','review','publish'):
+    for name in ('prepare','apply','build','verify','review','publish','status'):
         p=subs.add_parser(name);p.add_argument('--state',required=True);p.add_argument('--overwrite',action='store_true')
         if name in ('prepare','build'):
             p.add_argument('--source',required=name=='prepare');p.add_argument('--pages',default='all');p.add_argument('--profile',choices=('practical','strict'))
         if name=='prepare':p.add_argument('--font',action='append')
         if name in ('build','publish'):p.add_argument('--output',required=name=='publish')
-        if name=='apply':p.add_argument('--edits',required=True)
+        if name=='apply':p.add_argument('--edits',action='append',required=True)
+        if name=='status':p.add_argument('--pages',default='all')
         if name=='verify':p.add_argument('--previous-state')
         if name=='review':p.add_argument('--observations',required=True)
         if name=='publish':p.add_argument('--task-dir',help='Working folder for delivery notes and optional rebuilding; inferred from work/ or recovery[-vN]/')
-    args=parser.parse_args(argv);started=time.monotonic();success=False
+    args=parser.parse_args(argv);started=time.monotonic();success=False;result={}
     try:
-        result={'prepare':prepare,'apply':apply_edits,'build':build,'verify':verify,'review':review,'publish':publish}[args.command](args)
+        result={'prepare':prepare,'apply':apply_edits,'build':build,'verify':verify,'review':review,'publish':publish,'status':status}[args.command](args)
         success=(result.get('observations_saved',False) if args.command=='review' else not result.get('errors') and result.get('ok',True))
         print(json.dumps(result,ensure_ascii=False));return 0 if success else 2
     except Exception as exc:
         detail=str(exc)
         try:detail=json.loads(detail)
         except (ValueError,TypeError):pass
+        if args.command == 'status':
+            print(json.dumps({'ok': False, 'error': detail}, ensure_ascii=False), file=sys.stderr)
+            return 2
         log=Path(args.state).resolve().parent/'last-error.json';save(log,{'command':args.command,'detail':detail})
         conflicts=(detail.get('layout_conflicts',[])+detail.get('link_conflicts',[])) if isinstance(detail,dict) else []
         affected = {x['page'] for x in conflicts}
-        if isinstance(detail,dict) and 'page' in detail:
+        if isinstance(detail, dict):
+            affected.update(x['page'] for x in detail.get('findings', []) if 'page' in x)
+        if isinstance(detail,dict) and type(detail.get('page')) is int:
             affected.add(detail['page'])
         summary={'ok':False,'command':args.command,'report':str(log),'affected_pages':sorted(affected)}
         summary['error']=str(exc)[:1200] if not conflicts else 'Batch build conflicts: '+str(len(conflicts))
@@ -520,7 +679,13 @@ def main(argv=None):
     finally:
         event={'at':now(),'command':args.command,'seconds':round(time.monotonic()-started,3),'success':success,
                'state':str(Path(args.state).resolve()),'pages':getattr(args,'pages',None)}
-        p=Path(args.state).resolve().parent/'pipeline-events.jsonl';p.parent.mkdir(parents=True,exist_ok=True)
-        with p.open('a',encoding='utf-8') as f:f.write(json.dumps(event,ensure_ascii=False)+'\n')
+        if args.command != 'status':
+            event.update({k: result[k] for k in ('rendered_pages', 'state_written_bytes', 'cached') if k in result})
+            if 'reused_pages' in result:
+                event['reused_pages'] = len(result['reused_pages'])
+            p = Path(args.state).resolve().parent / 'pipeline-events.jsonl'
+            p.parent.mkdir(parents=True, exist_ok=True)
+            with p.open('a', encoding='utf-8') as stream:
+                stream.write(json.dumps(event, ensure_ascii=False) + '\n')
 
 if __name__=='__main__':raise SystemExit(main())
