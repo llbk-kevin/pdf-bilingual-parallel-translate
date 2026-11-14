@@ -4,6 +4,8 @@ Use the main entry's practical/strict rules. The examples below are executable i
 
 ## Prepare and translate
 
+Before running `prepare`, complete [the naming procedure](naming.md) and use the confirmed source path and working folder. While confirmation is pending, perform read-only source and path checks.
+
 Use an existing suitable environment or isolated install of requirements.txt; no external translation service is used. Find a permitted Chinese TTF/OTF font (register fallbacks if needed). Quote paths. Run from the document's working folder:
 
 ~~~text

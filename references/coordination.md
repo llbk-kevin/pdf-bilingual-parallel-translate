@@ -4,6 +4,8 @@
 
 For a single PDF below 80 physical source pages use the direct workflow. Use the coordinator workflow for multiple PDFs, a PDF of at least 80 pages, or requested independent review. GPT-6.1 Terra high is the suggested coordinator; use Sol or Astra if the user selects it. Use fresh Luna xhigh contexts for translation and review. Start with two translation slots and one review slot. Review ready candidates as they become available and adjust the balance if a queue grows.
 
+The coordinator proposes the exact naming table, obtains or verifies the user's confirmation, completes approved renames and checks the final paths and PDF hashes. Follow [the naming procedure](naming.md) before preflight, packaging or dispatch. Give subagents the confirmed source path and working folder.
+
 Preflight each source once using the frozen Python environment. Start with contiguous ranges of 30–50 source pages for long documents. Adjust to chapters, density, formulas, tables and paragraph breaks. One translator owns each source page. Give neighboring pages as read-only context. Keep cross-page sentences, continued tables, hyphenated words and captions with one translator, then map the resulting text to each original page. A translator receives the source, assigned pages, package inventory and frozen runner. An independent reviewer receives the original, candidate renders, page list and acceptance criteria.
 
 ## Handoff

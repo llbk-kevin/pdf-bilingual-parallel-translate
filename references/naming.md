@@ -1,6 +1,6 @@
 # Document identity and naming
 
-Read this reference before naming any source, bilingual output or task directory. Apply the TI additions only to confirmed TI documents.
+Read this reference at the start of every translation task. Apply the TI additions only to confirmed TI documents.
 
 ## Identify before naming
 
@@ -53,10 +53,12 @@ Windows process launch may reject a long working directory even when file I/O su
 
 ## Propose, clarify and apply
 
-For every document, proactively check names before translation and present an exact before/after table for the source, any existing output being renamed, and the task directory, with roles and reasons. Normal mode requires confirmation of that table. An accepted Plan containing the table needs no second confirmation. Translation may continue independently while naming is pending. New outputs follow the selected format without another rename approval.
+Inspect the document and existing files read-only. For each document, show a table with role, exact current name, exact proposed name, destination directory, action (keep, rename or create) and reason. Include the source PDF, planned bilingual PDF, source-stem working folder and any existing translation proposed for renaming. Use an empty current-name cell for new items. If the user requests parent directory organization, list any proposed parent directory change in a separate row.
 
 When a proposed name contradicts the actual file role, an identifier's source or version is ambiguous, or a main title would have to be shortened, explain the concrete conflict and ask before deciding the name. Once resolved, use the answer within its stated scope. Do not promote a one-task exception into a standing skill rule without an explicit request.
 
-Complete approved renames before prepare. Record paths and SHA-256, check collisions, directory boundaries and long-path support, then move each group and verify PDF bytes. If a current task input path changes after building, rebuild and verify as described in [State and review evidence](state-and-qc.md).
+While confirmation is pending, limit work to read-only checks of the source and paths. In ordinary execution, obtain confirmation of the exact table. In planning, include the table in the proposed plan and use the approved names when execution is authorized. An accepted plan containing that table supplies confirmation. Keeping the source name is a valid decision.
+
+Before `prepare`, complete approved renames. Record paths and SHA-256, check collisions, directory boundaries and long-path support, then move each group and verify PDF bytes. Save the confirmed table, naming evidence and source SHA-256 in the task naming manifest or state. Use the confirmed paths for `prepare`, packaging and translation. On resume, consult the saved decision and reconfirm only affected entries when a proposed name or destination changes. If a current task input path changes after building, rebuild and verify as described in [State and review evidence](state-and-qc.md).
 
 Preserve existing translations unless their exact deletion was explicitly requested. This naming rule does not authorize deleting old translations.
