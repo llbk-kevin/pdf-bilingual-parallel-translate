@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import shutil
+import tempfile
 import collections
 import ctypes
 import hashlib
@@ -20,7 +23,8 @@ import pypdfium2 as pdfium
 import pypdfium2.raw as pdfium_c
 from PIL import Image, ImageChops, ImageDraw
 
-from workflow import check_fonts, page_fingerprint, validate_reviews, pagination_items, require_state, state_header_error, mechanical_page
+from workflow import (canonical_pages, check_fonts, mechanical_page, page_fingerprint,
+                      pagination_items, require_state, state_header_error, validate_reviews)
 
 SCHEMA_VERSION = 2
 _PASSWORD = None
@@ -69,10 +73,12 @@ def checked_reader(path):
     return r
 
 
-def open_document(path):
+def open_document(path, *, reader=None):
     try:
-        reader = checked_reader(path)
-        units = [float(p.get("/UserUnit",1)) for p in reader.pages]
+        units = [float(p.get("/UserUnit",1)) for p in reader.pages] if reader is not None else None
+        if units is None:
+            with checked_reader(path) as opened:
+                return open_document(path, reader=opened)
         if any(u != 1 for u in units):
             # PDFium ignores UserUnit. Normalize a temporary in-memory rendering copy
             # so pixels, point sizes and coordinates use the physical source dimensions.
@@ -108,7 +114,7 @@ def stream_bytes(obj):
     return data
 
 
-def canonical_object(value, seen=None, depth=0):
+def canonical_object(value, seen=None, depth=0, *, painting_memo=None):
     """Compare image semantics without relying on file-local object numbers."""
     seen = set() if seen is None else seen
     if depth > 30:
@@ -116,13 +122,25 @@ def canonical_object(value, seen=None, depth=0):
     if isinstance(value, IndirectObject):
         key = object_key(value)
         if key in seen:
+            if painting_memo is not None:
+                raise ValueError("Cyclic page appearance dependency")
             return {"cycle": True}
-        return canonical_object(deref(value), seen | {key}, depth + 1)
+        if painting_memo is not None and key in painting_memo:
+            return painting_memo[key]
+        child = canonical_object(deref(value), seen | {key}, depth + 1,
+                                 painting_memo=painting_memo)
+        if painting_memo is not None:
+            # Use hashes for references to keep shared font/image traversal bounded.
+            child = {"referenced_sha256": canonical_hash(child)}
+            painting_memo[key] = child
+        return child
     if isinstance(value, dict):
         is_stream = isinstance(value, StreamObject)
         is_image = is_stream and value.get("/Subtype") == "/Image"
-        excluded = {"/Length"} if not is_stream or is_image else {"/Length", "/Filter", "/DecodeParms"}
-        data = {str(k): canonical_object(v, seen, depth + 1)
+        excluded = {"/Length"}
+        if painting_memo is None and is_stream and not is_image:
+            excluded = {"/Length", "/Filter", "/DecodeParms"}
+        data = {str(k): canonical_object(v, seen, depth + 1, painting_memo=painting_memo)
                 for k, v in value.items() if str(k) not in excluded}
         if is_stream:
             # Keep original image encoding strict; lookup/profile streams may be losslessly recompressed.
@@ -130,7 +148,10 @@ def canonical_object(value, seen=None, depth=0):
             data[key] = hashlib.sha256(stream_bytes(value) if is_image else value.get_data()).hexdigest()
         return data
     if isinstance(value, (list, tuple)):
-        return [canonical_object(x, seen, depth + 1) for x in value]
+        return [canonical_object(x, seen, depth + 1, painting_memo=painting_memo) for x in value]
+    if painting_memo is not None and not isinstance(value, bytes):
+        # Names, text strings, booleans and null can otherwise serialize alike.
+        return [type(value).__name__, str(value)]
     if isinstance(value, bytes):
         return {"bytes_sha256": hashlib.sha256(value).hexdigest()}
     if isinstance(value, (int, float)) and not isinstance(value, bool):
@@ -284,30 +305,32 @@ def outline_items(reader):
 
 def link_target(nav, annot):
     try:
-        kind, target = nav.parse(annot)
+        kind, target = nav.parse(annot, allow_null=True, allow_actionless=True)
     except (ValueError, TypeError, KeyError) as exc:
         return {"kind": "unsupported", "detail": str(exc)}
+    if kind == 'null':
+        return {'kind': 'null'}
     if kind == "/URI":
         return {"kind": "uri", "uri": str(target["/URI"])}
     page, mode, axes = target
     return {"kind": "internal", "page": page+1, "view": [str(mode), *axes]}
 
 
-def pdf_metadata(path, reader=None, with_char_summary=True):
+def pdf_metadata(path, reader=None, with_char_summary=True, *, doc=None, include_text=True):
     from inplace import RawNavigation
 
     reader = reader or checked_reader(path)
     nav = RawNavigation(reader)
-    doc = open_document(path)
+    owns_doc = doc is None
+    doc = open_document(path, reader=reader) if owns_doc else doc
     pages, findings = [], []
     try:
         for i, page in enumerate(reader.pages):
             rendered = doc[i]
-            textpage = rendered.get_textpage()
-            try:
-                text = textpage.get_text_range()
-            finally:
-                textpage.close()
+            text = ''
+            if include_text:
+                with contextlib.closing(rendered.get_textpage()) as textpage:
+                    text = textpage.get_text_range()
             links = []
             for ref in deref(page.get("/Annots", [])):
                 annot = deref(ref)
@@ -332,7 +355,7 @@ def pdf_metadata(path, reader=None, with_char_summary=True):
                 findings.append({"code": "rotated_page", "page": i+1})
             if list(page.mediabox) != list(page.cropbox):
                 findings.append({"code": "crop_differs_from_media", "page": i+1})
-            if len(text.strip()) < 20:
+            if include_text and len(text.strip()) < 20:
                 findings.append({"code": "little_extractable_text", "page": i+1,
                                  "note": "May be a cover, image, outlines or a scan; inspect visually."})
             if "\ufffd" in text:
@@ -340,7 +363,8 @@ def pdf_metadata(path, reader=None, with_char_summary=True):
             pages.append(item)
             rendered.close()
     finally:
-        doc.close()
+        if owns_doc:
+            doc.close()
     resources = inventory(reader)
     total = Path(path).stat().st_size
     resources["unclassified_file_bytes"] = total - sum(resources["encoded_bytes"].values())
@@ -536,13 +560,152 @@ def small_text_roles(chars, mapping):
     return dict(roles)
 
 
+
+def image_settings(dpi):
+    return {"method": RENDER_METHOD, "dpi": dpi, "pdfium_version": str(pdfium.PDFIUM_INFO),
+            "annotations": True, "color": "RGB", "background": "white"}
+
+
+def appearance_fingerprint(reader, page, memo):
+    """Hash actual reachable painting inputs, excluding page-tree and navigation links."""
+    root = reader.trailer['/Root']
+    if any(k in root for k in ('/AcroForm', '/OutputIntents', '/OCProperties')):
+        return None
+    excluded = {'/Parent', '/Annots', '/Metadata', '/PieceInfo', '/StructParents'}
+    appearance = {k: v for k, v in page.items() if k not in excluded}
+    try:
+        appearance['/Annots'] = [
+            {k: v for k, v in deref(ref).items() if k not in ('/P', '/A', '/Dest', '/StructParent', '/NM')}
+            for ref in deref(page.get('/Annots', []))
+        ]
+        return canonical_hash(canonical_object(appearance, painting_memo=memo))
+    except (ValueError, KeyError, TypeError, AttributeError, RecursionError):
+        return None
+
+
+def comparison_inputs(page, source_rect):
+    blocks = [{k: b[k] for k in ('method', 'actual_glyph_boxes', 'cover_bbox', 'source_bbox') if k in b}
+              for b in page.get('blocks', []) if b.get('method') in ('replace', 'cover')]
+    return {"source_rect": source_rect, "redaction_regions": page.get('redaction_regions'),
+            "blocks": blocks, "pagination": page.get('pagination', {}),
+            "link_mappings": [r for r in page.get('link_mappings', []) if r.get('visible_border')]}
+
+
+def cached_image(cache, key, render):
+    if cache is None:
+        return render(), False
+    image = Path(cache) / (key + '.png')
+    digest_file = image.with_suffix('.sha256')
+    if digest_file.is_file() and image.is_file() and digest_file.read_text('ascii') == sha256_file(image):
+        with Image.open(image) as data:
+            return data.convert('RGB'), True
+    data = render()
+    cache_png(data, image)
+    return data, False
+
+
+def cache_png(data, path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=path.parent, prefix='.cache-') as tmp:
+        staging = Path(tmp)/'image.png'
+        data.save(staging)
+        sha = sha256_file(staging)
+        staging.replace(path)
+        entry = Path(tmp)/'sha256'
+        entry.write_text(sha, encoding='ascii')
+        entry.replace(path.with_suffix('.sha256'))
+
+
+def open_worker_documents(source, output, password):
+    import atexit
+    global _WORKER_SOURCE, _WORKER_OUTPUT, _PASSWORD
+    _PASSWORD = password
+    _WORKER_SOURCE, _WORKER_OUTPUT = open_document(source), open_document(output)
+    atexit.register(_WORKER_SOURCE.close)
+    atexit.register(_WORKER_OUTPUT.close)
+
+
+def compare_page(i, j, *args):
+    with contextlib.closing(_WORKER_SOURCE[i]) as sp, contextlib.closing(_WORKER_OUTPUT[j]) as op:
+        return compare_page_images(sp, op, j, *args)
+
+
+def compare_page_images(sp, op, j, rect, page, compare_right, thresholds,
+                        cache, source_key, appearance_key, destination):
+    dpi, tolerance, ratio, max_pixels = thresholds
+    record_path = Path(cache)/(appearance_key+'.json') if cache and appearance_key else None
+    names = [f'page-{j+1:04d}.png', f'page-{j+1:04d}-source.png',
+             f'page-{j+1:04d}-right-outside-difference.png']
+    if record_path:
+        assets = [Path(cache)/(appearance_key+'-0.png'), Path(cache)/(source_key+'.png'),
+                  Path(cache)/(appearance_key+'-2.png')]
+        try:
+            record = read_json(record_path)
+            hashes = record['images']
+            if len(hashes) != 3 or not all(hashes[:2]):
+                raise ValueError('Incomplete page image cache')
+            hit = all(sha256_file(assets[i]) == sha for i, sha in enumerate(hashes) if sha)
+        except (OSError, ValueError, KeyError, TypeError):
+            # This cache is expendable. Bound candidate evidence is checked separately.
+            hit = False
+        if hit:
+            for i, sha in enumerate(hashes):
+                if sha:
+                    shutil.copyfile(assets[i], Path(destination)/names[i])
+            return {**record, 'rendered': False, 'source_rendered': False}
+    with contextlib.ExitStack() as opened:
+        si, hit = cached_image(cache, source_key, lambda: render_image(sp, dpi, max_pixels))
+        opened.callback(si.close)
+        oi = opened.enter_context(render_image(op, dpi, max_pixels))
+        pixels, diff = compare_images(si, oi, rect, dpi, tolerance, ratio)
+        if diff is not None:
+            diff.close()
+        right, right_diff = (compare_right_outside_regions(si, op, page, dpi, tolerance, max_pixels)
+                             if compare_right else (None, None))
+        if right_diff is not None:
+            opened.callback(right_diff.close)
+        hashes = [None, None, None]
+        if destination:
+            for i, im in enumerate((oi, si, right_diff if right and not right['passed'] else None)):
+                if im is None:
+                    continue
+                p = Path(destination)/names[i]
+                if i == 1 and cache:
+                    shutil.copyfile(Path(cache)/(source_key+'.png'), p)
+                else:
+                    save_png(im, p, False)
+                hashes[i] = sha256_file(p)
+        record = {'comparison': pixels, 'right': right, 'images': hashes,
+                  'pixels': list(oi.size), 'pixel_sha256': hashlib.sha256(oi.tobytes()).hexdigest()}
+        if record_path:
+            with tempfile.TemporaryDirectory(dir=Path(cache), prefix='.comparison-') as staging:
+                for i, sha in enumerate(hashes):
+                    if sha and i != 1:
+                        tmp = Path(staging)/names[i]
+                        shutil.copyfile(Path(destination)/names[i], tmp)
+                        tmp.replace(Path(cache)/(appearance_key+f'-{i}.png'))
+                tmp = Path(staging)/'comparison.json'
+                write_json(record, tmp, False)
+                tmp.replace(record_path)
+        return {**record, 'rendered': True, 'source_rendered': not hit}
+
+
 def audit(source, output, state=None, dpi=144, pixel_tolerance=16,
-          max_changed_ratio=0.001, max_pixels=40000000, render_dir=None):
+          max_changed_ratio=0.001, max_pixels=40000000, render_dir=None, *, cache=None, workers=1):
     if state is not None:
         require_state(state)
-    render_rows=[]
-    sr, outreader = checked_reader(source), checked_reader(output)
-    sm, om = pdf_metadata(source, sr, False), pdf_metadata(output, outreader, False)
+    with checked_reader(source) as sr, checked_reader(output) as outreader, \
+            contextlib.closing(open_document(source, reader=sr)) as source_doc, \
+            contextlib.closing(open_document(output, reader=outreader)) as result_doc:
+        sm = pdf_metadata(source, sr, False, doc=source_doc, include_text=False)
+        om = pdf_metadata(output, outreader, False, doc=result_doc, include_text=False)
+        return audit_documents(source, output, sr, outreader, sm, om, source_doc, result_doc,
+                               state, dpi, pixel_tolerance, max_changed_ratio, max_pixels, render_dir, cache, workers)
+
+
+def audit_documents(source, output, sr, outreader, sm, om, source_doc, result_doc, state,
+                    dpi, pixel_tolerance, max_changed_ratio, max_pixels, render_dir, cache, workers):
+    render_rows = []
     findings, pages = [], []
 
     def issue(severity, code, page=None, **extra):
@@ -592,8 +755,47 @@ def audit(source, output, state=None, dpi=144, pixel_tolerance=16,
               note="Investigation trigger only; inspect used glyphs and subset lifecycle.")
     mapping = page_mapping(state, sm["page_count"])
     target_map = {a+1: int(b["output_page"]) for a,b in mapping.items()}
-    source_doc, result_doc = open_document(source), open_document(output)
+    settings = image_settings(dpi)
+    thresholds = (dpi, pixel_tolerance, max_changed_ratio, max_pixels)
+    rendered_count = source_rendered_count = 0
+    if render_dir:
+        Path(render_dir).mkdir(parents=True, exist_ok=True)
+    if cache:
+        Path(cache).mkdir(parents=True, exist_ok=True)
+    # Keep a small rolling queue so Windows spawn never retains a book of rasters.
+    from concurrent.futures import ProcessPoolExecutor
+    from multiprocessing import get_context
+    pool = (ProcessPoolExecutor(max_workers=workers, mp_context=get_context('spawn'),
+                                initializer=open_worker_documents, initargs=(source, output, _PASSWORD))
+            if workers > 1 else None)
+    futures = {}
+    jobs = [(i, m['output_page']-1) for i, m in sorted(mapping.items())
+            if 0 <= i < len(source_doc) and 0 <= m['output_page']-1 < len(result_doc)]
+    version = sha256_file(__file__)
+    appearance_memo = {}
+    def params(i, j):
+        m = mapping[i]
+        rect = m.get('source_rect', [0, 0, *sm['pages'][i]['visible_size_pt']])
+        source_key = canonical_hash([sm['sha256'], i, settings, max_pixels, version])
+        painting = appearance_fingerprint(outreader, outreader.pages[j], appearance_memo) if cache else None
+        appearance_key = (canonical_hash([source_key, painting, thresholds, bool(state), comparison_inputs(m, rect)])
+                          if painting and render_dir else None)
+        return rect, m, bool(state), thresholds, cache, source_key, appearance_key, render_dir
+
+    def enqueue():
+        i, j = next(job_iter, (None, None))
+        if i is not None:
+            rect, m, *rest = params(i, j)
+            mask_inputs = comparison_inputs(m, rect)
+            if 'redaction_regions' not in m:
+                mask_inputs.pop('redaction_regions')
+            futures[i] = pool.submit(compare_page, i, j, rect, mask_inputs, *rest)
+
+    job_iter = iter(jobs)
     try:
+        if pool:
+            for _ in range(workers):
+                enqueue()
         for i in range(len(source_doc)):
             m = mapping.get(i)
             if not m:
@@ -653,32 +855,29 @@ def audit(source, output, state=None, dpi=144, pixel_tolerance=16,
                       note='Role/location classification is not visual acceptance; inspect legibility.')
             if any(c["bbox"][2] > ow+0.5 or c["bbox"][3] > oh+0.5 for c in rightchars):
                 issue("warning", "text_crosses_output_boundary", i+1)
-            si, oi = render_image(sp,dpi,max_pixels), render_image(op,dpi,max_pixels)
-            pixels, diff = compare_images(si,oi,rect,dpi,pixel_tolerance,max_changed_ratio)
+            if pool:
+                comparison = futures.pop(i).result()
+                enqueue()
+            else:
+                comparison = compare_page_images(sp, op, j, *params(i, j))
+            rendered_count += comparison['rendered']
+            source_rendered_count += comparison['source_rendered']
+            pixels = comparison['comparison']
             if not pixels["passed"]:
                 issue("error", "source_visual_changed", i+1, comparison=pixels)
-            right_comparison=None
-            if state:
-                right_comparison,right_diff=compare_right_outside_regions(si,op,m,dpi,pixel_tolerance,max_pixels)
-                if not right_comparison['passed']:
-                    issue('error','right_graphics_changed_outside_recorded_regions',i+1,comparison=right_comparison)
-                if render_dir and right_diff and not right_comparison['passed']:
-                    save_png(right_diff,Path(render_dir)/f"page-{j+1:04d}-right-outside-difference.png",False)
-                if right_diff:right_diff.close()
+            right_comparison = comparison['right']
+            if right_comparison and not right_comparison['passed']:
+                issue('error', 'right_graphics_changed_outside_recorded_regions', i+1, comparison=right_comparison)
             if render_dir:
-                name=f"page-{j+1:04d}.png";sn=f"page-{j+1:04d}-source.png"
-                save_png(oi,Path(render_dir)/name,False);save_png(si,Path(render_dir)/sn,False)
-                row={"output_page":j+1,"source_page":i+1,"image":name,"source_image":sn,
-                     "pixels":list(oi.size),"image_sha256":sha256_file(Path(render_dir)/name),
-                     "pixel_sha256":hashlib.sha256(oi.tobytes()).hexdigest(),"comparison":pixels,
-                     "page_content_sha256":page_fingerprint(state,i+1) if state else None,
-                     "right_outside_regions":right_comparison}
-                if right_comparison and not right_comparison['passed']:
-                    row['right_outside_difference_image']=f"page-{j+1:04d}-right-outside-difference.png"
+                hashes = comparison['images']
+                row = {"output_page": j+1, "source_page": i+1, "image": f"page-{j+1:04d}.png",
+                       "source_image": f"page-{j+1:04d}-source.png", "pixels": comparison['pixels'],
+                       "image_sha256": hashes[0], "pixel_sha256": comparison['pixel_sha256'],
+                       "comparison": pixels, "page_content_sha256": page_fingerprint(state, i+1) if state else None,
+                       "right_outside_regions": right_comparison}
+                if hashes[2]:
+                    row["right_outside_difference_image"] = f"page-{j+1:04d}-right-outside-difference.png"
                 render_rows.append(row)
-            si.close(); oi.close()
-            if diff:
-                diff.close()
             # Compare source links by destination AND clickable rectangle; additions are allowed.
             expected_links = []
             omitted = {item['source_link'] for item in m.get('omitted_links', [])}
@@ -694,7 +893,7 @@ def audit(source, output, state=None, dpi=144, pixel_tolerance=16,
             if collections.Counter(expected_links)-actual_links:
                 issue("warning", "source_links_changed", i+1,
                       note="Inspect link rectangles/destinations, especially after coordinate normalization.")
-            if om["pages"][j]["annotation_count"] < sm["pages"][i]["annotation_count"]:
+            if om["pages"][j]["annotation_count"] < sm["pages"][i]["annotation_count"] - len(omitted):
                 issue("warning", "annotations_removed", i+1)
             pages.append({"source_page": i+1, "output_page": j+1,
                           "source_rect": rect, "source_visual": pixels, "pane_geometry": geometry,
@@ -702,15 +901,14 @@ def audit(source, output, state=None, dpi=144, pixel_tolerance=16,
                           "small_chinese_characters": len(small), "right_outside_regions":right_comparison})
             sp.close(); op.close()
     finally:
-        source_doc.close(); result_doc.close()
+        if pool:
+            pool.shutdown(cancel_futures=True)
     expected_bookmarks = [{**b, "page": int(mapping[b["page"]-1]["output_page"])
                            if b["page"] and b["page"]-1 in mapping else b["page"]}
                           for b in sm["bookmarks"] if not subset or not b["page"] or b["page"]-1 in mapping]
     if collections.Counter(map(canonical_hash, expected_bookmarks))-collections.Counter(map(canonical_hash,om["bookmarks"])):
         issue("error", "source_bookmarks_missing_or_changed")
     if render_dir:
-        settings={"method":RENDER_METHOD,"dpi":dpi,"pdfium_version":str(pdfium.PDFIUM_INFO),
-                  "annotations":True,"color":"RGB","background":"white"}
         index={"schema_version":1,"tool":"pdf-bilingual-parallel-translate/render",
                "output_sha256":om['sha256'],"source_sha256":sm['sha256'],"dpi":dpi,
                "settings":settings,"settings_sha256":canonical_hash(settings),
@@ -726,6 +924,8 @@ def audit(source, output, state=None, dpi=144, pixel_tolerance=16,
             "size_delta_bytes": om["bytes"]-sm["bytes"], "classified_delta_bytes": delta,
             "source_resources": sm["resources"], "output_resources": om["resources"],
             "render_dpi": dpi, "render_method":RENDER_METHOD, "pages": pages, "findings": findings,
+            "rendered_pages": rendered_count, "source_rendered_pages": source_rendered_count,
+            "mechanical_reused_pages": len(pages) - rendered_count, "workers": workers,
             "page_content_streams":{"source":sc_streams,"output":oc_streams},
             "finding_summary":dict(collections.Counter(x["code"] for x in findings)),
             "mechanical_pass": not any(x["severity"]=="error" for x in findings),
@@ -742,7 +942,7 @@ def content_hash(state, *, mechanical=False):
     content = {k: state.get(k) for k in keys}
     if mechanical:
         content['pages'] = [mechanical_page(page) for page in state['pages']]
-    return canonical_hash(content)
+    return canonical_pages(content)
 
 
 def resolve_state_file(base, value):

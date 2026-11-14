@@ -12,7 +12,7 @@ python SKILL/scripts/pipeline.py prepare --source ORIGINAL.pdf --state recovery/
 
 --pages 为原文物理页号，从 1 开始，默认 all。选页明确标为 sample：输出连续编号，source_page 保留源页号；样本外书签及链接记为省略，不重定向。整本仍要求完整源页。字体以路径和哈希登记，重建需可用；PDF 内嵌实际用字子集，阅读不需外部字体。
 
-prepare 冻结脚本到状态旁，写 inventory.json 与 preflight.json。后续包括 verify/review/publish 均使用冻结入口，不把命令变量改回 SKILL/scripts/pipeline.py。维护时如需替换当前任务的脚本，另建恢复目录。先读简洁 inventory，不反复读巨大的字形状态。source_group/source_line 辅助段落归属但不决定阅读顺序。可用 pdf_tools.py render ORIGINAL.pdf --pages SELECTION --out work/source 查看原页，再决定覆盖与公式。风险仅为提示，不是自动翻译结论。公式密集提示属于非阻断启发式，编码异常和实际可见原文优先。AES 支持随 requirements.txt 安装。missing_encryption_dependency 提示补齐依赖，password_required 提示需要源文件密码。目录跳转按声明的选页范围检查，样本外目标报告 sample_link_omitted。
+prepare 冻结脚本到状态旁，写 inventory.json 与 preflight.json。后续包括 verify/review/publish 均使用冻结入口，不把命令变量改回 SKILL/scripts/pipeline.py。维护时如需替换当前任务的脚本，另建恢复目录。先读简洁 inventory，不反复读巨大的字形状态。source_group/source_line 辅助段落归属但不决定阅读顺序。可用 pdf_tools.py render ORIGINAL.pdf --pages SELECTION --out work/source 查看原页，再决定覆盖与公式。风险仅为提示，不是自动翻译结论。公式密集提示属于非阻断启发式，编码异常和实际可见原文优先。AES 支持随 requirements.txt 安装。missing_encryption_dependency 提示补齐依赖，password_required 提示需要源文件密码。目录跳转按声明的选页范围检查，样本外目标报告 sample_link_omitted。practical 登记确认空目标的链接和书签，并保留外观及标题。strict 要求跳转有效。
 
 批量 edits.json 原生段落示例：
 
@@ -50,7 +50,7 @@ python recovery/pipeline.py status --state recovery/state.json --pages 1-40
 python recovery/pipeline.py apply --state recovery/state.json --edits work/chapter-1.json --edits work/chapter-2.json
 ~~~
 
-使用编写状态查询翻译进度，使用构建返回的候选状态查询核验与复核。按连续页或章节分工，由一个协调者依序提交编辑和观察。每批编辑与实际观察保存在工作目录，便于从磁盘恢复。任一编辑失败时原编写状态保持原样。局部预览可省略范围外跳转，交付时构建完整声明范围。
+多份文档、长文档或独立复核的分包、归属与恢复见[集群协作](coordination.zh-CN.md)。使用编写状态查询翻译进度，使用构建返回的候选状态查询核验与复核。任一批次失败时原编写状态保持原样。局部预览可省略范围外跳转且不能发布，交付时构建完整声明范围。
 
 
 ## 集中检查与真实记录
@@ -59,7 +59,7 @@ python recovery/pipeline.py apply --state recovery/state.json --edits work/chapt
 python recovery/pipeline.py verify --state work/RETURNED.state.json
 ~~~
 
-verify 检查状态、字体、审计，一次生成原文、输出及相关差异图，返回 render_index、错误汇总和 review_needed。首次 verify 同时报告 inventory_review_needed。将可见原页与清单对照确认后，在该页的实际观察中填 `"inventory_reviewed": true`。同一候选补记清点可复用审计和渲染。verify 返回 rendered_pages 和 state_written_bytes，耗时见事件日志。保留差异也不修改原始测量和 mechanical_pass。
+verify 检查状态、字体、审计，一次生成原文、输出及相关差异图，返回 render_index、错误汇总和 review_needed。首次 verify 同时报告 inventory_review_needed。将可见原页与清单对照确认后，在该页的实际观察中填 `"inventory_reviewed": true`。同一候选补记清点可复用审计和渲染。verify 返回 rendered_pages、source_rendered_pages、mechanical_reused_pages 和 state_written_bytes，耗时见事件日志。修改后可复用未变化的源页和候选渲染，文档级检查照常执行。保留差异也不修改原始测量和 mechanical_pass。
 
 打开 review_needed 中的双栏页检查主要图文。遇到疑点再看差分图或放大局部。若安排独立复核，由实际查看者登记观察。发现阻断项时，先为已查看且无阻断的页提交 observations.json，另报待修页。复制本次 verify 返回的 output_sha256 和 render_index_sha256。
 
@@ -75,7 +75,7 @@ verify 列出 cover_review_needed。逐处对照原图与右侧浮层，确认�
 
 不可预填观察，不手改 qc。渲染不会生成已查看记录。retain_right_difference 仅在 practical 下处理当前精确匹配的 right_graphics_changed_outside_recorded_regions，不能豁免原文损坏、字体、缺页或其他错误，更不能用于主要图形遮挡。strict 仍要求原始审计通过。
 
-集中修改后先预览受影响页，再构建完整候选。运行 verify --previous-state PREVIOUS.state.json，上一版只登记部分页面时也可复用。脚本逐页检查像素、设置和依赖，保留有效记录的原查看者、时间和证据。当前候选的有效观察优先。按 review_needed 补查，并为变化后的差分记录新的判断。完整候选仍执行自动检查。
+集中修改后先预览受影响页，再构建完整候选。运行 verify --previous-state PREVIOUS.state.json，上一版只登记部分页面时也可复用。可重复传入该选项，带上多份相关候选或分包。脚本逐页检查像素、设置和依赖，保留有效记录的原查看者、时间和证据。当前候选的有效观察优先。按 review_needed 补查，并为变化后的差分记录新的判断。完整候选仍执行自动检查。
 
 review 返回 observations_saved、saved_pages、reviewed_pages 和 review_needed。查看 ready 和 errors 确认能否交付。局部审核可通过 verify --previous-state 复用。
 

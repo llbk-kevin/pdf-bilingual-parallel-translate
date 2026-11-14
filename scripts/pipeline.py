@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import copy
 import datetime
+import hashlib
 import json
 import math
 import os
@@ -16,6 +17,43 @@ from pathlib import Path
 import inplace as ip
 import pdf_tools as pt
 import workflow as wf
+
+
+def worker_count(args):
+    requested = getattr(args, 'workers', 1)
+    if requested == 1:
+        return 1
+    if (os.cpu_count() or 1) < 2:
+        return 1
+    if sys.platform == 'win32':
+        import ctypes
+        class MemoryStatus(ctypes.Structure):
+            _fields_ = [('length', ctypes.c_uint32), ('load', ctypes.c_uint32),
+                        *[(name, ctypes.c_uint64) for name in
+                          ('total', 'available', 'page', 'page_available', 'virtual',
+                           'virtual_available', 'virtual_extended')]]
+        memory = MemoryStatus()
+        memory.length = ctypes.sizeof(memory)
+        if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(memory)) or memory.available < 3 * 1024**3:
+            return 1
+    return requested
+
+
+def runtime_packages():
+    from importlib.metadata import version
+    return {p: version(p) for p in ('pypdf', 'pypdfium2', 'pymupdf', 'Pillow', 'fonttools')}
+
+
+def check_runtime(state):
+    expected = state['layout'].get('runtime_packages')
+    if expected is None:
+        return
+    current = runtime_packages()
+    changed = {p: {'expected': v, 'actual': current.get(p)} for p, v in expected.items()
+               if current.get(p) != v}
+    if changed:
+        raise ValueError(json.dumps({'code': 'frozen_runtime_changed', 'packages': changed,
+                                     'action': 'Use the Python environment recorded at prepare.'}))
 
 
 def now():return datetime.datetime.now(datetime.timezone.utc).isoformat()
@@ -35,9 +73,12 @@ def prepare(args):
     # uses it for raw destinations even when MuPDF already opens the document.
     with pt.checked_reader(args.source):
         pass
-    result=ip.extract(args.source,sp,args.pages,args.overwrite,profile=args.profile or 'practical')
+    workers = worker_count(args)
+    result=ip.extract(args.source,sp,args.pages,args.overwrite,profile=args.profile or 'practical',
+                      workers=workers)
     state=load(sp)
     selected=result['pages']
+    state['layout']['runtime_packages'] = runtime_packages()
     state['document'].update(delivery_scope='full' if len(selected)==state['source']['page_count'] else 'sample',
                              selected_source_pages=selected)
     # Freeze a runnable recovery package. Use this copy for subsequent commands.
@@ -76,7 +117,7 @@ def prepare(args):
                     page['native_left'] = True
     save(sp,state);save(sp.parent/'inventory.json',compact_inventory(state));save(sp.parent/'preflight.json',{'risks':risks})
     return {'state':str(sp),'runner':str(sp.parent/'pipeline.py'),'inventory':str(sp.parent/'inventory.json'),
-            'state_written_bytes':sp.stat().st_size,
+            'state_written_bytes':sp.stat().st_size, 'extract_workers':min(workers, len(selected)),
             'preflight':str(sp.parent/'preflight.json'),'pages':selected,'profile':state['layout']['review_profile'],
             'risk_counts':counts(risks), 'compatibility_blockers':counts(r for r in risks if r['code'] in
                 {'interaction_preflight','link_action','bookmark_action','bookmark_tree','link_destination_outside_scope','source_pane_probe_failed'}),
@@ -128,8 +169,8 @@ def pixel_edits(changes,state,sp,edits_path):
     return result
 
 
-def apply_package(state, sp, edits_path, changed, location):
-    changes = load(edits_path)
+def apply_package(state, sp, edits_path, changed, location, changes):
+
     top_keys={'blocks','inventory_reviewed_pages','context_pages','link_overrides','link_overrides_patch','glossary','issues','source_render_index'}
     if not isinstance(changes,dict) or not changes or set(changes)-top_keys:
         raise ValueError('Edit JSON must be a nonempty object using blocks, inventory_reviewed_pages, context_pages, link_overrides, link_overrides_patch, glossary or issues; unknown top-level keys are not accepted')
@@ -200,16 +241,130 @@ def apply_package(state, sp, edits_path, changed, location):
         raise ValueError(json.dumps(errors, ensure_ascii=False))
 
 
+
+def package_dependencies(state):
+    layout = state['layout']
+    fonts = [{k: v for k, v in f.items() if k != 'source'} for f in layout['fonts']]
+    return wf.canonical([state['source']['sha256'], {**layout, 'fonts': fonts},
+                         state['glossary'], state['issues']])
+
+
+def package(args):
+    sp = Path(args.state).resolve()
+    state = wf.require_state(load(sp))
+    if state.get('output') or state.get('package_preview'):
+        raise ValueError('Export packages from the main authoring state')
+    out = Path(args.out).resolve()
+    pages = {p['source_page']: p for p in state['pages']}
+    selection = ip.selected_pages(args.pages, state['source']['page_count'])
+    if not set(selection) <= pages.keys() or selection != list(range(selection[0], selection[-1]+1)):
+        raise ValueError('A package needs one contiguous range of inventoried source pages')
+    if out.exists():
+        raise ValueError('Use a new package directory')
+    dependencies = package_dependencies(state)
+    neighbors = sorted({selection[0]-1, selection[-1]+1} & pages.keys())
+    compact = {p['page']: p for p in compact_inventory({'pages': [pages[n] for n in neighbors]})['pages']}
+    baseline = {str(n): wf.canonical(pages[n]) for n in selection}
+    metadata = {'schema_version': 1, 'pages': selection, 'baseline': baseline,
+                'dependencies': dependencies,
+                'id': wf.canonical([dependencies, baseline]),
+                'owner': getattr(args, 'owner', None),
+                'source_sha256': state['source']['sha256']}
+    metadata['adjacent_pages'] = neighbors
+    state['pages'] = [pages[n] for n in selection]
+    state['document'].update(delivery_scope='sample', selected_source_pages=selection)
+    for j, page in enumerate(state['pages'], 1):
+        page['output_page'] = j
+    state['qc'] = {}
+    state.pop('output', None)
+    state.pop('applied_packages', None)
+    state['package_preview'] = True
+    for entry, key in [(state['source'], 'path'), *((f, 'source') for f in state['layout']['fonts']),
+                       *((asset, 'path') for asset in state['layout'].get('inputs', []))]:
+        entry[key] = ref(wf.resolve(sp.parent, entry[key]), out)
+    builder = state['layout'].get('builder')
+    if builder:
+        builder['path'] = ref(wf.resolve(sp.parent, builder['path']), out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix='.package-', dir=out.parent) as temporary:
+        stage = Path(temporary)/'ready'
+        save(stage/'package.json', metadata)
+        save(stage/'state.json', state)
+        save(stage/'inventory.json', compact_inventory(state))
+        save(stage/'context.json', {'read_only': list(compact.values())})
+        stage.rename(out)
+    return {'id': metadata['id'], 'pages': selection, 'state': str(out/'state.json'),
+            'inventory': str(out/'inventory.json'), 'context': str(out/'context.json'),
+            'package': str(out/'package.json')}
+
+
+def edit_pages(changes):
+    return ({b['page'] for b in changes.get('blocks', [])}
+            | set(changes.get('inventory_reviewed_pages', []))
+            | {int(n) for key in ('context_pages', 'link_overrides', 'link_overrides_patch')
+               for n in changes.get(key, {})})
+
+
+def verify_package(state, manifest, changes, patch):
+    if (manifest.get('schema_version') != 1 or manifest['source_sha256'] != state['source']['sha256']
+            or manifest['id'] != wf.canonical([manifest['dependencies'], manifest['baseline']])
+            or set(manifest['baseline']) != {str(n) for n in manifest['pages']}):
+        raise ValueError('Invalid package baseline or source')
+    if {'issues', 'glossary'} & changes.keys():
+        raise ValueError('Shared glossary and issues are edited by the coordinator')
+    targets = edit_pages(changes)
+    if not targets or not targets <= set(manifest['pages']):
+        raise ValueError('Package patch edits pages outside its assignment or is empty')
+    if package_dependencies(state) != manifest['dependencies']:
+        raise ValueError('Package shared dependencies changed; export a fresh package')
+    pages = {p['source_page']: p for p in state['pages']}
+    stale = sorted(n for n in targets if wf.canonical(pages[n]) != manifest['baseline'][str(n)])
+    if stale:
+        raise ValueError(json.dumps({'code': 'package_baseline_changed', 'pages': stale}))
+    return {'package': manifest['id'], 'patch_sha256': patch, 'pages': sorted(targets)}
+
+
+def package_status(state, directory, built, reviewed, published):
+    meta = load(directory/'package.json')
+    patch = directory/'edits.json'
+    saved = sorted(edit_pages(load(patch)) & set(meta['pages'])) if patch.is_file() else []
+    applied = [n for item in state.get('applied_packages', []) if item['package'] == meta['id']
+               for n in item['pages']]
+    scope = set(meta['pages'])
+    return {'id': meta['id'], 'owner': meta.get('owner'), 'pages': ranges(scope),
+            'saved_edits': ranges(saved), 'applied_edits': ranges(applied),
+            'built_pages': ranges(scope & built), 'reviewed_pages': ranges(scope & reviewed),
+            'published_pages': ranges(scope & published), 'adjacent_pages': meta['adjacent_pages']}
+
+
 def apply_edits(args):
     sp = Path(args.state).resolve()
     state = wf.require_state(load(sp))
     changed = set()
     paths = [args.edits] if isinstance(args.edits, (str, Path)) else args.edits
-    for edits_path in paths:
+    packages = getattr(args, 'package', None) or []
+    if packages and len(packages) != len(paths):
+        raise ValueError('Pair each --edits file with one --package manifest')
+    journal = state.setdefault('applied_packages', []) if packages else []
+    replayed = []
+    for i, edits_path in enumerate(paths):
         package_pages = set()
         location = {}
         try:
-            apply_package(state, sp, edits_path, package_pages, location)
+            if packages:
+                meta = load(packages[i])
+                raw = Path(edits_path).read_bytes()
+                patch = hashlib.sha256(raw).hexdigest()
+                if any(x['package'] == meta['id'] and x['patch_sha256'] == patch for x in journal):
+                    replayed.append(patch)
+                    continue
+                changes = json.loads(raw)
+                item = verify_package(state, meta, changes, patch)
+            else:
+                changes = load(edits_path)
+            apply_package(state, sp, edits_path, package_pages, location, changes)
+            if packages:
+                journal.append(item)
         except (ValueError, KeyError, TypeError, OSError) as exc:
             try:
                 detail = json.loads(str(exc))
@@ -219,6 +374,9 @@ def apply_edits(args):
                 detail = {'detail': detail}
             raise ValueError(json.dumps({**location, **detail, 'edit_file': str(edits_path)}, ensure_ascii=False)) from exc
         changed.update(package_pages)
+    if len(replayed) == len(paths):
+        return {'state': str(sp), 'changed_pages': [], 'replayed': replayed,
+                'state_written_bytes': 0, 'preview_argv': None}
     state['qc'] = {}
     state.pop('output', None)
     # The state is authoritative. Stage both files before committing the state.
@@ -236,10 +394,10 @@ def apply_edits(args):
     ]
     unresolved = [row for row in unresolved if row['blocks']]
     return {'state':str(sp),'changed_pages':sorted(changed),'preview_argv':preview,
-            'state_written_bytes':sp.stat().st_size,
+            'state_written_bytes':sp.stat().st_size,'replayed':replayed,
              'unresolved_count':sum(len(row['blocks']) for row in unresolved),
             'unresolved_by_page':unresolved,
-            'next':'Use preview_argv for local adjustments; omit --pages for final full selection. After rebuilding, verify --previous-state PREVIOUS.state.json to retain unchanged reviews.'}
+            'next':'Use preview_argv for local adjustments; omit --pages for final full selection. Repeat verify --previous-state for each relevant reviewed candidate.'}
 
 
 def ranges(numbers):
@@ -252,6 +410,54 @@ def ranges(numbers):
     return ','.join(str(a) if a == b else f'{a}-{b}' for a, b in parts)
 
 
+def candidate_progress(sp, state, selected):
+    output = state.get('output')
+    if not output:
+        return set(), set(), set(), False, None
+    path = wf.resolve(sp.parent, output['path'])
+    if not path.is_file() or wf.digest(path) != output['sha256']:
+        return set(), set(), set(), False, 'candidate_missing_or_changed'
+    built = {p['source_page'] for p in state['pages']} & selected
+    qc = state.get('qc', {})
+    if not qc.get('audit_path') or qc.get('output_sha256') != output['sha256']:
+        return built, set(), set(), False, None
+    audit_path = wf.resolve(sp.parent, qc['audit_path'])
+    manifest = audit_path.parent/'verification.json'
+    if not audit_path.is_file() or not manifest.is_file():
+        return built, set(), set(), False, 'audit_missing'
+    files = load(manifest).get('files', {})
+    if files.get(str(audit_path.resolve())) != wf.digest(audit_path):
+        return built, set(), set(), False, 'audit_changed'
+    if qc.get('content_sha256') != pt.content_hash(state):
+        return built, set(), set(), False, 'candidate_state_changed'
+    viewed, _ = wf.checked_page_reviews(state, sp, pages=built)
+    reviewed = set(viewed)
+    report = load(audit_path)
+    decisions = {d['finding_sha256'] for d in qc.get('audit_dispositions', [])}
+    blockers = [f for f in report['findings'] if f['severity'] == 'error'
+                and not (state['layout']['review_profile'] == 'practical'
+                         and f['code'] == 'right_graphics_changed_outside_recorded_regions'
+                         and wf.canonical(f) in decisions)]
+    reviewed -= {f.get('page') for f in blockers}
+    record_path = sp.parent/'publication.json'
+    published = set()
+    if record_path.is_file() and not blockers and not output.get('preview'):
+        record = load(record_path)
+        if (record.get('output') == str(path.resolve()) and record.get('state') == str(sp)
+                and record.get('output_sha256', output['sha256']) == output['sha256']):
+            published = reviewed
+    reason = 'audit_blocker' if any(
+        f.get('page') is None or f['code'] != 'right_graphics_changed_outside_recorded_regions'
+        or state['layout']['review_profile'] == 'strict' for f in blockers) else None
+    font_ref = qc.get('font_report')
+    if font_ref:
+        font_path = wf.resolve(sp.parent, font_ref['path'])
+        if (not font_path.is_file() or wf.digest(font_path) != font_ref['sha256']
+                or not load(font_path)['mechanical_pass']):
+            reason = 'font_check_failed_or_changed'
+    return built, reviewed, published, True, reason
+
+
 def status(args):
     sp = Path(args.state).resolve()
     state = wf.require_state(load(sp))
@@ -259,28 +465,33 @@ def status(args):
     pages = {p['source_page']: p for p in state['pages'] if p['source_page'] in selected}
     pending = [n for n, p in pages.items() if any(b['method'] == 'unresolved' for b in p['blocks'])]
     inventory = [n for n, p in pages.items() if not p.get('inventory_reviewed')]
-    qc = state.get('qc', {})
     output = state.get('output', {})
-    path = wf.resolve(sp.parent, output['path']) if output else None
-    verified = bool(path and path.is_file() and qc.get('content_sha256') == pt.content_hash(state)
-                    and wf.digest(path) == output['sha256'] == qc.get('output_sha256'))
-    viewed = {}
-    audit_path = wf.resolve(sp.parent, qc['audit_path']) if verified else None
-    verified = verified and audit_path.is_file()
-    if verified:
-        viewed, _ = wf.checked_page_reviews(state, sp, pages=set(pages))
-    needs_review = set(pages) - viewed.keys()
-    if verified and state['layout']['review_profile'] == 'practical':
-        decisions = {d['finding_sha256'] for d in qc['audit_dispositions']}
-        needs_review.update(f['page'] for f in load(audit_path)['findings']
-                            if f['code'] == 'right_graphics_changed_outside_recorded_regions'
-                            and f['page'] in pages and wf.canonical(f) not in decisions)
-    action = ('apply --edits FILE' if pending else
-              'build --state AUTHORING_STATE' if not output or output.get('preview') else
+    built, reviewed, published, verified, reason = candidate_progress(sp, state, set(pages))
+    needs_review = set(pages) - reviewed
+    action = ('apply --edits FILE' if pending else 'build --state AUTHORING_STATE' if not output else
               'verify' if not verified else 'review --observations FILE' if needs_review or inventory else
+              'build --state AUTHORING_STATE' if output.get('preview') else
               'publish --output FILE (checks final readiness)')
+    blockers = [{'state': str(sp), 'reason': reason}] if reason else []
+    for candidate in getattr(args, 'candidate', []) or []:
+        other_path = Path(candidate).resolve()
+        other = wf.require_state(load(other_path))
+        if other['source']['sha256'] != state['source']['sha256']:
+            raise ValueError('Status candidate must come from the same source')
+        # These counts describe the supplied candidate snapshots.
+        b, r, p, _, reason = candidate_progress(other_path, other, set(pages))
+        built.update(b)
+        reviewed.update(r)
+        published.update(p)
+        if reason:
+            blockers.append({'state': str(other_path), 'reason': reason})
+    details = [package_status(state, Path(p).resolve(), built, reviewed, published)
+               for p in getattr(args, 'packages', []) or []]
     return {'state': str(sp), 'pages': ranges(pages), 'translation_pending': ranges(pending),
-            'inventory_review_needed': ranges(inventory), 'review_needed': ranges(needs_review), 'next': action}
+            'packages': details, 'built_pages': ranges(built), 'reviewed_pages': ranges(reviewed),
+            'published_pages': ranges(published), 'blockers': blockers,
+            'inventory_review_needed': ranges(inventory), 'review_needed': ranges(needs_review),
+            'next': 'Inspect blockers before continuing' if blockers else action}
 
 
 def build(args):
@@ -291,21 +502,48 @@ def build(args):
                                     'supplied':str(supplied),'supplied_exists':supplied.is_file(),
                                     'action':'Omit --source to use the frozen authoring source; do not change state or repeat this command unchanged.'},ensure_ascii=False))
     if args.profile and args.profile!=state['layout']['review_profile']:raise ValueError('Set profile at prepare; do not silently change an existing task')
-    key=wf.canonical({'state':pt.content_hash(state),'source':wf.digest(source),'pages':args.pages,
-                      'builder':wf.digest(Path(ip.__file__)),'helper':wf.digest(Path(wf.__file__))})
-    output=Path(args.output).resolve() if args.output else sp.parent.parent/'work'/('candidate-'+key[:16]+'.pdf')
+    check_runtime(state)
+    garbage = getattr(args, 'garbage', None) or 4
+    key=wf.canonical({'state':pt.content_hash(state),'source':wf.digest(source),'pages':args.pages,'garbage':garbage,
+                      'builder':wf.digest(Path(ip.__file__)),'helper':wf.digest(Path(wf.__file__)),
+                       'package_preview':state.get('package_preview', False)})
+    work = sp.parent if state.get('package_preview') else sp.parent.parent/'work'
+    output = Path(args.output).resolve() if args.output else work/('candidate-'+key[:16]+'.pdf')
+    job_path = output.with_suffix('.job.json')
     manifest=output.with_suffix('.build.json')
+    dependencies = [source, sp, *(wf.resolve(sp.parent, f['source']).resolve()
+                                  for f in state['layout']['fonts'])]
+    dependencies.extend(wf.resolve(sp.parent, d['path']).resolve() for d in state['layout'].get('inputs', []))
+    if any(p.resolve() in dependencies for p in (job_path, manifest)):
+        raise ValueError('Build diagnostics must not overwrite an input')
     if manifest.exists():
         old=load(manifest)
         if (old.get('key')==key and all(Path(p).exists() and wf.digest(p)==h for p,h in old['files'].items())
             and Path(old['result']['state']).exists() and pt.content_hash(load(old['result']['state']))==old.get('state_content')):
-            return {**old['result'],'state_written_bytes':0,'cached':True,'next':'verify --state '+old['result']['state']}
+            return {**old['result'],'job':str(job_path) if job_path.is_file() else None,
+                    'state_written_bytes':0,'cached':True,'next':'verify --state '+old['result']['state']}
     declared = {p['source_page'] for p in state['pages']}
     selected = declared if args.pages == 'all' else set(ip.selected_pages(args.pages, state['source']['page_count']))
-    result = ip.build(source, sp, output, args.pages, args.overwrite, preview=selected != declared)
-    save(manifest,{'key':key,'result':result,'state_content':pt.content_hash(load(result['state'])),
+    if output.exists() and not args.overwrite:
+        raise FileExistsError(f'Candidate exists with different inputs: {output}')
+    job = {'pid': os.getpid(), 'key': key, 'source': str(source), 'output': str(output),
+           'state': str(sp), 'pages': sorted(selected),
+           'started_at': now(), 'status': 'running'}
+    def progress(event):
+        job.update(event, updated_at=now())
+        save(job_path, job)
+    try:
+        result = ip.build(source, sp, output, args.pages, args.overwrite,
+                          preview=selected != declared or state.get('package_preview', False),
+                          state=state, return_state=True, progress=progress, garbage=garbage)
+        built_state = result.pop('_state')
+    except BaseException as exc:
+        progress({'status': 'failed', 'exit_reason': type(exc).__name__, 'error': str(exc)[:1200]})
+        raise
+    save(manifest,{'key':key,'result':result,'state_content':pt.content_hash(built_state),
                    'files':{result[k]:wf.digest(result[k]) for k in ('output','assignments')}})
-    return {**result,'cached':False,'next':'verify --state '+result['state']}
+    progress({'status': 'complete', 'exit_reason': None})
+    return {**result,'job':str(job_path),'cached':False,'next':'verify --state '+result['state']}
 
 
 def rebase_record(record,base):
@@ -352,8 +590,7 @@ def verification_assignments(sp, state, output):
 
 
 def verification_paths(sp, state):
-    from importlib.metadata import version
-
+    check_runtime(state)
     output = wf.resolve(sp.parent, state['output']['path'])
     source = source_path(state, sp)
     if wf.digest(source) != state['source']['sha256']:
@@ -373,7 +610,7 @@ def verification_paths(sp, state):
         'content': pt.content_hash(state, mechanical=True),
         'assignments': wf.digest(verification_assignments(sp, state, output)),
         'tools': [wf.digest(module.__file__) for module in (pt, wf, ip)],
-        'runtime': [version(package) for package in ('pypdf', 'pypdfium2', 'pymupdf', 'Pillow', 'fonttools')],
+        'runtime': runtime_packages(),
         'renderer': str(pt.pdfium.PDFIUM_INFO), 'evidence_schema': 'pipeline-v2',
     })
     return sp.parent / ('checks-' + key[:16])
@@ -381,9 +618,11 @@ def verification_paths(sp, state):
 
 def verify(args):
     sp=Path(args.state).resolve();state=wf.require_state(load(sp));source=source_path(state,sp)
-    previous_path = Path(args.previous_state).resolve() if args.previous_state else None
-    prior = wf.require_state(load(previous_path)) if previous_path else None
+    paths = args.previous_state or []
+    if isinstance(paths, (str, Path)):
+        paths = [paths]
     output=wf.resolve(sp.parent,state['output']['path']).resolve();checkdir=verification_paths(sp,state)
+    content_sha = pt.content_hash(state)
     assignments = verification_assignments(sp, state, output)
     manifest=checkdir/'verification.json';cached=False
     if manifest.exists():
@@ -391,7 +630,7 @@ def verify(args):
         cached=all(Path(p).exists() and wf.digest(p)==h for p,h in old.get('files',{}).items()) and bool(old.get('files'))
         if not cached:raise ValueError('Immutable verification evidence changed; investigate instead of overwriting')
     if not cached:
-        if state.get('qc', {}).get('content_sha256') != pt.content_hash(state):
+        if state.get('qc', {}).get('content_sha256') != content_sha:
             state['qc'] = {}
         draft=pt.check_state(sp, state=state)
         if not draft['valid']:return {'ok':False,'stage':'state','errors':draft['errors'],'next':'Correct authoring state; no rendering performed.'}
@@ -399,7 +638,9 @@ def verify(args):
             staged = Path(staging) / 'checks'
             fonts = wf.check_fonts(sp, assignments, state=state)
             save(staged / 'fonts.json', fonts)
-            report = pt.audit(source, output, state, render_dir=staged / 'renders')
+            task = next((p.parent for p in sp.parents if p.name in ('work', 'recovery')), sp.parent)
+            report = pt.audit(source, output, state, render_dir=staged / 'renders',
+                              cache=task/'work'/'render-cache', workers=worker_count(args))
             save(staged / 'audit.json', report)
             files = {str(checkdir / p.relative_to(staged)): wf.digest(p)
                      for p in staged.rglob('*') if p.is_file()}
@@ -410,11 +651,21 @@ def verify(args):
     current, _ = wf.checked_page_reviews(state, sp)
     current = {n: record for n, record in current.items()
                if record['render_index']['sha256'] == index_hash}
-    reused = reuse_reviews(sp, index, index_path, index_hash, previous_path, prior, current) if prior else []
+    reused = []
+    prior_for_page = {}
+    claimed = dict(current)
+    for path in paths:
+        previous_path = Path(path).resolve()
+        prior = wf.require_state(load(previous_path))
+        records = reuse_reviews(sp, index, index_path, index_hash, previous_path, prior, claimed)
+        reused.extend(records)
+        claimed.update({r['page']: r for r in records})
+        prior_for_page.update({r['page']: prior.get('qc', {}) for r in records})
+        del prior
     records = sorted([*current.values(), *reused], key=lambda record: record['page'])
     current_findings = {wf.canonical(f) for f in report['findings'] if f.get('page') in current}
     old_qc=state.get('qc',{})
-    state['qc']={'content_sha256':pt.content_hash(state),'source_sha256':state['source']['sha256'],
+    state['qc']={'content_sha256':content_sha,'source_sha256':state['source']['sha256'],
                  'output_sha256':state['output']['sha256'],'audit_path':ref(checkdir/'audit.json',sp.parent),
                  'font_assignments':ref(assignments,sp.parent),
                  'font_report':{'path':ref(checkdir/'fonts.json',sp.parent),'sha256':wf.digest(checkdir/'fonts.json')},
@@ -425,15 +676,14 @@ def verify(args):
                                    if note.get('page') in current]}
     if reused:
         reused_pages = {record['page'] for record in reused}
-        eligible={wf.canonical(f) for f in report['findings'] if f.get('page') in reused_pages}
-        known={d['finding_sha256'] for d in state['qc']['audit_dispositions']}
-        for decision in prior.get('qc',{}).get('audit_dispositions',[]):
-            h=decision['finding_sha256']
-            if h in eligible and h not in known:
-                state['qc']['audit_dispositions'].append(copy.deepcopy(decision));known.add(h)
-        for note in prior.get('qc',{}).get('retained_notes',[]):
-            if note.get('page') in reused_pages and note not in state['qc']['retained_notes']:
-                state['qc']['retained_notes'].append(copy.deepcopy(note))
+        eligible = {wf.canonical(f): f['page'] for f in report['findings'] if f.get('page') in reused_pages}
+        for n, prior_qc in prior_for_page.items():
+            state['qc']['audit_dispositions'].extend(
+                copy.deepcopy(d) for d in prior_qc.get('audit_dispositions', [])
+                if eligible.get(d['finding_sha256']) == n)
+            state['qc']['retained_notes'].extend(
+                copy.deepcopy(note) for note in prior_qc.get('retained_notes', [])
+                if note.get('page') == n)
     if 'review_scope' in old_qc and records:
         state['qc']['review_scope'] = old_qc['review_scope']
     if records:
@@ -444,7 +694,7 @@ def verify(args):
                            reviewed_at=old_qc.get('reviewed_at', latest['reviewed_at']) if current else latest['reviewed_at'],
                            structure='passed' if wf.audit_accepted(report, state) else 'pending',
                            structure_notes=old_qc.get('structure_notes')
-                           or (prior['qc'].get('structure_notes') if reused else None))
+                           or next((qc['structure_notes'] for qc in prior_for_page.values() if qc.get('structure_notes')), None))
     state_written_bytes = 0
     if state['qc'] != old_qc:
         save(sp, state)
@@ -462,8 +712,15 @@ def verify(args):
             'reused_pages':[r['page'] for r in records if r['mode']=='reused'],
             'review_needed':pending,
             'inventory_review_needed':ranges(p['source_page'] for p in state['pages'] if not p.get('inventory_reviewed')),
-            'rendered_pages':0 if cached else len(index['pages']), 'state_written_bytes':state_written_bytes,
-            'next':'Open listed full-page renders once; zoom only an actual readability concern. Submit observations via review --observations FILE.'}
+            'rendered_pages':0 if cached else report.get('rendered_pages', len(index['pages'])),
+            'source_rendered_pages':0 if cached else report.get('source_rendered_pages', len(index['pages'])),
+            'mechanical_reused_pages':len(index['pages']) if cached else report.get('mechanical_reused_pages', 0),
+            'render_workers':report.get('workers', 1),
+            'state_written_bytes':state_written_bytes,
+            'next':('Resolve the listed mechanical blockers before delivery.' if hard or not fonts['mechanical_pass'] else
+                    'Open the listed pages and submit actual observations via review.' if pending else
+                    'Use a complete candidate for delivery.' if state['output'].get('preview') else
+                    'Candidate checks and page observations are complete; publish checks final readiness.')}
 
 
 def review(args):
@@ -624,7 +881,11 @@ def publish(args):
            '', '## 保留事项']
     lines += ['- '+str(x) for x in state['qc'].get('retained_notes',[])]
     lines += ['- '+str(x) for x in state.get('issues',[])]
+    for item in state['layout'].get('null_bookmarks', []):
+        lines.append(f'- 原书签目标为空，保留标题 {item["title"]}')
     for p in state['pages']:
+        if p.get('null_links'):
+            lines.append(f'- 源页 {p["source_page"]} 有 {len(p["null_links"])} 条空目标链接，保留外观。')
         for x in p.get('omitted_links',[]):lines.append(f'- 源页 {p["source_page"]}：'+x['reason'])
     recovery_argv=[sys.executable,'-X','utf8',str(runner),'build','--state',str(sp),'--output',str(rebuild)]
     lines += ['', '## 恢复','需要重建时，使用冻结入口、已验收状态和所引用的源文件、字体及依赖。',
@@ -634,27 +895,38 @@ def publish(args):
               '已核对恢复所需的源文件、字形、字体、构建器及输入指纹。',
               '请保留工作目录；删除它会丢失可编辑状态和审核证据。']
     note.write_text('\n'.join(lines)+'\n',encoding='utf-8')
-    save(record,{'source':str(source),'output':str(destination),'state':str(sp),'check':final,'notes':str(note),'task_dir':str(task_dir),'recovery_argv':recovery_argv})
+    save(record,{'source':str(source),'output':str(destination),'state':str(sp),'output_sha256':state['output']['sha256'],'check':final,'notes':str(note),'task_dir':str(task_dir),'recovery_argv':recovery_argv})
     return {'output':str(destination),'notes':str(note),'state':str(sp),'ready':True,'scope':scope,'task_dir':str(task_dir),'recovery_argv':recovery_argv,
             'state_written_bytes':sp.stat().st_size}
 
 
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__);subs=parser.add_subparsers(dest='command',required=True)
-    for name in ('prepare','apply','build','verify','review','publish','status'):
+    for name in ('prepare','apply','build','verify','review','publish','status','package'):
         p=subs.add_parser(name);p.add_argument('--state',required=True);p.add_argument('--overwrite',action='store_true')
         if name in ('prepare','build'):
             p.add_argument('--source',required=name=='prepare');p.add_argument('--pages',default='all');p.add_argument('--profile',choices=('practical','strict'))
         if name=='prepare':p.add_argument('--font',action='append')
         if name in ('build','publish'):p.add_argument('--output',required=name=='publish')
-        if name=='apply':p.add_argument('--edits',action='append',required=True)
-        if name=='status':p.add_argument('--pages',default='all')
-        if name=='verify':p.add_argument('--previous-state')
+        if name=='build':p.add_argument('--garbage',type=int,choices=(2,4),help='Compare MuPDF write modes')
+        if name=='apply':
+            p.add_argument('--edits',action='append',required=True)
+            p.add_argument('--package',action='append',help='One package.json for each edit file')
+        if name=='status':
+            p.add_argument('--pages',default='all')
+            p.add_argument('--packages',action='append',help='Package directories containing package.json and optional edits.json')
+            p.add_argument('--candidate',action='append',help='Candidate state snapshots to include in progress')
+        if name=='package':
+            p.add_argument('--pages',required=True)
+            p.add_argument('--out',required=True)
+            p.add_argument('--owner',help='Actual subagent identifier for handoff')
+        if name=='verify':p.add_argument('--previous-state',action='append')
+        if name in ('prepare', 'verify'):p.add_argument('--workers',type=int,choices=(1,2),default=1)
         if name=='review':p.add_argument('--observations',required=True)
         if name=='publish':p.add_argument('--task-dir',help='Working folder for delivery notes and optional rebuilding; inferred from work/ or recovery[-vN]/')
     args=parser.parse_args(argv);started=time.monotonic();success=False;result={}
     try:
-        result={'prepare':prepare,'apply':apply_edits,'build':build,'verify':verify,'review':review,'publish':publish,'status':status}[args.command](args)
+        result={'prepare':prepare,'apply':apply_edits,'build':build,'verify':verify,'review':review,'publish':publish,'status':status,'package':package}[args.command](args)
         success=(result.get('observations_saved',False) if args.command=='review' else not result.get('errors') and result.get('ok',True))
         print(json.dumps(result,ensure_ascii=False));return 0 if success else 2
     except Exception as exc:
@@ -680,7 +952,11 @@ def main(argv=None):
         event={'at':now(),'command':args.command,'seconds':round(time.monotonic()-started,3),'success':success,
                'state':str(Path(args.state).resolve()),'pages':getattr(args,'pages',None)}
         if args.command != 'status':
-            event.update({k: result[k] for k in ('rendered_pages', 'state_written_bytes', 'cached') if k in result})
+            event.update({k: result[k] for k in ('rendered_pages', 'source_rendered_pages', 'mechanical_reused_pages',
+                                                 'state_written_bytes', 'cached', 'job') if k in result})
+            for k in ('render_workers', 'extract_workers'):
+                if k in result:
+                    event[k] = result[k]
             if 'reused_pages' in result:
                 event['reused_pages'] = len(result['reused_pages'])
             p = Path(args.state).resolve().parent / 'pipeline-events.jsonl'

@@ -21,6 +21,32 @@ def canonical(value):
                                     separators=(',', ':')).encode('utf-8')).hexdigest()
 
 
+def canonical_pages(value):
+    """Hash a top-level pages array with the same sorted JSON as canonical()."""
+    digest = hashlib.sha256()
+    encode = json.JSONEncoder(ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode
+
+    def write(text):
+        digest.update(text.encode('utf-8'))
+
+    write('{')
+    for index, (key, item) in enumerate(sorted(value.items())):
+        if index:
+            write(',')
+        write(encode(key) + ':')
+        if key != 'pages' or not isinstance(item, list):
+            write(encode(item))
+            continue
+        write('[')
+        for page_index, page in enumerate(item):
+            if page_index:
+                write(',')
+            write(encode(page))
+        write(']')
+    write('}')
+    return digest.hexdigest()
+
+
 def load(path):
     return json.loads(Path(path).read_text(encoding='utf-8'))
 
@@ -150,9 +176,18 @@ def page_fingerprint(state, page_number):
         nums = {page_number, *page.get('context_pages',[])}
     else:
         nums = {p['source_page'] for p in state['pages']}
-    return canonical({'source_sha256': state['source']['sha256'], 'layout': state['layout'],
+    layout = {k: v for k, v in state['layout'].items() if k not in ('omitted_bookmarks_for_unselected_pages', 'null_bookmarks')}
+    for key in ('fonts', 'inputs'):
+        if key in layout:
+            layout[key] = [{k: v for k, v in row.items() if k not in ('path', 'source')} for row in layout[key]]
+    if 'builder' in layout:
+        layout['builder'] = {k: v for k, v in layout['builder'].items() if k != 'path'}
+    return canonical_pages({'source_sha256': state['source']['sha256'], 'layout': layout,
                       'glossary': state['glossary'], 'issues': state['issues'],
-                      'pages': [mechanical_page(p) for p in state['pages'] if p['source_page'] in nums]})
+                      'pages': [{k: v for k, v in mechanical_page(p).items()
+                                 if k not in ('output_page', 'omitted_links')}
+                                for p in state['pages'] if p['source_page'] in nums],
+                      'missing_context': sorted(nums - {p['source_page'] for p in state['pages']})})
 
 
 def pagination_items(state):

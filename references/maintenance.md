@@ -27,4 +27,6 @@ Keep user inputs, translations, renders, recovery files, fonts and credentials o
 - Use source drawing traces and translated fontTools outlines for deletion and collision bounds. Disable font timestamp recalculation for repeatable builds.
 - Read raw PDF destination arrays to preserve nullable XYZ coordinates. Follow the geometry and interaction contracts in [inplace.md](inplace.md).
 
+Compare the same input when changing batch drawing, PDF serialization or worker count. Record stage wall/CPU time, peak working set, state bytes, object counts and rendered pages. Check pixels, fonts, navigation and shared resources before changing defaults. The build job and pipeline event records supply timing and scope. Use isolated state copies for comparisons; reserve a full-size trial for a separate maintenance run.
+
 Add a focused regression when a concrete failure reveals a gap. Keep task-specific evidence in the task folder.

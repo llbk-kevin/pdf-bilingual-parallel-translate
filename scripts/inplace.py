@@ -9,6 +9,7 @@ import os
 import re
 import sys
 import tempfile
+import time
 from collections import Counter, defaultdict
 from contextlib import closing
 from pathlib import Path
@@ -56,17 +57,38 @@ def open_source(source, password=None):
 def relative(path, base):
     return os.path.relpath(Path(path).resolve(), Path(base).resolve()).replace('\\', '/')
 
+def write_compact_state(stream, state):
+    """Keep the fast JSON encoder, bounding its output to one page at a time."""
+    encode = json.JSONEncoder(ensure_ascii=False, separators=(',', ':')).encode
+    stream.write('{')
+    for index, (key, value) in enumerate(state.items()):
+        if index:
+            stream.write(',')
+        stream.write(encode(key) + ':')
+        if key == 'pages' and isinstance(value, list):
+            stream.write('[')
+            for page_index, page in enumerate(value):
+                if page_index:
+                    stream.write(',')
+                stream.write(encode(page))
+            stream.write(']')
+        else:
+            stream.write(encode(value))
+    stream.write('}\n')
+
+
 def write_json(path, value):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     compact = isinstance(value, dict) and value.get('schema_version') == 3 and 'layout' in value
-    text = json.dumps(value, ensure_ascii=False, **(
-        {'separators': (',', ':')} if compact else {'indent': 2})) + '\n'
     fd, name = tempfile.mkstemp(dir=path.parent, prefix='.' + path.name + '.', suffix='.tmp')
     temporary = Path(name)
     try:
         with os.fdopen(fd, 'w', encoding='utf-8', newline='\n') as stream:
-            stream.write(text)
+            if compact:
+                write_compact_state(stream, value)
+            else:
+                stream.write(json.dumps(value, ensure_ascii=False, indent=2) + '\n')
         temporary.replace(path)
     finally:
         temporary.unlink(missing_ok=True)
@@ -141,7 +163,32 @@ def text_inventory(page, number):
     # exclude them from coverage, since they carry no visible semantic content.
     return glyphs, blocks
 
-def extract(source, state_path, pages='all', overwrite=False, password=None, *, profile='practical'):
+def _extract_page(doc, n, output_number):
+    page = doc[n-1]
+    glyphs, blocks = text_inventory(page, n)
+    return {'source_page':n, 'output_page':output_number,
+            'source_rect':[0,0,page.rect.width,page.rect.height], 'geometry':geometry(page),
+            'kind':'translated' if blocks else 'no-translation-needed',
+            'reason':'' if blocks else 'No native text found; inspect images and vector outlines before accepting',
+            'inventory_reviewed':False, 'glyphs':glyphs, 'blocks':blocks,
+            'expected_blocks':[b['id'] for b in blocks], 'reading_order':[b['id'] for b in blocks],
+            'context_pages':[], 'visual_text_review':'pending'}
+
+
+_extract_worker_doc = None
+
+
+def _init_extract_worker(source, password):
+    global _extract_worker_doc
+    _extract_worker_doc = open_source(source, password)
+
+
+def _extract_pages_task(rows):
+    return [_extract_page(_extract_worker_doc, n, output_number) for output_number, n in rows]
+
+
+def extract(source, state_path, pages='all', overwrite=False, password=None, *,
+            profile='practical', workers=1):
     source, state_path = Path(source).resolve(), Path(state_path).resolve()
     if source == state_path:
         raise ValueError('State must not overwrite the original')
@@ -157,16 +204,22 @@ def extract(source, state_path, pages='all', overwrite=False, password=None, *, 
             'layout': {'mode':'inplace', 'review_profile':profile, 'fonts':[], 'body_size_pt':10,
                        'coordinate_system':'visible-page-top-left-points',
                        'pagination_strategy': None}, 'glossary':[], 'issues':[], 'pages':[], 'qc':{}}
-        for output_number, n in enumerate(selected, 1):
-            page = doc[n-1]
-            glyphs, blocks = text_inventory(page, n)
-            state['pages'].append({'source_page':n, 'output_page':output_number,
-                'source_rect':[0,0,page.rect.width,page.rect.height], 'geometry':geometry(page),
-                'kind':'translated' if blocks else 'no-translation-needed',
-                'reason':'' if blocks else 'No native text found; inspect images and vector outlines before accepting',
-                'inventory_reviewed':False, 'glyphs':glyphs, 'blocks':blocks,
-                'expected_blocks':[b['id'] for b in blocks], 'reading_order':[b['id'] for b in blocks],
-                'context_pages':[], 'visual_text_review':'pending'})
+        rows = list(enumerate(selected, 1))
+        if workers not in (1, 2):
+            raise ValueError('workers must be 1 or 2')
+        if workers == 1 or len(rows) < 2:
+            state['pages'] = [_extract_page(doc, n, i) for i, n in rows]
+        else:
+            from concurrent.futures import ProcessPoolExecutor
+            from multiprocessing import get_context
+
+            # Each worker owns its document. Small batches bound IPC overhead.
+            size = min(4, (len(rows)+1)//2)
+            batches = [rows[i:i+size] for i in range(0, len(rows), size)]
+            with ProcessPoolExecutor(max_workers=workers, mp_context=get_context('spawn'),
+                                     initializer=_init_extract_worker, initargs=(source, password)) as pool:
+                for result in pool.map(_extract_pages_task, batches):
+                    state['pages'].extend(result)
         write_json(state_path,state)
         return {'state':str(state_path),'pages':selected,'schema_version':3}
     finally:
@@ -336,6 +389,35 @@ class RawNavigation:
         self.numbers = {(p.indirect_reference.idnum, p.indirect_reference.generation): i
                         for i, p in enumerate(reader.pages)}
         self.names = reader.named_destinations
+        self._raw_names = None
+
+    def raw_names(self):
+        if self._raw_names is not None:
+            return self._raw_names
+        catalog = self.reader.root_object
+        if '/Dests' in catalog:
+            self._raw_names = dict(raw_object(catalog['/Dests']))
+            return self._raw_names
+        root = raw_object(catalog.get('/Names', {}))
+        stack = [root['/Dests']] if '/Dests' in root else []
+        names, seen = {}, set()
+        while stack:
+            branch = raw_object(stack.pop())
+            if not isinstance(branch, dict):
+                continue
+            if id(branch) in seen:
+                continue
+            seen.add(id(branch))
+            stack.extend(branch.get('/Kids', []))
+            values = branch.get('/Names', [])
+            for i in range(0, len(values)-1, 2):
+                key = str(raw_object(values[i]))
+                if key in names:
+                    names[key] = None  # ambiguous names cannot prove a null target
+                else:
+                    names[key] = values[i+1]
+        self._raw_names = names
+        return names
 
     @staticmethod
     def numeric(value):
@@ -347,7 +429,9 @@ class RawNavigation:
             raise ValueError('Invalid raw destination coordinate')
         return float(value)
 
-    def parse(self, item, *, heading=False):
+    def parse(self, item, *, heading=False, allow_null=False, allow_actionless=False):
+        from pypdf.generic import NullObject
+
         action = raw_object(item.get('/A', {}))
         value = item.get('/Dest')
         if '/AA' in item or '/Next' in action:
@@ -359,10 +443,19 @@ class RawNavigation:
             if kind != '/GoTo':
                 raise ValueError(f'Unsupported raw navigation action: {kind}')
             value = action.get('/D')
-        if value is None and heading and not action:
-            return None, None
+        if value is None and not action:
+            if heading:
+                return None, None
+            if allow_actionless:
+                return 'null', None
         value = raw_object(value)
+        raw_value = value
         if isinstance(value, str):
+            if allow_null:
+                names = self.raw_names()
+                raw_value = raw_object(names.get(value, names.get(value.lstrip('/'))))
+                if isinstance(raw_value, dict):
+                    raw_value = raw_object(raw_value.get('/D'))
             named = self.names.get(value) or self.names.get(value.lstrip('/'))
             if named is None:
                 raise ValueError('Unknown named link destination: ' + value)
@@ -371,13 +464,15 @@ class RawNavigation:
             raise ValueError('Unsupported raw link destination')
         ref, mode, *args = value
         target = self.numbers.get((ref.idnum, ref.generation)) if hasattr(ref, 'idnum') else ref
-        if not isinstance(target, int) or not 0 <= target < len(self.numbers):
-            raise ValueError('Unknown raw destination page')
         if mode not in self.modes or len(args) != self.modes[mode]:
             raise ValueError('Unsupported raw destination mode: ' + str(mode))
         args = [self.numeric(raw_object(arg)) for arg in args]
         if mode == '/FitR' and None in args:
             raise ValueError('Null FitR rectangle unsupported')
+        if allow_null and isinstance(ref, NullObject) and isinstance(raw_value, list) and raw_value and isinstance(raw_value[0], NullObject):
+            return 'null', None
+        if not isinstance(target, int) or not 0 <= target < len(self.numbers):
+            raise ValueError('Unknown raw destination page')
         return '/GoTo', (target, mode, args)
 
     def outlines(self):
@@ -650,10 +745,14 @@ def check_interactions(doc, selected, state=None, *, collect=False, preview=Fals
     page_states = {p['source_page']: p for p in state['pages']} if state else {}
     scope = set(selected)
     allow_omission = preview or state and state.get('document', {}).get('delivery_scope') == 'sample'
+    allow_null = state is not None and state.get('layout', {}).get('review_profile') == 'practical'
     try:
         for i, (_, item) in enumerate(nav.outlines()):
             try:
-                nav.parse(item, heading=True)
+                kind, _ = nav.parse(item, heading=True, allow_null=allow_null)
+                if kind == 'null':
+                    report('source_destination_null', 'Preserve bookmark as a title without an action',
+                           bookmark=i, title=str(item.get('/Title', '')))
             except (ValueError, KeyError, TypeError) as exc:
                 report('bookmark_action', str(exc), bookmark=i, title=str(item.get('/Title', '')))
     except ValueError as exc:
@@ -685,25 +784,29 @@ def check_interactions(doc, selected, state=None, *, collect=False, preview=Fals
                 coords = [float(v) for v in annotation['/Rect']]
                 if len(coords) != 4 or not all(math.isfinite(v) for v in coords):
                     raise ValueError('Invalid raw link rectangle')
-                kind, target = nav.parse(annotation)
+                kind, target = nav.parse(annotation, allow_null=allow_null)
+                if kind == 'null':
+                    report('source_destination_null', 'Preserve link appearance without an action', n,
+                           source_link=link_number)
                 if kind == '/GoTo' and target[0]+1 not in scope:
                     code = 'sample_link_omitted' if allow_omission else 'link_destination_outside_scope'
                     report(code, f'Selected pages exclude a link destination from page {n}', n,
                            source_link=link_number, target_page=target[0]+1)
             except (ValueError, KeyError, TypeError) as exc:
                 report('link_action', str(exc), n, source_link=link_number)
-    blockers = [finding for finding in findings if finding['code'] != 'sample_link_omitted']
+    blockers = [finding for finding in findings if finding['code'] not in ('sample_link_omitted', 'source_destination_null')]
     if blockers and not collect:
         raise ValueError(json.dumps({'code': 'interaction_preflight', 'findings': blockers}, ensure_ascii=False))
     return findings
 
 
-def migrate_raw_links(source_doc,source_path,pdf_bytes,selected,password=None,state=None, *, reader=None, native_pages=()):
+def migrate_raw_links(source_doc, source_path, composed_stream, output_stream, selected,
+                      password=None, state=None, *, reader=None, native_pages=(), metrics=None):
     """Preserve destination modes and nullable axes that get_links cannot represent."""
     from pypdf import PdfReader, PdfWriter
     from pypdf.generic import ArrayObject, DictionaryObject, NameObject, NullObject, FloatObject
     reader = interaction_reader(source_doc, source_path, password) if reader is None else reader
-    composed=PdfReader(io.BytesIO(pdf_bytes))
+    composed = PdfReader(composed_stream)
     writer=PdfWriter()
     writer.append(composed,import_outline=False)
     if reader.metadata:
@@ -746,10 +849,14 @@ def migrate_raw_links(source_doc,source_path,pdf_bytes,selected,password=None,st
 
     parents = []
     omitted_bookmarks = 0
-    for depth, item in nav.outlines():
+    null_bookmarks = []
+    allow_null = state is not None and state.get('layout', {}).get('review_profile') == 'practical'
+    for i, (depth, item) in enumerate(nav.outlines()):
         parents = parents[:depth]
         parent = parents[-1] if parents else None
-        kind, target = nav.parse(item, heading=True)
+        kind, target = nav.parse(item, heading=True, allow_null=allow_null)
+        if kind == 'null':
+            null_bookmarks.append({'bookmark': i, 'title': str(item['/Title'])})
         mapped = destination(target, 0) if kind == '/GoTo' else None
         if kind == '/GoTo' and mapped is None:
             omitted_bookmarks += 1
@@ -768,13 +875,14 @@ def migrate_raw_links(source_doc,source_path,pdf_bytes,selected,password=None,st
         parents.append(entry)
     if state is not None:
         state['layout']['omitted_bookmarks_for_unselected_pages'] = omitted_bookmarks
+        state['layout']['null_bookmarks'] = null_bookmarks
     for n in sorted(native_pages):
         page = source_doc[n-1]
         attach_native_left(writer, writer.pages[mapping[n-1]], reader.pages[n-1],
                            page.rect.width, page.rect.height)
     page_states={p['source_page']:p for p in state['pages']} if state else {}
     for ps in page_states.values():
-        ps.pop('link_mappings',None);ps.pop('omitted_links',None)
+        ps.pop('link_mappings',None);ps.pop('omitted_links',None);ps.pop('null_links',None)
     link_geometry = {}
 
     def right_rectangles(n,link_number,source_rect):
@@ -843,7 +951,9 @@ def migrate_raw_links(source_doc,source_path,pdf_bytes,selected,password=None,st
             annotation=ref.get_object()
             if annotation.get('/Subtype')!='/Link':continue
             link_number+=1
-            kind, target = nav.parse(annotation)
+            kind, target = nav.parse(annotation, allow_null=allow_null)
+            if kind == 'null':
+                page_states.get(n, {}).setdefault('null_links', []).append({'source_link': link_number})
             if kind == '/GoTo' and target[0] not in mapping:
                 page_states.get(n, {}).setdefault('omitted_links', []).append({
                     'source_link': link_number, 'target_page': target[0]+1,
@@ -851,7 +961,7 @@ def migrate_raw_links(source_doc,source_path,pdf_bytes,selected,password=None,st
                 continue
             if annotation.get('/AP'):raise ValueError('Link appearance streams require explicit preservation support')
             source_rect=fitz.Rect([float(a) for a in annotation['/Rect']])*transforms[n-1]
-            try: right_boxes=right_rectangles(n,link_number,source_rect)
+            try: right_boxes=[source_rect] if kind == 'null' else right_rectangles(n,link_number,source_rect)
             except ValueError as exc:
                 link_conflicts.append({'page':n,'source_link':link_number,'source_bbox':box(source_rect),'detail':str(exc),
                     'next':'Set link_overrides_patch with target_block, target_text and occurrence, or explicit right_bbox.'})
@@ -869,14 +979,14 @@ def migrate_raw_links(source_doc,source_path,pdf_bytes,selected,password=None,st
                         'visible_border':bool((annotation.get('/Border') and len(annotation['/Border'])>=3 and float(annotation['/Border'][2])>0) or (annotation.get('/BS') and float(annotation['/BS'].get('/W',0))>0))})
                 visible_to_pdf=fitz.Matrix(1,0,0,-1,pane*w,h)
                 copied[NameObject('/Rect')]=ArrayObject([FloatObject(v) for v in destination_rects[0]*visible_to_pdf])
-                if '/QuadPoints' in annotation and not pane:
+                if '/QuadPoints' in annotation and (not pane or kind == 'null'):
                     values=annotation['/QuadPoints'];points=[]
                     for j in range(0,len(values),2):
                         point=fitz.Point(float(values[j]),float(values[j+1]))*m;points.extend([FloatObject(point.x),FloatObject(point.y)])
                     copied[NameObject('/QuadPoints')]=ArrayObject(points)
                 if kind == '/URI':
                     copied[NameObject('/A')] = target.clone(writer)
-                else:
+                elif kind == '/GoTo':
                     copied[NameObject('/Dest')] = destination(target, pane)
                 writer.add_annotation(mapping[n-1],copied)
                 for extra_rect in destination_rects[1:]:
@@ -920,10 +1030,16 @@ def migrate_raw_links(source_doc,source_path,pdf_bytes,selected,password=None,st
     for i, page in enumerate(writer.pages):
         if selected[i] not in native_pages:
             page.compress_content_streams()
+    if metrics:
+        metrics.enter('pypdf_deduplication')
     writer.compress_identical_objects(remove_duplicates=True,remove_unreferenced=True)
     for ref in layers:
         raw_object(ref).pop(_LAYER_ID)
-    buf=io.BytesIO();writer.write(buf);return buf.getvalue()
+    if metrics:
+        metrics.enter('pypdf_write')
+    writer.write(output_stream)
+    return {'final_xref_slots': len(writer._objects),
+            'final_live_objects': sum(obj is not None for obj in writer._objects)}
 
 def load_fonts(state,state_path):
     from fontTools.ttLib import TTFont
@@ -1134,14 +1250,104 @@ def preserved_glyph_conflicts(page_number, protected, before, after, mask_index)
     return conflicts
 
 
-def build(source,state_path,output,pages='all',overwrite=False,password=None, *, preview=False):
+
+def peak_rss_bytes():
+    """Peak resident memory of the current process, when available."""
+    if os.name == 'nt':
+        import ctypes
+        from ctypes import wintypes
+
+        class Counters(ctypes.Structure):
+            _fields_ = [('cb', wintypes.DWORD), ('PageFaultCount', wintypes.DWORD)] + [
+                (name, ctypes.c_size_t) for name in (
+                    'PeakWorkingSetSize', 'WorkingSetSize', 'QuotaPeakPagedPoolUsage',
+                    'QuotaPagedPoolUsage', 'QuotaPeakNonPagedPoolUsage', 'QuotaNonPagedPoolUsage',
+                    'PagefileUsage', 'PeakPagefileUsage')]
+        get_process = ctypes.windll.kernel32.GetCurrentProcess
+        get_process.restype = wintypes.HANDLE
+        get_memory = ctypes.windll.psapi.GetProcessMemoryInfo
+        get_memory.argtypes = (wintypes.HANDLE, ctypes.POINTER(Counters), wintypes.DWORD)
+        get_memory.restype = wintypes.BOOL
+        counters = Counters()
+        counters.cb = ctypes.sizeof(counters)
+        if get_memory(get_process(), ctypes.byref(counters), counters.cb):
+            return counters.PeakWorkingSetSize
+        return None
+    try:
+        import resource
+        peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        return peak if sys.platform == 'darwin' else peak * 1024
+    except (ImportError, OSError, ValueError):
+        return None
+
+
+class BuildMetrics:
+    def __init__(self, progress):
+        self.progress = progress
+        self.started = self.stage_started = time.perf_counter()
+        self.cpu_started = self.stage_cpu_started = time.process_time()
+        self.stage = None
+        self.stages = {}
+        self.completed_pages = 0
+        self.total_pages = None
+        self.source_page = None
+        self.objects = {}
+
+    def enter(self, stage):
+        now, cpu = time.perf_counter(), time.process_time()
+        if self.stage is not None:
+            self.stages[self.stage] = {
+                'wall_seconds': round(now-self.stage_started, 3),
+                'cpu_seconds': round(cpu-self.stage_cpu_started, 3),
+            }
+        self.stage, self.stage_started, self.stage_cpu_started = stage, now, cpu
+        self.emit()
+
+    def emit(self, error=None):
+        if self.progress is not None:
+            row = {'stage': self.stage, 'completed_pages': self.completed_pages,
+                   'total_pages': self.total_pages, 'source_page': self.source_page,
+                   'wall_seconds': round(time.perf_counter()-self.started, 3),
+                   'cpu_seconds': round(time.process_time()-self.cpu_started, 3),
+                   'peak_rss_bytes': peak_rss_bytes()}
+            if error is not None:
+                row.update(status='failed', error_type=type(error).__name__, error=str(error)[:300])
+            self.progress(row)
+
+    def report(self):
+        return {'stages': self.stages, 'wall_seconds': round(time.perf_counter()-self.started, 3),
+                'cpu_seconds': round(time.process_time()-self.cpu_started, 3),
+                'peak_rss_bytes': peak_rss_bytes(), 'objects': self.objects.copy()}
+
+
+def build(source,state_path,output,pages='all',overwrite=False,password=None, *,
+          preview=False, state=None, progress=None, garbage=4, return_state=False):
+    """Compose from a state file or an already parsed, disposable state object."""
+    if garbage not in (2, 4):
+        raise ValueError('garbage must be 2 or 4')
+    metrics = BuildMetrics(progress)
+    metrics.enter('state_validation')
+    try:
+        result = _build(source, state_path, output, pages, overwrite, password, preview,
+                        state, garbage, return_state, metrics)
+    except Exception as exc:
+        metrics.emit(error=exc)
+        raise
+    metrics.enter('complete')
+    result['build_metrics'] = metrics.report()
+    return result
+
+
+def _build(source, state_path, output, pages, overwrite, password, preview,
+           state, garbage, return_state, metrics):
     source,state_path,output=map(lambda p:Path(p).resolve(),(source,state_path,output))
     destinations=[output,output.with_suffix('.state.json'),output.with_suffix('.font-runs.json')]
     if source in destinations or state_path in destinations:
         raise ValueError('Output must not overwrite source or authoring state')
     if any(p.exists() for p in destinations) and not overwrite:
         raise ValueError('Output exists; use --overwrite explicitly')
-    state=json.loads(state_path.read_text(encoding='utf-8'))
+    if state is None:
+        state=json.loads(state_path.read_text(encoding='utf-8'))
     validation_pages = set(selected_pages(pages, state['source']['page_count'])) if pages != 'all' else None
     errors=validate_state(state,source,password,False,pages=validation_pages)
     if errors:raise ValueError(json.dumps(errors,ensure_ascii=False))
@@ -1153,17 +1359,21 @@ def build(source,state_path,output,pages='all',overwrite=False,password=None, *,
         dependencies.append({**item,'path':relative(dependency,output.parent)})
     src=open_source(source,password)
     out=fitz.open()
+    reader = None
     try:
         available={p['source_page']:p for p in state['pages']}
         selected=sorted(available) if pages=='all' else selected_pages(pages,len(src))
         if any(n not in available for n in selected):
             raise ValueError('Selected page missing from state')
         state['pages']=[available[n] for n in selected]
+        metrics.total_pages = len(selected)
         errors = [error for p in state['pages'] for error in validate_page(p,p,True)]
         if errors:
             raise ValueError(json.dumps({'code':'layout_preflight','findings':errors},ensure_ascii=False))
+        metrics.enter('navigation_preflight')
         reader = interaction_reader(src, source, password)
         check_interactions(src, selected, state, preview=preview, reader=reader)
+        metrics.enter('fonts')
         fonts=load_fonts(state,state_path)
         labels=dict(pagination_items(state))
         build_errors=[]
@@ -1175,7 +1385,9 @@ def build(source,state_path,output,pages='all',overwrite=False,password=None, *,
         native_pages = set()
         # Capture source rotation before zeroing it. show_pdf_page does not account for
         # the source page Rotate entry; an explicit inverse rotation is required.
+        metrics.enter('page_composition')
         for j,n in enumerate(selected):
+            metrics.source_page = n
             pstate=available[n];pstate['output_page']=j+1
             original=src[n-1];w,h=original.rect.width,original.rect.height;rotation=original.rotation
             native = pstate.get('native_left') is True
@@ -1250,11 +1462,13 @@ def build(source,state_path,output,pages='all',overwrite=False,password=None, *,
                 allowed=[target.x0-w,target.y0,target.x1-w,target.y1]
                 if not contains(fitz.Rect(0,0,w,h),rect(allowed)):raise ValueError('Page label outside Chinese pane')
                 draw_blocks.append({**label,'method':'label','translation':label['text'],'allowed_bbox':allowed})
+            text_shape = page.new_shape()
             for b in draw_blocks:
                 b['status']='verbatim' if b['method']=='preserve' else 'translated'
                 if b['method']=='preserve':
                     b['actual_bbox']=None;b['target_bbox']=None;continue
                 if b['method']=='cover':
+                    text_shape.commit()
                     cover=rect(b.get('cover_bbox') or b['source_bbox'])
                     protected=[g['id'] for g in pstate['glyphs'] if g['id'] not in deleted and not g['hidden'] and g['text'].strip() and cover.intersects(fitz.Rect(effective_boxes[g['id']]))]
                     if protected:build_errors.append({'page':n,'block':b['id'],'detail':'Cover intersects preserved native text: '+','.join(protected)})
@@ -1281,42 +1495,71 @@ def build(source,state_path,output,pages='all',overwrite=False,password=None, *,
                             font=fonts[name]
                             if name not in page_fonts:
                                 page.insert_font(fontname=font['alias'],fontbuffer=font['data']);page_fonts.add(name)
-                            page.insert_text(point,ch,fontname=font['alias'],fontsize=b['actual_font_size']*scale,
-                                             rotate=b.get('rotation',0),color=tuple(b.get('cover_text_color',(0,0,0))) if b['method']=='cover' else tuple(b.get('color',(0,0,0))),overlay=True)
+                            text_shape.insert_text(point,ch,fontname=font['alias'],fontsize=b['actual_font_size']*scale,
+                                             rotate=b.get('rotation',0),color=tuple(b.get('cover_text_color',(0,0,0))) if b['method']=='cover' else tuple(b.get('color',(0,0,0))))
                             advance+=char_width
+            text_shape.commit()
             if not native and original.get_contents():
                 # Graft after redaction so MuPDF only rewrites the right-pane stream.
                 page.show_pdf_page(fitz.Rect(0,0,w,h),src,n-1,rotate=-rotation,overlay=False)
             original.set_rotation(rotation)
+            metrics.completed_pages = j+1
+            metrics.emit()
+        metrics.source_page = None
         if build_errors:raise ValueError(json.dumps({'layout_conflicts':build_errors},ensure_ascii=False))
         out.set_metadata(src.metadata)
+        metrics.enter('font_subsetting')
         out.subset_fonts()
         output.parent.mkdir(parents=True,exist_ok=True)
+        metrics.enter('stream_compression')
         # Compress newly composed non-image streams without re-encoding original images/masks.
         for xref in range(1,out.xref_length()):
             if out.xref_is_stream(xref) and out.xref_get_key(xref,'Subtype')[1] != '/Image':
                 out.update_stream(xref,out.xref_stream(xref),compress=True)
-        data=out.tobytes(garbage=4,deflate=False,no_new_id=True)
-        data=migrate_raw_links(src,source,data,selected,password,state,reader=reader,native_pages=native_pages)
-        output.write_bytes(data)
-        state['source']['path']=relative(source,output.parent)
-        state['output']={'path':output.name,'sha256':digest(output)}
-        if preview:state['output']['preview']=True
-        for reg in state['layout']['fonts']:
-            reg['source']=relative(resolve(state_path.parent,reg['source']),output.parent)
-        state['layout']['builder']={'path':relative(__file__,output.parent),'sha256':digest(__file__)}
-        helper=Path(__file__).with_name('workflow.py')
-        dependencies=[d for d in dependencies if resolve(output.parent,d['path']).resolve()!=helper.resolve()]
-        state['layout']['inputs']=dependencies+[{'path':relative(helper,output.parent),'sha256':digest(helper)}]
-        state['layout']['runtime']={'pymupdf':fitz.VersionBind}
-        state['qc']={}
-        write_json(destinations[1],state)
-        write_json(destinations[2],{'schema_version':1,'output_sha256':state['output']['sha256'],'runs':runs})
-        return {'output':str(output),'state':str(destinations[1]),'assignments':str(destinations[2]),'pages':selected,
-                'state_written_bytes':destinations[1].stat().st_size,
-                'omitted_link_pages': [p['source_page'] for p in state['pages'] if p.get('omitted_links')]}
+        with tempfile.TemporaryDirectory(prefix='.compose-', dir=output.parent) as staging:
+            staged = Path(staging)
+            composed_path = staged / 'composed.pdf'
+            final_path = staged / 'candidate.pdf'
+            metrics.objects['mupdf_before_save'] = out.xref_length()
+            metrics.enter('mupdf_write')
+            out.save(composed_path, garbage=garbage, deflate=False, no_new_id=True)
+            out.close()
+            metrics.enter('pypdf_migration')
+            with composed_path.open('rb') as composed, final_path.open('wb') as final:
+                metrics.objects.update(migrate_raw_links(
+                    src, source, composed, final, selected, password, state,
+                    reader=reader, native_pages=native_pages, metrics=metrics))
+            metrics.enter('state_write')
+            candidate_sha = digest(final_path)
+            state['source']['path']=relative(source,output.parent)
+            state['output']={'path':output.name,'sha256':candidate_sha}
+            if preview:state['output']['preview']=True
+            for reg in state['layout']['fonts']:
+                reg['source']=relative(resolve(state_path.parent,reg['source']),output.parent)
+            state['layout']['builder']={'path':relative(__file__,output.parent),'sha256':digest(__file__)}
+            helper=Path(__file__).with_name('workflow.py')
+            dependencies=[d for d in dependencies if resolve(output.parent,d['path']).resolve()!=helper.resolve()]
+            state['layout']['inputs']=dependencies+[{'path':relative(helper,output.parent),'sha256':digest(helper)}]
+            state['layout']['runtime']={'pymupdf':fitz.VersionBind}
+            state['qc']={}
+            state_tmp, runs_tmp = staged / 'state.json', staged / 'assignments.json'
+            write_json(state_tmp,state)
+            write_json(runs_tmp,{'schema_version':1,'output_sha256':candidate_sha,'runs':runs})
+            state_tmp.replace(destinations[1])
+            runs_tmp.replace(destinations[2])
+            final_path.replace(output)
+        result = {'output':str(output),'state':str(destinations[1]),'assignments':str(destinations[2]),'pages':selected,
+                  'state_written_bytes':destinations[1].stat().st_size,
+                  'omitted_link_pages': [p['source_page'] for p in state['pages'] if p.get('omitted_links')]}
+        if return_state:
+            result['_state'] = state
+        return result
     finally:
-        src.close();out.close()
+        if reader is not None:
+            reader.close()
+        src.close()
+        if not out.is_closed:
+            out.close()
 
 def main(argv=None):
     if hasattr(sys.stdout,'reconfigure'):
@@ -1326,14 +1569,18 @@ def main(argv=None):
     for command in ('extract','build'):
         p=sub.add_parser(command);p.add_argument('--source',required=True);p.add_argument('--state',required=True)
         p.add_argument('--pages',default='all');p.add_argument('--overwrite',action='store_true');p.add_argument('--password-env')
-        if command=='build':p.add_argument('--output',required=True)
-        else:p.add_argument('--profile', choices=('practical', 'strict'), default='practical')
+        if command=='build':
+            p.add_argument('--output',required=True)
+            p.add_argument('--garbage',type=int,choices=(2,4),default=4)
+        else:
+            p.add_argument('--profile', choices=('practical', 'strict'), default='practical')
+            p.add_argument('--workers',type=int,choices=(1,2),default=1)
     a=parser.parse_args(argv)
     password=os.environ.get(a.password_env) if a.password_env else None
     try:
         if a.password_env and password is None:raise ValueError('Password environment variable unavailable')
-        if a.command=='extract':result=extract(a.source,a.state,a.pages,a.overwrite,password,profile=a.profile)
-        else:result=build(a.source,a.state,a.output,a.pages,a.overwrite,password)
+        if a.command=='extract':result=extract(a.source,a.state,a.pages,a.overwrite,password,profile=a.profile,workers=a.workers)
+        else:result=build(a.source,a.state,a.output,a.pages,a.overwrite,password,garbage=a.garbage)
         print(json.dumps(result,ensure_ascii=False));return 0
     except Exception as exc:
         print(json.dumps({'error':type(exc).__name__,'message':str(exc)},ensure_ascii=False));return 1

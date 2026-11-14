@@ -44,6 +44,82 @@ class PracticalPipeline(unittest.TestCase):
         op=self.root/'observations.json';pl.save(op,obs)
         return Namespace(state=str(sp),observations=str(op))
 
+    def test_package_handoff_atomic_replay_and_reassignment(self):
+        self.prepared()
+        one = self.root/'work'/'package-a'
+        two = self.root/'work'/'package-b'
+        for directory, page, owner in ((one, '1', 'initial-worker'), (two, '2', 'replacement-worker')):
+            pl.package(Namespace(state=self.sp, pages=page, out=directory, owner=owner))
+        self.assertEqual(pl.load(one/'context.json')['read_only'][0]['page'], 2)
+        self.assertEqual(pl.load(two/'package.json')['owner'], 'replacement-worker')
+        original = pl.load(self.sp)
+        files = [d/'edits.json' for d in (one, two)]
+        manifests = [d/'package.json' for d in (one, two)]
+        for page, path in enumerate(files, 1):
+            block = original['pages'][page-1]['blocks'][0]
+            pl.save(path, {'blocks': [{'page':page, 'id':block['id'], 'translation':'文中'}]})
+        local = Namespace(state=one/'state.json', edits=str(files[0]))
+        pl.apply_edits(local)
+        preview_args = self.args()
+        preview_args.state = one/'state.json'
+        preview = pl.build(preview_args)
+        self.assertTrue(pl.load(preview['state'])['output']['preview'])
+        pl.verify(Namespace(state=preview['state'], previous_state=None))
+        pl.review(self.observations(preview))
+        with self.assertRaisesRegex(ValueError, 'preview_cannot_be_published'):
+            pl.publish(Namespace(state=preview['state'], output=str(self.root/'preview.pdf'), overwrite=False))
+
+        batch = self.args(edits=files, package=manifests)
+        before = self.sp.read_bytes()
+        wrong = pl.load(files[1]); wrong['blocks'][0]['page'] = 1; pl.save(files[1], wrong)
+        with self.assertRaisesRegex(ValueError, 'outside its assignment'):
+            pl.apply_edits(batch)
+        self.assertEqual(self.sp.read_bytes(), before)
+        wrong['blocks'][0]['page'] = 2; pl.save(files[1], wrong)
+        self.assertEqual(pl.apply_edits(batch)['changed_pages'], [1, 2])
+        saved = self.sp.read_bytes()
+        self.assertEqual(pl.apply_edits(batch)['state_written_bytes'], 0)
+        self.assertEqual(self.sp.read_bytes(), saved)
+        wrong['blocks'][0]['translation'] = '中文'; pl.save(files[1], wrong)
+        with self.assertRaisesRegex(ValueError, 'package_baseline_changed'):
+            pl.apply_edits(batch)
+        self.assertEqual(self.sp.read_bytes(), saved)
+        progress = pl.status(Namespace(state=self.sp, pages='all', packages=[one,two], candidate=[preview['state']]))
+        self.assertEqual(progress['packages'][0]['built_pages'], '1')
+        self.assertEqual(progress['packages'][0]['reviewed_pages'], '1')
+        self.assertEqual(progress['packages'][1]['applied_edits'], '2')
+        self.assertEqual(progress['packages'][1]['published_pages'], '')
+
+    def test_preview_observations_and_page_render_reuse(self):
+        self.prepared()
+        previews = []
+        for n in (1, 2):
+            args = self.args(); args.pages = str(n)
+            candidate = pl.build(args)
+            previews.append(candidate['state'])
+            pl.verify(Namespace(state=candidate['state'], previous_state=None))
+            self.assertTrue(pl.review(self.observations(candidate))['observations_saved'])
+        full = self.built()
+        first = pl.verify(Namespace(state=full['state'], previous_state=previews))
+        self.assertEqual(first['review_needed'], [])
+        self.assertEqual(first['reused_pages'], [1,2])
+        self.assertEqual(first['source_rendered_pages'], 0)
+        original = pl.load(self.sp)
+        edit = self.root/'reverse-text.json'
+        pl.save(edit, {'blocks':[{'page':1, 'id':original['pages'][0]['blocks'][0]['id'], 'translation':'文中'}]})
+        pl.apply_edits(self.args(edits=str(edit)))
+        revised = self.built()
+        second = pl.verify(Namespace(state=revised['state'], previous_state=[full['state']]))
+        self.assertEqual(second['review_needed'], [1])
+        self.assertEqual(second['reused_pages'], [2])
+        self.assertEqual(second['source_rendered_pages'], 0)
+        self.assertEqual(second['rendered_pages'], 1)
+        self.assertEqual(second['mechanical_reused_pages'], 1)
+        original = pl.load(full['state'])['qc']['page_reviews'][1]
+        carried = pl.load(revised['state'])['qc']['page_reviews'][0]
+        for field in ('reviewer', 'reviewed_at', 'evidence'):
+            self.assertEqual(original[field], carried[field])
+
     def test_inventory_acknowledgement_reuses_mechanical_evidence_and_status(self):
         self.prepared()
         state = pl.load(self.sp)
@@ -372,7 +448,7 @@ class PracticalPipeline(unittest.TestCase):
             self.assertEqual(len(doc),2);self.assertIn('中文',doc[0].get_text())
         self.assertEqual(wf.digest(destination),before)
         self.assertEqual({p.name for p in (self.root/'work'/'rebuild').iterdir()},
-                         {'accepted.rebuilt.pdf','accepted.rebuilt.state.json','accepted.rebuilt.font-runs.json','accepted.rebuilt.build.json'})
+                         {'accepted.rebuilt.pdf','accepted.rebuilt.state.json','accepted.rebuilt.font-runs.json','accepted.rebuilt.build.json','accepted.rebuilt.job.json'})
 
 
     def test_partial_review_acknowledges_save_without_allowing_publication(self):
