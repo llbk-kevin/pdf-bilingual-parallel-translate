@@ -120,6 +120,107 @@ class PracticalPipeline(unittest.TestCase):
         for field in ('reviewer', 'reviewed_at', 'evidence'):
             self.assertEqual(original[field], carried[field])
 
+    def test_inventory_reuse_requires_matching_review_and_preserves_chain(self):
+        self.prepared()
+        author = pl.load(self.sp)
+        for page in author['pages']:
+            page.update(inventory_reviewed=False, visual_text_review='pending')
+        pl.save(self.sp, author)
+        old = self.built()
+        pl.verify(Namespace(state=old['state'], previous_state=None))
+        obs = self.observations(old)
+        data = pl.load(obs.observations)
+        data['pages'][1]['inventory_reviewed'] = True
+        pl.save(obs.observations, data)
+        pl.review(obs)
+        original = pl.load(old['state'])['qc']['page_reviews'][1]
+
+        # A changed page cannot inherit even an acknowledged old page.
+        author = pl.load(self.sp)
+        author['pages'][1]['blocks'][0]['translation'] = '项目'
+        pl.save(self.sp, author)
+        changed = self.built()
+        checked = pl.verify(Namespace(state=changed['state'], previous_state=[old['state']]))
+        self.assertEqual(checked['reused_pages'], [1])
+        self.assertEqual(checked['inventory_review_needed'], '1-2')
+
+        # Restore page 2, alter page 1 and reuse its actual old observation.
+        author['pages'][1]['blocks'][0]['translation'] = '中文'
+        author['pages'][0]['blocks'][0]['translation'] = '项目'
+        pl.save(self.sp, author)
+        middle = self.built()
+        checked = pl.verify(Namespace(state=middle['state'], previous_state=[old['state']]))
+        self.assertEqual(checked['reused_pages'], [2])
+        self.assertEqual(checked['inventory_review_needed'], '1')
+        page = pl.load(middle['state'])['pages'][1]
+        self.assertTrue(page['inventory_reviewed'])
+        self.assertEqual(page['visual_text_review'], 'reviewed')
+
+        author['pages'][0]['blocks'][0]['translation'] = '文中'
+        pl.save(self.sp, author)
+        final = self.built()
+        checked = pl.verify(Namespace(state=final['state'], previous_state=[middle['state']]))
+        self.assertEqual(checked['reused_pages'], [2])
+        self.assertEqual(checked['inventory_review_needed'], '1')
+        record = pl.load(final['state'])['qc']['page_reviews'][0]
+        for field in ('reviewer', 'reviewed_at', 'evidence'):
+            self.assertEqual(record[field], original[field])
+            self.assertEqual(record['previous'][field], original[field])
+
+    def test_inventory_reuse_obeys_first_source_and_current_review_priority(self):
+        self.prepared()
+        author = pl.load(self.sp)
+        for page in author['pages']:
+            page.update(inventory_reviewed=False, visual_text_review='pending')
+        pl.save(self.sp, author)
+        candidate = self.built()
+        pl.verify(Namespace(state=candidate['state'], previous_state=None))
+        pl.review(self.observations(candidate))
+        original = pl.load(candidate['state'])
+        first = copy.deepcopy(original)
+        first['pages'][0].update(inventory_reviewed=True, visual_text_review='reviewed')
+        second = copy.deepcopy(original)
+        second['pages'][1].update(inventory_reviewed=True, visual_text_review='reviewed')
+        first_path = Path(candidate['state']).with_name('first.state.json')
+        second_path = first_path.with_name('second.state.json')
+        pl.save(first_path, first); pl.save(second_path, second)
+        target_path = first_path.with_name('target.state.json')
+        target = copy.deepcopy(original); target['qc'] = {}
+        pl.save(target_path, target)
+        result = pl.verify(Namespace(state=target_path, previous_state=[first_path, second_path]))
+        self.assertEqual(result['reused_pages'], [1, 2])
+        self.assertEqual(result['inventory_review_needed'], '2')
+
+        # Disjoint sources each supply their own acknowledgement.
+        first['qc']['page_reviews'] = first['qc']['page_reviews'][:1]
+        pl.save(first_path, first)
+        pl.save(target_path, target)
+        result = pl.verify(Namespace(state=target_path, previous_state=[first_path, second_path]))
+        self.assertEqual(result['reused_pages'], [1, 2])
+        self.assertEqual(result['inventory_review_needed'], '')
+        saved = pl.load(target_path)
+        self.assertEqual(saved['qc']['content_sha256'], pt.content_hash(saved))
+        final = pt.check_state(target_path, final=True)
+        self.assertTrue(final['ready_for_delivery'], final['errors'])
+        before = target_path.read_bytes()
+        repeated = pl.verify(Namespace(state=target_path, previous_state=[first_path, second_path]))
+        self.assertEqual(repeated['inventory_review_needed'], '')
+        self.assertEqual(repeated['state_written_bytes'], 0)
+        self.assertEqual(target_path.read_bytes(), before)
+        self.assertEqual(pl.load(target_path)['qc']['content_sha256'], pt.content_hash(pl.load(target_path)))
+        self.assertTrue(pt.check_state(target_path, final=True)['ready_for_delivery'])
+
+        # An already validated current review wins over both prior states.
+        first['qc']['page_reviews'] = original['qc']['page_reviews']
+        pl.save(first_path, first)
+        current = copy.deepcopy(original)
+        current['qc']['page_reviews'] = current['qc']['page_reviews'][:1]
+        pl.save(target_path, current)
+        result = pl.verify(Namespace(state=target_path, previous_state=[first_path, second_path]))
+        self.assertEqual(result['inventory_review_needed'], '1-2')
+        records = pl.load(target_path)['qc']['page_reviews']
+        self.assertEqual([r['mode'] for r in records], ['viewed', 'reused'])
+
     def test_inventory_acknowledgement_reuses_mechanical_evidence_and_status(self):
         self.prepared()
         state = pl.load(self.sp)

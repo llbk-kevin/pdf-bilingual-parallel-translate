@@ -661,11 +661,22 @@ def verify(args):
         reused.extend(records)
         claimed.update({r['page']: r for r in records})
         prior_for_page.update({r['page']: prior.get('qc', {}) for r in records})
+        # Transfer inventory acknowledgement only from the same state that supplied
+        # an eligible review; a later source cannot override an already claimed page.
+        prior_pages = {p['source_page']: p for p in prior['pages']}
+        current_pages = {p['source_page']: p for p in state['pages']}
+        for record in records:
+            old_page = prior_pages[record['page']]
+            page = current_pages[record['page']]
+            if old_page.get('inventory_reviewed') is True and not page.get('inventory_reviewed'):
+                page['inventory_reviewed'] = True
+                if old_page.get('visual_text_review') == 'reviewed':
+                    page['visual_text_review'] = 'reviewed'
         del prior
     records = sorted([*current.values(), *reused], key=lambda record: record['page'])
     current_findings = {wf.canonical(f) for f in report['findings'] if f.get('page') in current}
     old_qc=state.get('qc',{})
-    state['qc']={'content_sha256':content_sha,'source_sha256':state['source']['sha256'],
+    state['qc']={'content_sha256':pt.content_hash(state),'source_sha256':state['source']['sha256'],
                  'output_sha256':state['output']['sha256'],'audit_path':ref(checkdir/'audit.json',sp.parent),
                  'font_assignments':ref(assignments,sp.parent),
                  'font_report':{'path':ref(checkdir/'fonts.json',sp.parent),'sha256':wf.digest(checkdir/'fonts.json')},
