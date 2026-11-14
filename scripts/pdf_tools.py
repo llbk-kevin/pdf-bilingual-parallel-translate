@@ -161,10 +161,10 @@ def canonical_object(value, seen=None, depth=0, *, painting_memo=None):
     return str(value)
 
 
-def inventory(reader):
-    """Traverse the reachable object graph once, including nested Form resources."""
+def inventory(reader, roots=None):
+    """Traverse reachable objects once; optional roots limit the resource scope."""
     seen = set()
-    stack = [reader.trailer]
+    stack = [reader.trailer] if roots is None else list(roots)
     streams, font_stream_keys = {}, set()
     references = collections.Counter()
     fonts, images, forms = [], [], []
@@ -716,19 +716,15 @@ def audit_documents(source, output, sr, outreader, sm, om, source_doc, result_do
         issue("error", "page_count_changed")
     if sm["resources"]["errors"] or om["resources"]["errors"]:
         issue("error", "resource_inventory_incomplete")
-    image_baseline = sm["resources"]
-    if subset:
-        from pypdf import PdfWriter
-        selected_writer = PdfWriter()
-        for p in state["pages"]:
-            selected_writer.add_page(sr.pages[p["source_page"]-1])
-        import io
-        selected_buffer = io.BytesIO()
-        selected_writer.write(selected_buffer)
-        selected_buffer.seek(0)
-        image_baseline = inventory(PdfReader(selected_buffer))
+    # Follow only selected page resource dictionaries, not annotations or navigation
+    # destinations that can retain entire unselected pages and their images.
+    source_pages = (sr.pages[p["source_page"]-1] for p in state["pages"]) if subset else sr.pages
+    image_baseline = inventory(sr, (page.get("/Resources") for page in source_pages))
+    output_images = inventory(outreader, (page.get("/Resources") for page in outreader.pages))
+    if image_baseline["errors"] or output_images["errors"]:
+        issue("error", "resource_inventory_incomplete")
     s_images = {x["signature"] for x in image_baseline["images"]}
-    o_images = {x["signature"] for x in om["resources"]["images"]}
+    o_images = {x["signature"] for x in output_images["images"]}
     if missing := s_images-o_images:
         issue("error", "original_image_resource_changed_or_missing", count=len(missing))
     if added := o_images-s_images:

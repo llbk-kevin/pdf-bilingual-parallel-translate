@@ -167,6 +167,35 @@ class Inplace(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '/Launch'):
             nav.parse(unsupported)
 
+    def test_undefined_named_link_practical_preserves_actionless_appearance(self):
+        from pypdf import PdfWriter
+        from pypdf.generic import ArrayObject, DictionaryObject, FloatObject, NameObject, TextStringObject
+        self.make_basic()
+        writer = PdfWriter(clone_from=self.source)
+        for i, key in enumerate(('/Dest', '/A')):
+            item = DictionaryObject({NameObject('/Subtype'): NameObject('/Link'),
+                NameObject('/Rect'): ArrayObject([FloatObject(v) for v in (150, 10+i*30, 200, 30+i*30)]),
+                NameObject('/Border'): ArrayObject([FloatObject(0), FloatObject(0), FloatObject(1)])})
+            item[NameObject(key)] = (TextStringObject('missing') if key == '/Dest' else
+                DictionaryObject({NameObject('/S'): NameObject('/GoTo'), NameObject('/D'): TextStringObject('missing')}))
+            writer.add_annotation(0, item)
+        writer.write(self.root / 'raw.pdf')
+        (self.root / 'raw.pdf').replace(self.source)
+        s = self.extract()
+        with fitz.open(self.source) as source_doc:
+            findings = ip.check_interactions(source_doc, [1], {'layout': {'review_profile': 'practical'}, 'pages': []}, collect=True)
+        self.assertEqual([f.get('undefined_name') for f in findings if f['code'] == 'source_destination_null'], ['missing', 'missing'])
+        s['layout']['review_profile'] = 'strict'
+        with self.assertRaisesRegex(ValueError, 'Unknown named link destination'):
+            self.build(s)
+        s['layout']['review_profile'] = 'practical'
+        result = self.build(s)
+        reader = PdfReader(result['output'])
+        links = [ref.get_object() for ref in reader.pages[0]['/Annots']]
+        self.assertEqual(len(links), 4)
+        self.assertTrue(all('/A' not in a and '/Dest' not in a and '/Border' in a for a in links))
+        self.assert_left_same(result)
+
     def test_optional_layers_with_same_name_remain_independent_and_static_note_survives(self):
         from pypdf.generic import NameObject
 

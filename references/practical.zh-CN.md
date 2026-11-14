@@ -14,7 +14,7 @@ python SKILL/scripts/pipeline.py prepare --source ORIGINAL.pdf --state recovery/
 
 --pages 为原文物理页号，从 1 开始，默认 all。选页明确标为 sample：输出连续编号，source_page 保留源页号；样本外书签及链接记为省略，不重定向。整本仍要求完整源页。字体以路径和哈希登记，重建需可用；PDF 内嵌实际用字子集，阅读不需外部字体。
 
-prepare 冻结脚本到状态旁，写 inventory.json 与 preflight.json。后续包括 verify/review/publish 均使用冻结入口，不把命令变量改回 SKILL/scripts/pipeline.py。维护时如需替换当前任务的脚本，另建恢复目录。先读简洁 inventory，不反复读巨大的字形状态。source_group/source_line 辅助段落归属但不决定阅读顺序。可用 pdf_tools.py render ORIGINAL.pdf --pages SELECTION --out work/source 查看原页，再决定覆盖与公式。风险仅为提示，不是自动翻译结论。公式密集提示属于非阻断启发式，编码异常和实际可见原文优先。AES 支持随 requirements.txt 安装。missing_encryption_dependency 提示补齐依赖，password_required 提示需要源文件密码。目录跳转按声明的选页范围检查，样本外目标报告 sample_link_omitted。practical 登记确认空目标的链接和书签，并保留外观及标题。strict 要求跳转有效。
+prepare 冻结脚本到状态旁，写 inventory.json 与 preflight.json。后续包括 verify/review/publish 均使用冻结入口，不把命令变量改回 SKILL/scripts/pipeline.py。维护时如需替换当前任务的脚本，另建恢复目录。先读简洁 inventory，不反复读巨大的字形状态。source_group/source_line 辅助段落归属但不决定阅读顺序。可用 pdf_tools.py render ORIGINAL.pdf --pages SELECTION --out work/source 查看原页，再决定覆盖与公式。风险仅为提示，不是自动翻译结论。公式密集提示属于非阻断启发式，编码异常和实际可见原文优先。AES 支持随 requirements.txt 安装。missing_encryption_dependency 提示补齐依赖，password_required 提示需要源文件密码。目录跳转按声明的选页范围检查，样本外目标报告 sample_link_omitted。practical 登记确认空目标或未定义命名目标的链接和书签，能获得名称时一并记录，并保留外观及标题。strict 要求跳转有效。
 
 批量 edits.json 原生段落示例：
 

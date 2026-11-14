@@ -395,6 +395,8 @@ class RawNavigation:
         if self._raw_names is not None:
             return self._raw_names
         catalog = self.reader.root_object
+        if '/Dests' in catalog and '/Dests' in raw_object(catalog.get('/Names', {})):
+            raise ValueError('Ambiguous destination dictionaries')
         if '/Dests' in catalog:
             self._raw_names = dict(raw_object(catalog['/Dests']))
             return self._raw_names
@@ -404,12 +406,14 @@ class RawNavigation:
         while stack:
             branch = raw_object(stack.pop())
             if not isinstance(branch, dict):
-                continue
+                raise ValueError('Invalid destination name tree')
             if id(branch) in seen:
-                continue
+                raise ValueError('Cyclic or shared destination name tree')
             seen.add(id(branch))
             stack.extend(branch.get('/Kids', []))
             values = branch.get('/Names', [])
+            if not isinstance(values, list) or len(values) % 2:
+                raise ValueError('Invalid destination name entries')
             for i in range(0, len(values)-1, 2):
                 key = str(raw_object(values[i]))
                 if key in names:
@@ -458,6 +462,8 @@ class RawNavigation:
                     raw_value = raw_object(raw_value.get('/D'))
             named = self.names.get(value) or self.names.get(value.lstrip('/'))
             if named is None:
+                if allow_null and value not in names and value.lstrip('/') not in names:
+                    return 'null', {'undefined_name': value}
                 raise ValueError('Unknown named link destination: ' + value)
             value = named.dest_array
         if not isinstance(value, list) or len(value) < 2:
@@ -749,10 +755,10 @@ def check_interactions(doc, selected, state=None, *, collect=False, preview=Fals
     try:
         for i, (_, item) in enumerate(nav.outlines()):
             try:
-                kind, _ = nav.parse(item, heading=True, allow_null=allow_null)
+                kind, target = nav.parse(item, heading=True, allow_null=allow_null)
                 if kind == 'null':
                     report('source_destination_null', 'Preserve bookmark as a title without an action',
-                           bookmark=i, title=str(item.get('/Title', '')))
+                           bookmark=i, title=str(item.get('/Title', '')), **(target or {}))
             except (ValueError, KeyError, TypeError) as exc:
                 report('bookmark_action', str(exc), bookmark=i, title=str(item.get('/Title', '')))
     except ValueError as exc:
@@ -787,7 +793,7 @@ def check_interactions(doc, selected, state=None, *, collect=False, preview=Fals
                 kind, target = nav.parse(annotation, allow_null=allow_null)
                 if kind == 'null':
                     report('source_destination_null', 'Preserve link appearance without an action', n,
-                           source_link=link_number)
+                           source_link=link_number, **(target or {}))
                 if kind == '/GoTo' and target[0]+1 not in scope:
                     code = 'sample_link_omitted' if allow_omission else 'link_destination_outside_scope'
                     report(code, f'Selected pages exclude a link destination from page {n}', n,
@@ -856,7 +862,7 @@ def migrate_raw_links(source_doc, source_path, composed_stream, output_stream, s
         parent = parents[-1] if parents else None
         kind, target = nav.parse(item, heading=True, allow_null=allow_null)
         if kind == 'null':
-            null_bookmarks.append({'bookmark': i, 'title': str(item['/Title'])})
+            null_bookmarks.append({'bookmark': i, 'title': str(item['/Title']), **(target or {})})
         mapped = destination(target, 0) if kind == '/GoTo' else None
         if kind == '/GoTo' and mapped is None:
             omitted_bookmarks += 1
@@ -953,7 +959,7 @@ def migrate_raw_links(source_doc, source_path, composed_stream, output_stream, s
             link_number+=1
             kind, target = nav.parse(annotation, allow_null=allow_null)
             if kind == 'null':
-                page_states.get(n, {}).setdefault('null_links', []).append({'source_link': link_number})
+                page_states.get(n, {}).setdefault('null_links', []).append({'source_link': link_number, **(target or {})})
             if kind == '/GoTo' and target[0] not in mapping:
                 page_states.get(n, {}).setdefault('omitted_links', []).append({
                     'source_link': link_number, 'target_page': target[0]+1,

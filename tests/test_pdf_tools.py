@@ -173,6 +173,61 @@ class Diagnostics(unittest.TestCase):
         w.write(self.out)
         a=t.audit(self.src,self.out,dpi=72)
         self.assertIn("original_image_resource_changed_or_missing",self.codes(a))
+    def test_subset_ignores_link_destination_page_resources(self):
+        buf=io.BytesIO()
+        c=canvas.Canvas(buf,pagesize=(240,300),invariant=1)
+        c.drawString(20,270,"Link to omitted page")
+        c.linkRect("", "target", (20,250,180,280), relative=0)
+        c.showPage()
+        c.bookmarkPage("target")
+        c.drawImage(ImageReader(Image.new("RGB", (8,8), (20,60,90))),
+                    20,20,width=80,height=80)
+        c.showPage()
+        c.save()
+        self.src.write_bytes(buf.getvalue())
+        # Keep the link when selecting: pypdf also clones its omitted target.
+        selected=PdfWriter()
+        selected.add_page(PdfReader(self.src).pages[0])
+        intermediate=io.BytesIO()
+        selected.write(intermediate)
+        intermediate.seek(0)
+        self.assertEqual(t.inventory(PdfReader(intermediate))["counts"]["images"],1)
+        del selected.pages[0]["/Annots"]
+        selected.pages[0].mediabox.upper_right=(480,300)
+        selected.write(self.out)
+        state=self.state()
+        state["pages"]=state["pages"][:1]
+        a=t.audit(self.src,self.out,state=state,dpi=72)
+        self.assertNotIn("original_image_resource_changed_or_missing",self.codes(a))
+
+    def test_selected_nested_image_removed_and_mask_changed_detected(self):
+        # The existing fixture places the shared image inside page Form resources.
+        w=PdfWriter(clone_from=self.out)
+        image=image_objects(w)[0]
+        mask=DecodedStreamObject()
+        mask.set_data(bytes([127])*144)
+        mask.update({NameObject("/Type"):NameObject("/XObject"),
+                     NameObject("/Subtype"):NameObject("/Image"),
+                     NameObject("/Width"):NumberObject(12),
+                     NameObject("/Height"):NumberObject(12),
+                     NameObject("/ColorSpace"):NameObject("/DeviceGray"),
+                     NameObject("/BitsPerComponent"):NumberObject(8)})
+        image[NameObject("/SMask")]=w._add_object(mask)
+        w.write(self.out)
+        self.assertIn("original_image_resource_changed_or_missing",
+                      self.codes(t.audit(self.src,self.out,dpi=72)))
+        w=PdfWriter(clone_from=self.src)
+        for obj in w._objects:
+            if isinstance(obj,dict) and obj.get("/Subtype")=="/Form":
+                resources=obj.get("/Resources")
+                if resources and "/XObject" in resources:
+                    resources["/XObject"].clear()
+        for page in w.pages:
+            page.mediabox.upper_right=(480,300)
+        w.write(self.out)
+        self.assertIn("original_image_resource_changed_or_missing",
+                      self.codes(t.audit(self.src,self.out,dpi=72)))
+
     def test_missing_bookmarks_and_links(self):
         w=PdfWriter(clone_from=self.out)
         del w._root_object["/Outlines"]
