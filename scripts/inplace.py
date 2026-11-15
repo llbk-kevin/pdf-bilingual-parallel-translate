@@ -10,7 +10,7 @@ import re
 import sys
 import tempfile
 import time
-from collections import Counter, defaultdict
+from collections import defaultdict
 from contextlib import closing
 from pathlib import Path
 import pymupdf as fitz
@@ -1220,28 +1220,82 @@ def verify_draw_collisions(block,boxes,index):
     return sorted(conflicts)
 
 
+GLYPH_POSITION_TOLERANCE = .02  # PDF points; allow serialization drift, not a new glyph position.
+
+
 def glyph_location(code, origin):
-    return code, round(origin[0], 2), round(origin[1], 2)
+    return code, origin[0], origin[1]
 
 
 def right_visible_trace(page, width):
-    """Count visible, positioned glyphs in the reused right pane."""
-    return Counter(
+    """Return visible, positioned glyphs in the reused right pane."""
+    return [
         glyph_location(code, (origin[0]-width, origin[1]))
         for trace in page.get_texttrace()
         if trace['type'] in (0, 1) and trace.get('opacity', 1) > 0
         for code, gid, origin, bounds in trace['chars']
         if gid >= 0 and origin[0] >= width and not fitz.Rect(bounds).is_empty
-    )
+    ]
+
+
+def match_glyph_locations(expected, actual, tolerance=GLYPH_POSITION_TOLERANCE):
+    """Find a maximum one-to-one matching of equal glyphs within tolerance."""
+    grid = defaultdict(list)
+    for j, (code, x, y) in enumerate(actual):
+        grid[(code, math.floor(x/tolerance), math.floor(y/tolerance))].append(j)
+    candidates = []
+    for code, x, y in expected:
+        cx, cy = math.floor(x/tolerance), math.floor(y/tolerance)
+        options = []
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                for j in grid.get((code, cx+dx, cy+dy), ()):
+                    _, ax, ay = actual[j]
+                    if abs(x-ax) <= tolerance and abs(y-ay) <= tolerance:
+                        options.append((abs(x-ax)+abs(y-ay), j))
+        candidates.append([j for _, j in sorted(options)])
+    # Augment paths avoid both reuse and greedy mismatches for nearby duplicates.
+    left_to_right, right_to_left = {}, {}
+    for start in range(len(expected)):
+        queue = [start]
+        parent = {start: None}
+        seen_right = set()
+        for left in queue:
+            for right in candidates[left]:
+                if right in seen_right:
+                    continue
+                seen_right.add(right)
+                previous = right_to_left.get(right)
+                if previous is None:
+                    while left is not None:
+                        old = left_to_right.get(left)
+                        left_to_right[left] = right
+                        right_to_left[right] = left
+                        right = old
+                        left = parent[left]
+                    break
+                if previous not in parent:
+                    parent[previous] = left
+                    queue.append(previous)
+            else:
+                continue
+            break
+    return left_to_right
 
 
 def preserved_glyph_conflicts(page_number, protected, before, after, mask_index):
+    entries = [(location, g, owner) for location, glyphs in protected.items()
+               for g, owner in glyphs]
+    initial = match_glyph_locations([entry[0] for entry in entries], before)
+    expected_indices = sorted(initial)
+    remaining = match_glyph_locations([before[initial[i]] for i in expected_indices], after)
+    missing = defaultdict(list)
+    for position, i in enumerate(expected_indices):
+        if position not in remaining:
+            location, glyph, owner = entries[i]
+            missing[location].append((glyph, owner))
     conflicts = []
-    for location, glyphs in protected.items():
-        expected = min(before[location], len(glyphs))
-        missing = expected - after[location]
-        if missing <= 0:
-            continue
+    for location, glyphs in missing.items():
         # MuPDF can remove text using font-wide boxes. The raw boxes help
         # identify replacement masks that may have triggered the removal.
         related = sorted({bid for g, _ in glyphs
@@ -1249,12 +1303,11 @@ def preserved_glyph_conflicts(page_number, protected, before, after, mask_index)
         conflicts.append({
             'page': page_number, 'code': 'preserved_glyph_removed',
             'block': glyphs[0][1], 'preserved_blocks': sorted({bid for _, bid in glyphs}),
-            'character': chr(location[0]), 'origin': list(location[1:]),
-            'missing_count': missing, 'related_replacement_blocks': related,
+            'character': chr(location[0]), 'origin': [round(v, 2) for v in location[1:]],
+            'missing_count': len(glyphs), 'related_replacement_blocks': related,
             'detail': 'Right-pane redaction removed preserved text; inspect the nearby replacements before rebuilding.',
         })
     return conflicts
-
 
 
 def peak_rss_bytes():
@@ -1450,12 +1503,11 @@ def _build(source, state_path, output, pages, overwrite, password, preview,
                 page.apply_redactions(images=0,graphics=0,text=0)
                 if before:
                     after = right_visible_trace(page, w)
-                    if any(min(before[key], len(gs)) > after[key] for key, gs in protected.items()):
-                        mask_index = CollisionIndex()
-                        for ids, mask in merged:
-                            for bid in {owners[gid] for gid in ids.split(',')}:
-                                mask_index.add('replacement', bid, mask)
-                        build_errors.extend(preserved_glyph_conflicts(n, protected, before, after, mask_index))
+                    mask_index = CollisionIndex()
+                    for ids, mask in merged:
+                        for bid in {owners[gid] for gid in ids.split(',')}:
+                            mask_index.add('replacement', bid, mask)
+                    build_errors.extend(preserved_glyph_conflicts(n, protected, before, after, mask_index))
             collision_index=CollisionIndex()
             for g in pstate['glyphs']:
                 if g['id'] not in deleted and not g['hidden'] and g['text'].strip():collision_index.add('preserved',g['id'],effective_boxes[g['id']])

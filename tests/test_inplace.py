@@ -386,6 +386,36 @@ class Inplace(unittest.TestCase):
             page=out[0];left=page.get_pixmap(clip=fitz.Rect(15,69,35,85));right=page.get_pixmap(clip=fitz.Rect(255,69,275,85))
             self.assertEqual(left.samples,right.samples)
             self.assertIn('F',page.get_text(clip=fitz.Rect(240,0,480,180)))
+    def test_preserved_glyph_position_matching(self):
+        # Opposite sides of the two-decimal rounding boundary remain the same glyph.
+        glyph = {'bbox': [10, 20, 12, 24]}
+        location = (ord('0'), 10.0, 225.165161)
+        protected = {location: [(glyph, 'axis')]}
+        before = [location]
+        after = [(ord('0'), 10.0, 225.162537)]
+        index = ip.CollisionIndex()
+        self.assertEqual(ip.preserved_glyph_conflicts(7, protected, before, after, index), [])
+
+        # A single surviving duplicate must not satisfy two protected glyphs.
+        protected[location].append((glyph, 'axis'))
+        findings = ip.preserved_glyph_conflicts(7, protected, before * 2, after, index)
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0]['missing_count'], 1)
+        self.assertEqual(findings[0]['character'], '0')
+        self.assertEqual(findings[0]['block'], 'axis')
+
+        # A removed glyph and one beyond the tolerance remain blockers.
+        protected[location].pop()
+        for shifted in ([], [(ord('0'), 10.0, 225.19)]):
+            findings = ip.preserved_glyph_conflicts(7, protected, before, shifted, index)
+            self.assertEqual(findings[0]['code'], 'preserved_glyph_removed')
+            self.assertEqual(findings[0]['missing_count'], 1)
+
+        # Maximum matching avoids a false loss when the first glyph has two choices.
+        expected = [(48, 0.0, 0.0), (48, 0.018, 0.0)]
+        actual = [(48, 0.009, 0.0), (48, -0.015, 0.0)]
+        self.assertEqual(len(ip.match_glyph_locations(expected, actual)), 2)
+
     def test_redaction_blocks_loss_of_preserved_formula_before_saving(self):
         from fontTools.ttLib import TTFont
         tall = self.root/'tall.ttf'
