@@ -12,6 +12,8 @@ import re
 import shutil
 import sys
 import tempfile
+import subprocess
+import uuid
 import time
 from pathlib import Path
 import inplace as ip
@@ -67,6 +69,30 @@ def compact_inventory(state):
                      'blocks':[{k:b[k] for k in keys if k in b} for b in p['blocks']]} for p in state['pages']]}
 
 
+def runtime_prefix(state, sp):
+    launcher = state['layout'].get('runtime_launcher')
+    if launcher:
+        return [sys.executable, '-I', '-X', 'utf8', str(wf.resolve(sp.parent, launcher).resolve())]
+    return [sys.executable, '-X', 'utf8']
+
+
+def probe_runtime(state, sp):
+    prefix = runtime_prefix(state, sp)
+    if state['layout'].get('runtime_launcher'):
+        command = prefix + ['--probe']
+    else:
+        code = "import importlib.metadata as m,json;print(json.dumps({p:m.version(p) for p in " + repr(list(runtime_packages())) + "}))"
+        command = prefix + ['-c', code]
+    result = subprocess.run(command, capture_output=True, text=True, encoding='utf-8', check=False,
+                            **({'creationflags': subprocess.CREATE_NO_WINDOW} if sys.platform == 'win32' else {}))
+    if result.returncode:
+        raise ValueError(json.dumps({'code':'frozen_runtime_probe_failed', 'argv':command,
+                                     'returncode':result.returncode, 'stderr':result.stderr[-4000:]}))
+    if json.loads(result.stdout) != state['layout'].get('runtime_packages', runtime_packages()):
+        raise ValueError('Recovery command cannot load the frozen dependency versions')
+    return prefix
+
+
 def prepare(args):
     sp=Path(args.state).resolve()
     # Check the original reader before writing a recovery package. The builder
@@ -83,7 +109,7 @@ def prepare(args):
                              selected_source_pages=selected)
     # Freeze a runnable recovery package. Use this copy for subsequent commands.
     here=Path(__file__).parent
-    for name in ('pipeline.py','inplace.py','pdf_tools.py','workflow.py'):
+    for name in ('pipeline.py','inplace.py','pdf_tools.py','workflow.py','runtime.py'):
         dst=sp.parent/name
         if dst.resolve()!=(here/name).resolve():shutil.copy2(here/name,dst)
     req=here.parent/'requirements.txt'
@@ -92,6 +118,12 @@ def prepare(args):
         p=Path(value).resolve()
         state['layout']['fonts'].append({'name':'Body' if i==0 else 'Fallback'+str(i),'source':ref(p,sp.parent),
                                         'sha256':wf.digest(p),'purpose':'User-selected translation font'})
+    save(sp.parent/'runtime.json', {'paths':[str(Path(p).resolve()) for p in sys.path if p],
+                                    'packages':runtime_packages()})
+    state['layout']['runtime_launcher'] = ref(sp.parent/'runtime.py', sp.parent)
+    for name in ('runtime.py', 'runtime.json'):
+        state['layout'].setdefault('inputs', []).append({'path':name, 'sha256':wf.digest(sp.parent/name)})
+    prefix = probe_runtime(state, sp)
     risks=[]
     with ip.open_source(args.source) as doc, pt.checked_reader(args.source) as reader:
         for page in state['pages']:
@@ -115,8 +147,16 @@ def prepare(args):
             for page in state['pages']:
                 if page['source_page'] in native:
                     page['native_left'] = True
+    fonts = ip.load_fonts(state, sp) if state['layout']['fonts'] else {}
+    coverage = set().union(*(font['coverage'] for font in fonts.values())) if fonts else set()
+    for page in state['pages']:
+        missing = sorted({ord(ch) for block in page['blocks'] for ch in block['source_text']
+                          if ch in '©½®™°µΩ' and ord(ch) not in coverage})
+        if fonts and missing:
+            risks.append({'page':page['source_page'], 'code':'source_symbol_font_hint',
+                          'characters':[chr(c) for c in missing], 'action':'Preserve source symbols or register a fallback font with --font.'})
     save(sp,state);save(sp.parent/'inventory.json',compact_inventory(state));save(sp.parent/'preflight.json',{'risks':risks})
-    return {'state':str(sp),'runner':str(sp.parent/'pipeline.py'),'inventory':str(sp.parent/'inventory.json'),
+    return {'state':str(sp),'runner':str(sp.parent/'pipeline.py'),'command_prefix':prefix,'inventory':str(sp.parent/'inventory.json'),
             'state_written_bytes':sp.stat().st_size, 'extract_workers':min(workers, len(selected)),
             'preflight':str(sp.parent/'preflight.json'),'pages':selected,'profile':state['layout']['review_profile'],
             'risk_counts':counts(risks), 'compatibility_blockers':counts(r for r in risks if r['code'] in
@@ -271,6 +311,7 @@ def package(args):
                 'owner': getattr(args, 'owner', None),
                 'source_sha256': state['source']['sha256']}
     metadata['adjacent_pages'] = neighbors
+    state['document']['final_source_pages'] = state['document'].get('final_source_pages', state['document']['selected_source_pages'])
     state['pages'] = [pages[n] for n in selection]
     state['document'].update(delivery_scope='sample', selected_source_pages=selection)
     for j, page in enumerate(state['pages'], 1):
@@ -282,6 +323,8 @@ def package(args):
     for entry, key in [(state['source'], 'path'), *((f, 'source') for f in state['layout']['fonts']),
                        *((asset, 'path') for asset in state['layout'].get('inputs', []))]:
         entry[key] = ref(wf.resolve(sp.parent, entry[key]), out)
+    if state['layout'].get('runtime_launcher'):
+        state['layout']['runtime_launcher'] = ref(wf.resolve(sp.parent,state['layout']['runtime_launcher']),out)
     builder = state['layout'].get('builder')
     if builder:
         builder['path'] = ref(wf.resolve(sp.parent, builder['path']), out)
@@ -385,9 +428,9 @@ def apply_edits(args):
         save(inventory, compact_inventory(state))
         save(sp, state)
         inventory.replace(sp.parent / inventory.name)
-    preview=[sys.executable,str(Path(__file__).resolve()),'build','--state',str(sp)]
-    if changed:preview+=['--pages',ranges(changed)]
-    else:preview=None
+    pending_pages = {p['source_page'] for p in state['pages'] if any(b['method']=='unresolved' for b in p['blocks'])}
+    ready_pages = changed - pending_pages
+    preview = runtime_prefix(state, sp) + [str(Path(__file__).resolve()),'build','--state',str(sp),'--pages',ranges(ready_pages)] if ready_pages else None
     unresolved = [
         {'page': page['source_page'], 'blocks': [b['id'] for b in page['blocks'] if b['method'] == 'unresolved']}
         for page in state['pages']
@@ -395,6 +438,7 @@ def apply_edits(args):
     unresolved = [row for row in unresolved if row['blocks']]
     return {'state':str(sp),'changed_pages':sorted(changed),'preview_argv':preview,
             'state_written_bytes':sp.stat().st_size,'replayed':replayed,
+             'preview_skipped_pages':sorted(changed & pending_pages),
              'unresolved_count':sum(len(row['blocks']) for row in unresolved),
             'unresolved_by_page':unresolved,
             'next':'Use preview_argv for local adjustments; omit --pages for final full selection. Repeat verify --previous-state for each relevant reviewed candidate.'}
@@ -539,6 +583,14 @@ def build(args):
         built_state = result.pop('_state')
     except BaseException as exc:
         progress({'status': 'failed', 'exit_reason': type(exc).__name__, 'error': str(exc)[:1200]})
+        if isinstance(exc, ValueError):
+            try:
+                detail = json.loads(str(exc))
+            except ValueError:
+                detail = None
+            if isinstance(detail, dict):
+                detail.update(stage=job.get('stage'), job=str(job_path))
+                raise ValueError(json.dumps(detail, ensure_ascii=False)) from exc
         raise
     save(manifest,{'key':key,'result':result,'state_content':pt.content_hash(built_state),
                    'files':{result[k]:wf.digest(result[k]) for k in ('output','assignments')}})
@@ -714,7 +766,18 @@ def verify(args):
     hard=[f for f in report['findings'] if f['severity']=='error' and not
           (state['layout']['review_profile']=='practical' and f['code']=='right_graphics_changed_outside_recorded_regions')]
     pending = pages_needing_review(state, report, index, {r['page']: r for r in records})
-    return {'ok':not hard and fonts['mechanical_pass'],'state':str(sp),'cached':cached,'profile':state['layout']['review_profile'],
+    handoff_path = checkdir/'review-handoff.json'
+    template_path = checkdir/'observations-template.json'
+    if not template_path.exists():
+        save(template_path, {'output_sha256':index['output_sha256'], 'render_index_sha256':index_hash,
+                             'reviewer':'', 'pages':[]})
+    save(handoff_path, {'state':str(sp), 'output':str(output), 'render_index':str(index_path),
+                        'command_prefix':runtime_prefix(state,sp), 'runner':str(Path(__file__).resolve()),
+                        'output_sha256':index['output_sha256'], 'render_index_sha256':index_hash,
+                        'review_needed':pending, 'inventory_review_needed':ranges(p['source_page'] for p in state['pages'] if not p.get('inventory_reviewed')),
+                        'observations_template':str(template_path)})
+    return {'review_handoff':str(handoff_path), 'observations_template':str(template_path),
+            'ok':not hard and fonts['mechanical_pass'],'state':str(sp),'cached':cached,'profile':state['layout']['review_profile'],
             'blocking_findings':hard,'font_pass':fonts['mechanical_pass'],
             'cover_review_needed':[{'page':p['source_page'],'blocks':[b['id'] for b in p['blocks'] if b['method']=='cover']} for p in state['pages'] if p['source_page'] in pending and any(b['method']=='cover' for b in p['blocks'])],
             'finding_counts':counts(report['findings']),'audit':str(checkdir/'audit.json'),
@@ -743,10 +806,13 @@ def review(args):
     index_path = checkdir/'renders'/'index.json'
     index_hash = wf.digest(index_path)
     output = wf.resolve(sp.parent, state['output']['path'])
+    missing = [key for key in ('output_sha256','render_index_sha256','reviewer','pages') if key not in observations]
+    if missing:
+        raise ValueError(json.dumps({'code':'observation_fields_missing','fields':missing}))
     if (observations.get('output_sha256') != state['output']['sha256']
             or observations.get('render_index_sha256') != index_hash
             or wf.digest(output) != state['output']['sha256']):
-        raise ValueError('Observations must match the candidate and render index fingerprints returned by verify')
+        raise ValueError(json.dumps({'code':'observation_fingerprint_mismatch', 'expected_output':state['output']['sha256'], 'expected_render_index':index_hash}))
     manifest = load(checkdir/'verification.json')
     if manifest['files'].get(str(index_path)) != index_hash:
         raise ValueError('Bound render index changed after verify')
@@ -874,6 +940,7 @@ def publish(args):
         raise ValueError('Bound audit changed after verify')
     report = load(audit_path)
     runner=wf.resolve(sp.parent,state['layout']['builder']['path']).resolve().with_name('pipeline.py')
+    recovery_prefix = probe_runtime(state, sp)
     preflight_publication([note,record]+([destination] if destination!=candidate else []),args.overwrite)
     if destination!=candidate:shutil.copyfile(candidate,destination)
     if wf.digest(destination)!=state['output']['sha256']:raise ValueError('Publication fingerprint changed')
@@ -898,7 +965,7 @@ def publish(args):
         if p.get('null_links'):
             lines.append(f'- 源页 {p["source_page"]} 有 {len(p["null_links"])} 条空目标链接，保留外观。')
         for x in p.get('omitted_links',[]):lines.append(f'- 源页 {p["source_page"]}：'+x['reason'])
-    recovery_argv=[sys.executable,'-X','utf8',str(runner),'build','--state',str(sp),'--output',str(rebuild)]
+    recovery_argv=recovery_prefix+[str(runner),'build','--state',str(sp),'--output',str(rebuild)]
     lines += ['', '## 恢复','需要重建时，使用冻结入口、已验收状态和所引用的源文件、字体及依赖。',
               '将以下参数数组传给子进程 API，或逐项引用为命令行参数。',
               '```json',json.dumps(recovery_argv,ensure_ascii=False),'```',
@@ -935,7 +1002,7 @@ def main(argv=None):
         if name in ('prepare', 'verify'):p.add_argument('--workers',type=int,choices=(1,2),default=1)
         if name=='review':p.add_argument('--observations',required=True)
         if name=='publish':p.add_argument('--task-dir',help='Working folder for delivery notes and optional rebuilding; inferred from work/ or recovery[-vN]/')
-    args=parser.parse_args(argv);started=time.monotonic();success=False;result={}
+    args=parser.parse_args(argv);started=time.monotonic();success=False;result={};diagnostic=None
     try:
         result={'prepare':prepare,'apply':apply_edits,'build':build,'verify':verify,'review':review,'publish':publish,'status':status,'package':package}[args.command](args)
         success=(result.get('observations_saved',False) if args.command=='review' else not result.get('errors') and result.get('ok',True))
@@ -947,7 +1014,12 @@ def main(argv=None):
         if args.command == 'status':
             print(json.dumps({'ok': False, 'error': detail}, ensure_ascii=False), file=sys.stderr)
             return 2
-        log=Path(args.state).resolve().parent/'last-error.json';save(log,{'command':args.command,'detail':detail})
+        directory=Path(args.state).resolve().parent
+        diagnostic=directory/'diagnostics'/('attempt-'+uuid.uuid4().hex+'.json')
+        payload={'at':now(), 'command':args.command, 'detail':detail}
+        if isinstance(detail,dict):payload['stage']=detail.get('stage')
+        save(diagnostic,payload)
+        log=directory/'last-error.json';save(log,{**payload,'diagnostic':str(diagnostic)})
         conflicts=(detail.get('layout_conflicts',[])+detail.get('link_conflicts',[])) if isinstance(detail,dict) else []
         affected = {x['page'] for x in conflicts}
         if isinstance(detail, dict):
@@ -962,6 +1034,7 @@ def main(argv=None):
     finally:
         event={'at':now(),'command':args.command,'seconds':round(time.monotonic()-started,3),'success':success,
                'state':str(Path(args.state).resolve()),'pages':getattr(args,'pages',None)}
+        if diagnostic:event['diagnostic']=str(diagnostic)
         if args.command != 'status':
             event.update({k: result[k] for k in ('rendered_pages', 'source_rendered_pages', 'mechanical_reused_pages',
                                                  'state_written_bytes', 'cached', 'job') if k in result})

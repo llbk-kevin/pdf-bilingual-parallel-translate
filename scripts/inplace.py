@@ -806,8 +806,100 @@ def check_interactions(doc, selected, state=None, *, collect=False, preview=Fals
     return findings
 
 
+def right_link_resolver(source_doc, page_states):
+    link_geometry = {}
+
+    def right_rectangles(n,link_number,source_rect):
+        if n not in page_states:return [source_rect]
+        ps=page_states[n]
+        override=next((v for v in ps.get('link_overrides',[]) if v['source_link']==link_number),None)
+        if override:
+            if 'target_block' in override:
+                block=next((b for b in ps['blocks'] if b['id']==override['target_block']),None)
+                if block is None:raise ValueError('Unknown link target_block')
+                visible=''.join(re.sub(r'</?(?:sub|sup)>','',block['translation']).split())
+                needle=''.join(override.get('target_text','').split())
+                occurrence=override.get('occurrence',1)
+                if not needle or type(occurrence) is not int or occurrence<1:raise ValueError('Link anchor requires target_text and positive occurrence')
+                found=[m.start() for m in re.finditer(re.escape(needle),visible)]
+                if len(found)<occurrence:raise ValueError('Link anchor text not found: '+block['id'])
+                start=found[occurrence-1];values=block.get('actual_glyph_boxes',[])[start:start+len(needle)]
+                if len(values)!=len(needle):raise ValueError('Link anchor glyph positions unavailable')
+                union=rect(values[0])
+                for value in values[1:]:union|=rect(value)
+                values=[box(union)]
+            else:values=override.get('right_bboxes') or [override['right_bbox']]
+            boxes=[rect(v) for v in values]
+            if any(not contains(source_doc[n-1].rect,r) for r in boxes):raise ValueError('Right link override outside pane')
+            return boxes
+        if n not in link_geometry:
+            link_geometry.clear()
+            effective = effective_glyph_boxes(source_doc[n-1], ps['glyphs'])
+            centers = CollisionIndex()
+            glyphs = {g['id']: g for g in ps['glyphs'] if g['text'].strip()}
+            for gid in glyphs:
+                bounds = fitz.Rect(effective[gid])
+                point = (bounds.tl + bounds.br) / 2
+                centers.add('glyph', gid, fitz.Rect(point.x-.001, point.y-.001, point.x+.001, point.y+.001))
+            link_geometry[n] = centers, glyphs, effective
+        centers, glyphs, effective = link_geometry[n]
+        ids = set()
+        search = source_rect + fitz.Rect(-.002, -.002, .002, .002)
+        for _, gid in centers.intersections(search, 0):
+            bounds = fitz.Rect(effective[gid])
+            if source_rect.contains((bounds.tl + bounds.br) / 2):
+                ids.add(gid)
+        linked = [glyphs[gid] for gid in sorted(ids, key=lambda gid: int(gid.rsplit('-g', 1)[1]))]
+        affected=[b for b in ps['blocks'] if b['method'] in ('replace','cover') and ids.intersection(b.get('glyph_ids',[]))]
+        if not affected:return [source_rect]
+        needle=''.join(g['text'] for g in linked if not g['text'].isspace())
+        matches=[]
+        for block in affected:
+            visible=''.join(re.sub(r'</?(?:sub|sup)>','',block['translation']).split())
+            boxes=block.get('actual_glyph_boxes',[])
+            if len(visible)!=len(boxes):raise ValueError('Actual link glyph mapping incomplete: '+block['id'])
+            if needle and visible.count(needle)==1:
+                index=visible.index(needle);matches.append(boxes[index:index+len(needle)])
+            elif ids.issuperset(g for g in block.get('glyph_ids',[]) if g in glyphs):
+                matches.append(boxes)
+        if len(matches)!=1 or not matches[0]:
+            raise ValueError('Right link text cannot be mapped uniquely on page %d link %d; candidate target_block IDs: %s; provide target_text and occurrence' % (n,link_number, ', '.join(b['id'] for b in affected)))
+        union=fitz.Rect(matches[0][0])
+        for value in matches[0][1:]:union|=fitz.Rect(value)
+        return [union]
+    return right_rectangles
+
+
+def check_right_links(source_doc, reader, selected, state):
+    pages = {p['source_page']: p for p in state['pages']}
+    resolve_right = right_link_resolver(source_doc, pages)
+    nav = RawNavigation(reader)
+    scope = set(state['document'].get('final_source_pages',
+                    state['document'].get('selected_source_pages', selected)))
+    conflicts = []
+    geometry = {}
+    for n in selected:
+        page = source_doc[n-1]
+        number = -1
+        for ref in reader.pages[n-1].get('/Annots', []):
+            annotation = raw_object(ref)
+            if annotation.get('/Subtype') != '/Link':
+                continue
+            number += 1
+            kind, target = nav.parse(annotation, allow_null=state['layout'].get('review_profile') == 'practical')
+            if kind == 'null' or kind == '/GoTo' and target[0]+1 not in scope:
+                continue
+            source_rect = fitz.Rect([float(v) for v in annotation['/Rect']]) * page.transformation_matrix * page.rotation_matrix
+            try:
+                geometry[n, number] = resolve_right(n, number, source_rect)
+            except ValueError as exc:
+                conflicts.append({'page':n, 'source_link':number, 'source_bbox':box(source_rect),
+                                  'detail':str(exc), 'next':'Use link_overrides_patch with target_block, target_text and occurrence.'})
+    return conflicts, geometry
+
+
 def migrate_raw_links(source_doc, source_path, composed_stream, output_stream, selected,
-                      password=None, state=None, *, reader=None, native_pages=(), metrics=None):
+                      password=None, state=None, *, reader=None, native_pages=(), metrics=None, right_links=None):
     """Preserve destination modes and nullable axes that get_links cannot represent."""
     from pypdf import PdfReader, PdfWriter
     from pypdf.generic import ArrayObject, DictionaryObject, NameObject, NullObject, FloatObject
@@ -889,68 +981,9 @@ def migrate_raw_links(source_doc, source_path, composed_stream, output_stream, s
     page_states={p['source_page']:p for p in state['pages']} if state else {}
     for ps in page_states.values():
         ps.pop('link_mappings',None);ps.pop('omitted_links',None);ps.pop('null_links',None)
-    link_geometry = {}
-
-    def right_rectangles(n,link_number,source_rect):
-        if n not in page_states:return [source_rect]
-        ps=page_states[n]
-        override=next((v for v in ps.get('link_overrides',[]) if v['source_link']==link_number),None)
-        if override:
-            if 'target_block' in override:
-                block=next((b for b in ps['blocks'] if b['id']==override['target_block']),None)
-                if block is None:raise ValueError('Unknown link target_block')
-                visible=''.join(re.sub(r'</?(?:sub|sup)>','',block['translation']).split())
-                needle=''.join(override.get('target_text','').split())
-                occurrence=override.get('occurrence',1)
-                if not needle or type(occurrence) is not int or occurrence<1:raise ValueError('Link anchor requires target_text and positive occurrence')
-                found=[m.start() for m in re.finditer(re.escape(needle),visible)]
-                if len(found)<occurrence:raise ValueError('Link anchor text not found: '+block['id'])
-                start=found[occurrence-1];values=block.get('actual_glyph_boxes',[])[start:start+len(needle)]
-                if len(values)!=len(needle):raise ValueError('Link anchor glyph positions unavailable')
-                union=rect(values[0])
-                for value in values[1:]:union|=rect(value)
-                values=[box(union)]
-            else:values=override.get('right_bboxes') or [override['right_bbox']]
-            boxes=[rect(v) for v in values]
-            if any(not contains(source_doc[n-1].rect,r) for r in boxes):raise ValueError('Right link override outside pane')
-            return boxes
-        if n not in link_geometry:
-            effective = effective_glyph_boxes(source_doc[n-1], ps['glyphs'])
-            centers = CollisionIndex()
-            glyphs = {g['id']: g for g in ps['glyphs'] if g['text'].strip()}
-            for gid in glyphs:
-                bounds = fitz.Rect(effective[gid])
-                point = (bounds.tl + bounds.br) / 2
-                centers.add('glyph', gid, fitz.Rect(point.x-.001, point.y-.001, point.x+.001, point.y+.001))
-            link_geometry[n] = centers, glyphs, effective
-        centers, glyphs, effective = link_geometry[n]
-        ids = set()
-        search = source_rect + fitz.Rect(-.002, -.002, .002, .002)
-        for _, gid in centers.intersections(search, 0):
-            bounds = fitz.Rect(effective[gid])
-            if source_rect.contains((bounds.tl + bounds.br) / 2):
-                ids.add(gid)
-        linked = [glyphs[gid] for gid in sorted(ids, key=lambda gid: int(gid.rsplit('-g', 1)[1]))]
-        affected=[b for b in ps['blocks'] if b['method'] in ('replace','cover') and ids.intersection(b.get('glyph_ids',[]))]
-        if not affected:return [source_rect]
-        needle=''.join(g['text'] for g in linked if not g['text'].isspace())
-        matches=[]
-        for block in affected:
-            visible=''.join(re.sub(r'</?(?:sub|sup)>','',block['translation']).split())
-            boxes=block.get('actual_glyph_boxes',[])
-            if len(visible)!=len(boxes):raise ValueError('Actual link glyph mapping incomplete: '+block['id'])
-            if needle and visible.count(needle)==1:
-                index=visible.index(needle);matches.append(boxes[index:index+len(needle)])
-            elif ids.issuperset(g for g in block.get('glyph_ids',[]) if g in glyphs):
-                matches.append(boxes)
-        if len(matches)!=1 or not matches[0]:
-            raise ValueError('Right link text cannot be mapped uniquely on page %d link %d; provide page.link_overrides right_bbox' % (n,link_number))
-        union=fitz.Rect(matches[0][0])
-        for value in matches[0][1:]:union|=fitz.Rect(value)
-        return [union]
+    right_rectangles = right_link_resolver(source_doc, page_states)
     link_conflicts=[]
     for n in selected:
-        link_geometry.clear()
         p=source_doc[n-1];w,h=p.rect.width,p.rect.height
         link_number=-1
         for ref in reader.pages[n-1].get('/Annots',[]):
@@ -967,7 +1000,10 @@ def migrate_raw_links(source_doc, source_path, composed_stream, output_stream, s
                 continue
             if annotation.get('/AP'):raise ValueError('Link appearance streams require explicit preservation support')
             source_rect=fitz.Rect([float(a) for a in annotation['/Rect']])*transforms[n-1]
-            try: right_boxes=[source_rect] if kind == 'null' else right_rectangles(n,link_number,source_rect)
+            try:
+                right_boxes = ([source_rect] if kind == 'null' else
+                               right_links[n,link_number] if right_links is not None and (n,link_number) in right_links else
+                               right_rectangles(n,link_number,source_rect))
             except ValueError as exc:
                 link_conflicts.append({'page':n,'source_link':link_number,'source_bbox':box(source_rect),'detail':str(exc),
                     'next':'Set link_overrides_patch with target_block, target_text and occurrence, or explicit right_bbox.'})
@@ -1564,7 +1600,10 @@ def _build(source, state_path, output, pages, overwrite, password, preview,
             metrics.completed_pages = j+1
             metrics.emit()
         metrics.source_page = None
-        if build_errors:raise ValueError(json.dumps({'layout_conflicts':build_errors},ensure_ascii=False))
+        metrics.enter('right_link_preflight')
+        link_errors, right_links = check_right_links(src, reader, selected, state)
+        if build_errors or link_errors:
+            raise ValueError(json.dumps({'layout_conflicts':build_errors, 'link_conflicts':link_errors},ensure_ascii=False))
         out.set_metadata(src.metadata)
         metrics.enter('font_subsetting')
         out.subset_fonts()
@@ -1586,9 +1625,11 @@ def _build(source, state_path, output, pages, overwrite, password, preview,
             with composed_path.open('rb') as composed, final_path.open('wb') as final:
                 metrics.objects.update(migrate_raw_links(
                     src, source, composed, final, selected, password, state,
-                    reader=reader, native_pages=native_pages, metrics=metrics))
+                    reader=reader, native_pages=native_pages, metrics=metrics, right_links=right_links))
             metrics.enter('state_write')
             candidate_sha = digest(final_path)
+            if state['layout'].get('runtime_launcher'):
+                state['layout']['runtime_launcher']=relative(resolve(state_path.parent,state['layout']['runtime_launcher']),output.parent)
             state['source']['path']=relative(source,output.parent)
             state['output']={'path':output.name,'sha256':candidate_sha}
             if preview:state['output']['preview']=True

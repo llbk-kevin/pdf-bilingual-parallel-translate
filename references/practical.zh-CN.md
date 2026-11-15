@@ -41,7 +41,7 @@ python recovery/pipeline.py build --state recovery/state.json
 
 apply 返回 preview_argv 参数数组，使用当前冻结入口、authoring state 和变化页。直接传给子进程 API，不拼成未转义的 shell 命令。局部调整使用该预览，最终完整候选省略 --pages。后续 build 省略 --source，冻结状态已经标识源文件；覆盖路径不一致时报告期望/传入路径和传入文件是否存在，不代表可以修改源指纹。
 
-build 返回 PDF、生成状态及字形运行记录。verify/review/publish 必须用返回的生成状态。使用 --pages 3 局部预览，交付时构建完整声明范围。同类冲突从 last-error.json 集中修复后重建。链接映射错误按选定页集中写入 link_conflicts，包含 page、source_link 和 source_bbox，一批修完，不为逐条报错重复全本构建。降低字号时同时检查 font_size 和 font_size_min，下限不能高于指定字号。font_size_min 空或缺省为固定字号，不为强制通过不断缩小到不可读。preserved_glyph_removed 会指出缺失字符、原页位置、保留块及相邻替换块。先修相邻替换，预览受影响页并核对整条公式。
+build 返回 PDF、生成状态及字形运行记录。verify/review/publish 必须用返回的生成状态。使用 --pages 3 局部预览，交付时构建完整声明范围。同类冲突从 last-error.json 集中修复后重建。链接映射错误按选定页集中写入 link_conflicts，包含 page、source_link 和 source_bbox，一批修完，不为逐条报错重复全本构建。降低字号时同时检查 font_size 和 font_size_min，下限不能高于指定字号。font_size_min 空或缺省为固定字号，不为强制通过不断缩小到不可读。preserved_glyph_removed 会指出缺失字符、原页位置、保留块及相邻替换块。先检查原图局部和相关掩码。同一字符及位置重复报错时先诊断，再修复已确认的碰撞并预览完整公式。
 
 ## 长文档恢复与分包
 
@@ -90,3 +90,13 @@ python recovery/pipeline.py publish --state work/RETURNED.state.json --output AC
 publish 将交付说明.md 写入工作文件夹，将 publication.json 写在已验收状态旁，并返回相应路径和 task_dir；只向 --output 复制已验收 PDF。说明包含源/输出哈希、资源增量、范围、保留问题及恢复方法。工作文件夹从状态所在的 work/、recovery/ 或 recovery-vN/ 推导；其他布局通过 publish --task-dir DIR 明确指定包含状态的工作文件夹。复制前检查说明、记录及成品目标冲突，替换已有目标须 --overwrite。样本的源大小是完整原文件，并明确不是同页压缩比例。普通交付核对冻结依赖。需要重建时执行返回的 recovery_argv，PDF 及伴随文件写入任务目录的 work/rebuild/accepted.rebuilt.pdf。
 
 pipeline-events.jsonl 记录各命令的耗时和结果。失败时保留退出码、stdout 和 stderr，再读取 --state 旁的 last-error.json 定位问题。现有目标需显式 --overwrite。
+
+## 诊断与复核交接
+
+使用 prepare 返回的 command_prefix，再接冻结 pipeline.py 和参数。入口在新进程中使用记录的导入路径并核对依赖版本。原文符号字体提示列出需要注册回退字体或保留原文的常见符号。publish 在复制成品前检查实际恢复命令前缀。
+
+apply 返回 changed_pages、preview_skipped_pages 和 unresolved_by_page，preview_argv 只包含已处理完的变化页。合并后用当前合并 ID 提交后续增量。
+
+局部 build 检查最终交付范围内所有目标的右栏锚点，包括未进入预览的目标页。分包保留 final_source_pages。样本范围外的目标继续记录为省略。链接、字体、溢出及碰撞在 PDF 写出前集中报告，结合 source_link、块、字符及所需与可用尺寸批量处理。每次命令失败的完整诊断保存在 diagnostics/，last-error.json 和 pipeline-events.jsonl 引用该文件。
+
+verify 返回 review_handoff 和 observations_template 路径。复制模板为新的观察文件，由实际查看者填写 reviewer 和已看页面，初始 pages 为空。缺少绑定字段与指纹不符分别诊断。修复后通过 --previous-state 复用有效的部分观察。安排独立复核时，译者完成局部可读性检查，将完整且通过机器核验的候选交接。

@@ -44,6 +44,76 @@ class PracticalPipeline(unittest.TestCase):
         op=self.root/'observations.json';pl.save(op,obs)
         return Namespace(state=str(sp),observations=str(op))
 
+
+    def test_preview_checks_links_to_final_pages_before_serialization(self):
+        doc=fitz.open(self.source)
+        doc[0].insert_link({'kind':fitz.LINK_GOTO,'from':fitz.Rect(20,28,50,43),'page':1})
+        source=self.root/'linked.pdf';doc.save(source);doc.close();self.source=source
+        self.prepared()
+        args=self.args();args.pages='1'
+        with patch.object(fitz.Document,'save') as writer:
+            with self.assertRaises(ValueError) as error:
+                pl.build(args)
+        writer.assert_not_called()
+        self.assertEqual(json.loads(str(error.exception))['link_conflicts'][0]['page'],1)
+        package=self.root/'package'
+        pl.package(Namespace(state=self.sp,pages='1',out=package,owner='fixture'))
+        args.state=package/'state.json';args.pages='all'
+        with self.assertRaisesRegex(ValueError,'link_conflicts'):
+            pl.build(args)
+
+    def test_actual_sample_may_omit_outside_link(self):
+        doc=fitz.open(self.source)
+        doc[0].insert_link({'kind':fitz.LINK_GOTO,'from':fitz.Rect(20,28,50,43),'page':1})
+        source=self.root/'linked.pdf';doc.save(source);doc.close();self.source=source
+        self.prepared(pages='1')
+        result=self.built()
+        self.assertEqual(wf.load(result['state'])['pages'][0]['omitted_links'][0]['target_page'],2)
+
+    def test_preview_skips_unresolved_changed_page(self):
+        self.prepared()
+        state=wf.load(self.sp)
+        edits=self.root/'incomplete.json'
+        pl.save(edits,{'blocks':[{'page':1,'id':state['pages'][0]['blocks'][0]['id'],'method':'unresolved'},
+                                {'page':2,'id':state['pages'][1]['blocks'][0]['id'],'translation':'文中'}]})
+        result=pl.apply_edits(self.args(edits=str(edits)))
+        self.assertEqual(result['changed_pages'],[1,2])
+        self.assertEqual(result['preview_skipped_pages'],[1])
+        self.assertEqual(result['preview_argv'][-1],'2')
+
+    def test_handoff_template_is_bound_and_unobserved(self):
+        self.prepared();result=self.built()
+        verified=pl.verify(Namespace(state=result['state'],previous_state=None))
+        template=wf.load(verified['observations_template'])
+        self.assertEqual(template['pages'],[])
+        self.assertEqual(template['reviewer'],'')
+        self.assertEqual(template['output_sha256'],verified['output_sha256'])
+        self.assertEqual(wf.load(verified['review_handoff'])['review_needed'],[1,2])
+        args=self.observations(result);obs=wf.load(args.observations)
+        obs.pop('output_sha256');pl.save(args.observations,obs)
+        with self.assertRaisesRegex(ValueError,'observation_fields_missing'):
+            pl.review(args)
+
+    def test_runtime_probe_works_in_isolated_process_and_checks_versions(self):
+        self.prepared()
+        state=wf.load(self.sp)
+        self.assertIn('-I',pl.probe_runtime(state,self.sp))
+        config=wf.load(self.sp.parent/'runtime.json');config['packages']['Pillow']='0.0'
+        pl.save(self.sp.parent/'runtime.json',config)
+        with self.assertRaisesRegex(ValueError, 'frozen_runtime_probe_failed'):
+            pl.probe_runtime(state,self.sp)
+
+    def test_each_cli_failure_keeps_its_diagnostic(self):
+        import contextlib,io
+        self.prepared()
+        for name in ('missing-a.pdf','missing-b.pdf'):
+            with contextlib.redirect_stdout(io.StringIO()),contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(pl.main(['build','--state',str(self.sp),'--source',str(self.root/name)]),2)
+        files=list((self.sp.parent/'diagnostics').glob('*.json'))
+        self.assertEqual(len(files),2)
+        self.assertEqual({Path(wf.load(f)['detail']['supplied']).name for f in files},
+                         {'missing-a.pdf','missing-b.pdf'})
+
     def test_package_handoff_atomic_replay_and_reassignment(self):
         self.prepared()
         one = self.root/'work'/'package-a'
@@ -512,7 +582,7 @@ class PracticalPipeline(unittest.TestCase):
         self.prepared();state=wf.load(self.sp);ep=self.root/'local.json'
         pl.save(ep,{'blocks':[{'page':2,'id':state['pages'][1]['blocks'][0]['id'],'translation':'项目'}]})
         result=pl.apply_edits(self.args(edits=str(ep)))
-        self.assertEqual(result['preview_argv'],[sys.executable,str(Path(pl.__file__).resolve()),'build','--state',str(self.sp.resolve()),'--pages','2'])
+        self.assertEqual(result['preview_argv'],pl.runtime_prefix(wf.load(self.sp),self.sp)+[str(Path(pl.__file__).resolve()),'build','--state',str(self.sp.resolve()),'--pages','2'])
         self.assertIn('--previous-state',result['next'])
 
     def test_failed_cli_reports_diagnostic_on_both_streams_without_building(self):
@@ -539,9 +609,9 @@ class PracticalPipeline(unittest.TestCase):
         destination=self.root/'published.pdf'
         pub=pl.publish(Namespace(state=result['state'],output=str(destination),overwrite=False))
         argv=pub['recovery_argv'];before=wf.digest(destination)
-        self.assertEqual(Path(argv[3]),(self.sp.parent/'pipeline.py').resolve())
-        self.assertEqual(Path(argv[6]),Path(result['state']))
-        self.assertEqual(Path(argv[8]),(self.root/'work'/'rebuild'/'accepted.rebuilt.pdf').resolve())
+        self.assertEqual(Path(argv[5]),(self.sp.parent/'pipeline.py').resolve())
+        self.assertEqual(Path(argv[8]),Path(result['state']))
+        self.assertEqual(Path(argv[10]),(self.root/'work'/'rebuild'/'accepted.rebuilt.pdf').resolve())
         completed=subprocess.run(argv,capture_output=True,text=True,encoding='utf-8')
         self.assertEqual(completed.returncode,0,completed.stdout+completed.stderr)
         restored=json.loads(completed.stdout)
@@ -671,7 +741,7 @@ class PracticalPipeline(unittest.TestCase):
         pl.verify(args)
         stale_args = Namespace(state=final['state'], observations=obs.observations)
         before = Path(final['state']).read_bytes()
-        with self.assertRaisesRegex(ValueError, 'fingerprints returned by verify'):
+        with self.assertRaisesRegex(ValueError, 'observation_fingerprint_mismatch'):
             pl.review(stale_args)
         self.assertEqual(Path(final['state']).read_bytes(), before)
 
@@ -679,7 +749,7 @@ class PracticalPipeline(unittest.TestCase):
         bound = wf.load(current.observations)
         for field in ('output_sha256', 'render_index_sha256'):
             pl.save(current.observations, {**bound, field: '0' * 64})
-            with self.assertRaisesRegex(ValueError, 'fingerprints returned by verify'):
+            with self.assertRaisesRegex(ValueError, 'observation_fingerprint_mismatch'):
                 pl.review(current)
             self.assertEqual(Path(final['state']).read_bytes(), before)
         pl.save(current.observations, bound)
