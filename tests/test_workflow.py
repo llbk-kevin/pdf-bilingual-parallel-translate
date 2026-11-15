@@ -71,15 +71,15 @@ class Workflow(unittest.TestCase):
         result=builder.build(self.source,self.sp,self.root/(name+'.pdf'))
         return {**result, 'sha256': w.digest(result['output'])}, w.load(result['state'])
     def test_ti_names_and_missing_numbers(self):
-        self.assertEqual(w.ti_filename('Designing A SEPIC Converter','设计 SEPIC 转换器','SNVA168E',role='original'),
+        self.assertEqual(w.document_filename('Designing A SEPIC Converter','设计 SEPIC 转换器','SNVA168E',role='original', vendor='TI'),
             'snva168e_Designing A SEPIC Converter_设计 SEPIC 转换器.pdf')
-        self.assertEqual(w.ti_filename('Designing A SEPIC Converter','设计 SEPIC 转换器','SNVA168E',role='generated-translation'),
+        self.assertEqual(w.document_filename('Designing A SEPIC Converter','设计 SEPIC 转换器','SNVA168E',role='generated-translation', vendor='TI'),
             'snva168e_Designing A SEPIC Converter_设计 SEPIC 转换器_双语左右对照翻译.pdf')
-        self.assertEqual(w.ti_filename(chinese_title='耦合电感器SEPIC功率级的基本计算',document_id='ZHCACE2',english_document_id='SNVAA43',role='official-chinese'),
+        self.assertEqual(w.document_filename(chinese_title='耦合电感器SEPIC功率级的基本计算',document_id='ZHCACE2',english_document_id='SNVAA43',role='official-chinese', vendor='TI'),
             'snvaa43_zhcace2_耦合电感器SEPIC功率级的基本计算.pdf')
-        self.assertEqual(w.ti_filename('Multiple\nOutput: Title','中文',role='original'),'Multiple Output - Title_中文.pdf')
-        self.assertEqual(w.ti_filename('Title','中文_双语左右对照翻译',role='generated-translation'),'Title_中文_双语左右对照翻译.pdf')
-        self.assertNotIn('slup261',w.ti_filename('Title','中文',role='original'))
+        self.assertEqual(w.document_filename('Multiple\nOutput: Title','中文',role='original', vendor='TI'),'Multiple Output - Title_中文.pdf')
+        self.assertEqual(w.document_filename('Title','中文_双语左右对照翻译',role='generated-translation', vendor='TI'),'Title_中文_双语左右对照翻译.pdf')
+        self.assertNotIn('slup261',w.document_filename('Title','中文',role='original', vendor='TI'))
     def test_assigned_font_not_union(self):
         r,s=self.built();fr=w.check_fonts(r['state'],r['assignments'])
         self.assertTrue(fr['mechanical_pass'],fr)

@@ -106,13 +106,13 @@ class PracticalPipeline(unittest.TestCase):
     def test_each_cli_failure_keeps_its_diagnostic(self):
         import contextlib,io
         self.prepared()
-        for name in ('missing-a.pdf','missing-b.pdf'):
+        for name in ('bad-a','bad-b'):
             with contextlib.redirect_stdout(io.StringIO()),contextlib.redirect_stderr(io.StringIO()):
-                self.assertEqual(pl.main(['build','--state',str(self.sp),'--source',str(self.root/name)]),2)
+                self.assertEqual(pl.main(['build','--state',str(self.sp),'--pages',name]),2)
         files=list((self.sp.parent/'diagnostics').glob('*.json'))
         self.assertEqual(len(files),2)
-        self.assertEqual({Path(wf.load(f)['detail']['supplied']).name for f in files},
-                         {'missing-a.pdf','missing-b.pdf'})
+        self.assertTrue(all(wf.load(f)['command']=='build' for f in files))
+        self.assertIn(Path(wf.load(self.sp.parent/'last-error.json')['diagnostic']).resolve(),[file.resolve() for file in files])
 
     def test_package_handoff_atomic_replay_and_reassignment(self):
         self.prepared()
@@ -585,19 +585,12 @@ class PracticalPipeline(unittest.TestCase):
         self.assertEqual(result['preview_argv'],pl.runtime_prefix(wf.load(self.sp),self.sp)+[str(Path(pl.__file__).resolve()),'build','--state',str(self.sp.resolve()),'--pages','2'])
         self.assertIn('--previous-state',result['next'])
 
-    def test_failed_cli_reports_diagnostic_on_both_streams_without_building(self):
-        import contextlib
-        import io
-        self.prepared();before=self.sp.read_bytes();stdout=io.StringIO();stderr=io.StringIO()
-        with patch.object(ip,'build') as builder, contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-            code=pl.main(['build','--state',str(self.sp),'--source',str(self.root/'missing.pdf'),'--pages','1'])
-        self.assertEqual(code,2);builder.assert_not_called()
-        self.assertEqual(stdout.getvalue(),stderr.getvalue())
-        summary=json.loads(stderr.getvalue());detail=wf.load(summary['report'])['detail']
-        self.assertEqual(detail['code'],'source_override_mismatch')
-        self.assertEqual(Path(detail['expected']),self.source.resolve());self.assertFalse(detail['supplied_exists'])
-        self.assertIn('Omit --source',detail['action']);self.assertEqual(before,self.sp.read_bytes())
-
+    def test_missing_frozen_fields_are_rejected(self):
+        self.prepared()
+        state=wf.load(self.sp);state['layout'].pop('runtime_launcher')
+        pl.save(self.sp,state)
+        with self.assertRaisesRegex(ValueError,'incomplete_current_task_state'):
+            self.built()
 
     def test_publication_recovery_uses_versioned_runner_and_accepted_state(self):
         import subprocess

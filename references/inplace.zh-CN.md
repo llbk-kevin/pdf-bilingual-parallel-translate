@@ -1,15 +1,8 @@
-> 模式说明：默认阅读任务以 [practical](practical.zh-CN.md) 为准。下文严格/低层细节按需使用，不要求普通任务穷尽所有警告、公式复核或独立重建。实际查看记录仍必需。
-
 # 原位翻译：默认构建器与 v3 状态
 
 ## 提取、编辑与构建
 
-需要冻结且可独立再生成的恢复包时，将 scripts/inplace.py 和 scripts/workflow.py 复制到任务 recovery。使用已有合适 Python，或在任务环境安装 requirements.txt。脚本不调用翻译服务。
-
-~~~text
-python inplace.py extract --source SOURCE --state state.json --pages all --profile practical
-python inplace.py build --source SOURCE --state state.json --output ../work/draft.pdf --pages 1,3-5
-~~~
+任务操作统一使用 [pipeline 流程](practical.zh-CN.md)，由 prepare 冻结完整运行环境。本参考定义构建器的数据与几何合同。
 
 extract 创建输入清单，不完成翻译。它记录原文 SHA-256、页数、可见几何及不可改写的字形事实。含字母的原生片段默认 unresolved；纯数字/符号默认 preserve，但仍须复核。图片/转曲文字不自动识别，隐藏 OCR 另作标识。设置 inventory_reviewed 前对照可见内容；原生文字少不等于无需翻译。
 
@@ -78,4 +71,4 @@ rotation 支持逆时针 0/90/180/270 度；提取保留 source_angle 与 orthog
 
 生成状态用 `annotation_mappings` 记录迁移的静态批注，用 `redaction_regions` 记录选中字形的原文绘制轨迹框。audit 与 render 都在相同像素原点比较右侧和原文，仅遮罩这些原文字形区域、实际译文字形轮廓框、明确的浮层覆盖、新增编号与移动后的可见链接边框。栅格边缘留两像素余量；其余区域任何像素超过配置的通道容差即失败（`right_graphics_changed_outside_recorded_regions`）。`allowed_bbox` 不会使整段区域免检；缺少删除区域记录会失败，不跳过比较。该检查证明所选分辨率下的局部图形保留，不能代替语义与视觉审阅。
 
-显式 document.delivery_scope: sample 的选页样本记录范围外链接为省略；其他局部构建仍需包含内部链接目标。无跳转目标的书签标题保留原树结构。字号下限为 null 时视为固定请求字号。
+显式 document.delivery_scope: sample 的选页样本记录范围外链接为省略；局部预览仍检查最终交付范围内的右栏锚点，实际跳转按预览范围省略。无跳转目标的书签标题保留原树结构。字号下限为 null 时视为固定请求字号。

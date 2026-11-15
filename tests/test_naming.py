@@ -8,7 +8,7 @@ import workflow as w
 
 class Naming(unittest.TestCase):
     def test_explicit_roles(self):
-        for fn in (w.document_filename, w.ti_filename):
+        for fn in (w.document_filename,):
             with self.assertRaises(TypeError): fn('Title', '标题')
         with self.assertRaises(ValueError): w.document_filename('Title', '标题', role='pdf')
         self.assertEqual(w.document_filename('Title', '标题', role='original'), 'Title_标题.pdf')
@@ -18,8 +18,8 @@ class Naming(unittest.TestCase):
     def test_generic_identifiers_keep_official_form(self):
         for identity in ('DOC-012A', 'AB1200', '12345'):
             self.assertTrue(w.document_filename('Title', '标题', identity, role='original').startswith(identity+'_'))
-        self.assertTrue(w.ti_filename('Title', '标题', 'SLVA317B', role='original').startswith('slva317b_'))
-        with self.assertRaises(ValueError): w.ti_filename('Title', '标题', 'DOC-012A', role='original')
+        self.assertTrue(w.document_filename('Title', '标题', 'SLVA317B', role='original', vendor='TI').startswith('slva317b_'))
+        with self.assertRaises(ValueError): w.document_filename('Title', '标题', 'DOC-012A', role='original', vendor='TI')
 
     def test_missing_numbers_and_non_english_titles(self):
         for number in (None, '', ' '):
@@ -27,7 +27,7 @@ class Naming(unittest.TestCase):
                              '日本語の文章_日文文章.pdf')
         self.assertEqual(w.document_filename('中文文章', '中文文章', role='original', source_is_chinese=True), '中文文章.pdf')
         self.assertEqual(w.document_filename(chinese_title='官方中文标题', role='official-chinese'), '官方中文标题.pdf')
-        self.assertEqual(w.ti_filename(chinese_title='中文', english_document_id='SNVAA43', role='official-chinese'),
+        self.assertEqual(w.document_filename(chinese_title='中文', english_document_id='SNVAA43', role='official-chinese', vendor='TI'),
                          'snvaa43_中文.pdf')
 
     def test_papers_omit_identifiers_and_versions_remain(self):

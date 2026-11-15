@@ -10,7 +10,7 @@ import sys
 def main():
     config = json.loads(Path(__file__).with_name('runtime.json').read_text(encoding='utf-8'))
     sys.path[:] = config['paths']
-    for module in ('pypdf', 'pypdfium2', 'pymupdf', 'PIL.Image', 'fontTools'):
+    for module in ('pypdf', 'pypdfium2', 'pymupdf', 'PIL.Image', 'fontTools', 'psutil'):
         importlib.import_module(module)
     actual = {name: importlib.metadata.version(name) for name in config['packages']}
     if actual != config['packages']:

@@ -37,7 +37,6 @@
 
 scripts/workflow.py 提供 document_filename(source_title, chinese_title, document_id=None, *, role, version=None, source_is_chinese=False, paper=False, vendor=None, english_document_id=None)。role 必填，可选 original、generated-translation 或 official-chinese。中文原文设置 source_is_chinese=True，论文设置 paper=True，vendor='TI' 启用 TI 编号规范化。函数只格式化已确认的元数据并返回一个文件名，不识别文档或执行改名。
 
-TI 包装入口 ti_filename(english_title, chinese_title, document_id=None, *, role, english_document_id=None, version=None) 同样需要显式 role。
 
 ~~~python
 from workflow import document_filename

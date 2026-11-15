@@ -30,3 +30,5 @@ Keep user inputs, translations, renders, recovery files, fonts and credentials o
 Compare the same input when changing batch drawing, PDF serialization or worker count. Record stage wall/CPU time, peak working set, state bytes, object counts and rendered pages. Check pixels, fonts, navigation and shared resources before changing defaults. The build job and pipeline event records supply timing and scope. Use isolated state copies for comparisons; reserve a full-size trial for a separate maintenance run.
 
 Add a focused regression when a concrete failure reveals a gap. Keep task-specific evidence in the task folder.
+
+For behavior changes, inspect related rules, callers and tests and update conflicts at their source. Maintain the current workflow/state contract and remove obsolete adapters and duplicate entry points. Record concrete remaining issues in the local maintenance report.

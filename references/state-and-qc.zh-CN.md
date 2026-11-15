@@ -29,3 +29,5 @@ check-state --final 核对声明范围的页覆盖、实际查看记录、字体
 publish 按原字节复制成品，更新 output.path，保持证据与相同字节绑定。目录及按需恢复方法见 [building.zh-CN.md](building.zh-CN.md)。恢复时先核对原文指纹，再加载保存的译文、映射和布局决定。预检前确定文件名和目录，使状态引用稳定。
 
 两份 PDF 各自包含阅读资源。工作目录保存可编辑状态和审核证据。用户删除工作目录后，须恢复这些文件才能重新检查状态或复用证据。
+
+当前任务的 layout.runtime_launcher、layout.runtime_packages、layout.inputs 和 layout.fonts 必需，由 prepare 生成。output.assignments 明确记录字体分配文件路径，发布后仍从该路径读取。

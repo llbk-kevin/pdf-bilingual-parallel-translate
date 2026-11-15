@@ -37,7 +37,6 @@ Official Chinese: snvaa43_zhcace2_耦合电感器SEPIC功率级的基本计算.p
 
 scripts/workflow.py provides document_filename(source_title, chinese_title, document_id=None, *, role, version=None, source_is_chinese=False, paper=False, vendor=None, english_document_id=None). role is required: original, generated-translation or official-chinese. For Chinese originals set source_is_chinese=True; for papers set paper=True. vendor='TI' enables TI number normalization. The function formats confirmed metadata and returns one filename; it neither identifies documents nor renames files.
 
-The TI wrapper ti_filename(english_title, chinese_title, document_id=None, *, role, english_document_id=None, version=None) also requires an explicit role.
 
 ~~~python
 from workflow import document_filename

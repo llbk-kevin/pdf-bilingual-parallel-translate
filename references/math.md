@@ -1,12 +1,10 @@
-> Profile scope: default reading tasks follow [practical](practical.md). The strict/low-level details below are consulted as needed, not requirements to exhaust warnings, formula reviews or independent rebuilding in ordinary tasks. Actual viewing evidence remains required.
-
 # Mathematical notation and source uncertainty
 
 Read and apply this reference when the current source contains mathematical notation.
 
 Use true subscript/superscript positioning and preserve Greek/Latin case, minus, plus/minus, approximate/equality relations and equation numbers. Avoid Unicode subscript characters when the font lacks them: position the normal glyph as a subscript instead. Never substitute an approximate relation with equality merely to avoid a missing glyph.
 
-Short inline fractions may use a slash when unambiguous. Preserve stacked fractions, grouping, roots and aligned multiline structure when flattening would obscure scope or correspondence. Break long equations at meaningful operators; keep their number and repeated occurrences. Use text/vector math or an appropriate source vector fragment; do not rasterize formulas as a generic fallback. The minimal builder supports sub/sup markup only; complex fractions need task-specific drawing.
+Short inline fractions may use a slash when unambiguous. Preserve stacked fractions, grouping, roots and aligned multiline structure when flattening would obscure scope or correspondence. Break long equations at meaningful operators; keep their number and repeated occurrences. Use text/vector math or an appropriate source vector fragment; do not rasterize formulas as a generic fallback. Use sub/sup markup for inline text and preserve original vectors for complex independent formulas.
 
 Inventory formulas separately from adjacent prose. Compare symbols, exponents, sign, units and qualifiers against a zoomed source. Read definitions before selecting translated variable names. Check any stated bounds, conditions and proportional/inverse wording as explicit semantic items; number-string matching is only a clue.
 

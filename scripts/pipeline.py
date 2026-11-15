@@ -19,37 +19,20 @@ from pathlib import Path
 import inplace as ip
 import pdf_tools as pt
 import workflow as wf
+from resources import worker_request
 
 
 def worker_count(args):
-    requested = getattr(args, 'workers', 1)
-    if requested == 1:
-        return 1
-    if (os.cpu_count() or 1) < 2:
-        return 1
-    if sys.platform == 'win32':
-        import ctypes
-        class MemoryStatus(ctypes.Structure):
-            _fields_ = [('length', ctypes.c_uint32), ('load', ctypes.c_uint32),
-                        *[(name, ctypes.c_uint64) for name in
-                          ('total', 'available', 'page', 'page_available', 'virtual',
-                           'virtual_available', 'virtual_extended')]]
-        memory = MemoryStatus()
-        memory.length = ctypes.sizeof(memory)
-        if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(memory)) or memory.available < 3 * 1024**3:
-            return 1
-    return requested
+    return worker_request(getattr(args, 'workers', 'auto'))
 
 
 def runtime_packages():
     from importlib.metadata import version
-    return {p: version(p) for p in ('pypdf', 'pypdfium2', 'pymupdf', 'Pillow', 'fonttools')}
+    return {p: version(p) for p in ('pypdf', 'pypdfium2', 'pymupdf', 'Pillow', 'fonttools', 'psutil')}
 
 
 def check_runtime(state):
-    expected = state['layout'].get('runtime_packages')
-    if expected is None:
-        return
+    expected = state['layout']['runtime_packages']
     current = runtime_packages()
     changed = {p: {'expected': v, 'actual': current.get(p)} for p, v in expected.items()
                if current.get(p) != v}
@@ -69,26 +52,29 @@ def compact_inventory(state):
                      'blocks':[{k:b[k] for k in keys if k in b} for b in p['blocks']]} for p in state['pages']]}
 
 
+def task_state(path):
+    state = wf.require_state(load(path))
+    layout = state['layout']
+    missing = [key for key in ('runtime_launcher','runtime_packages','inputs','fonts') if key not in layout]
+    if missing:
+        raise ValueError(json.dumps({'code':'incomplete_current_task_state','fields':missing}))
+    return state
+
+
 def runtime_prefix(state, sp):
-    launcher = state['layout'].get('runtime_launcher')
-    if launcher:
-        return [sys.executable, '-I', '-X', 'utf8', str(wf.resolve(sp.parent, launcher).resolve())]
-    return [sys.executable, '-X', 'utf8']
+    return [sys.executable, '-I', '-X', 'utf8',
+            str(wf.resolve(sp.parent,state['layout']['runtime_launcher']).resolve())]
 
 
 def probe_runtime(state, sp):
     prefix = runtime_prefix(state, sp)
-    if state['layout'].get('runtime_launcher'):
-        command = prefix + ['--probe']
-    else:
-        code = "import importlib.metadata as m,json;print(json.dumps({p:m.version(p) for p in " + repr(list(runtime_packages())) + "}))"
-        command = prefix + ['-c', code]
-    result = subprocess.run(command, capture_output=True, text=True, encoding='utf-8', check=False,
-                            **({'creationflags': subprocess.CREATE_NO_WINDOW} if sys.platform == 'win32' else {}))
+    command = prefix + ['--probe']
+    result = subprocess.run(command,capture_output=True,text=True,encoding='utf-8',
+                            **({'creationflags':subprocess.CREATE_NO_WINDOW} if sys.platform=='win32' else {}))
     if result.returncode:
-        raise ValueError(json.dumps({'code':'frozen_runtime_probe_failed', 'argv':command,
-                                     'returncode':result.returncode, 'stderr':result.stderr[-4000:]}))
-    if json.loads(result.stdout) != state['layout'].get('runtime_packages', runtime_packages()):
+        raise ValueError(json.dumps({'code':'frozen_runtime_probe_failed','argv':command,
+                                     'returncode':result.returncode,'stderr':result.stderr[-4000:]}))
+    if json.loads(result.stdout) != state['layout']['runtime_packages']:
         raise ValueError('Recovery command cannot load the frozen dependency versions')
     return prefix
 
@@ -109,7 +95,7 @@ def prepare(args):
                              selected_source_pages=selected)
     # Freeze a runnable recovery package. Use this copy for subsequent commands.
     here=Path(__file__).parent
-    for name in ('pipeline.py','inplace.py','pdf_tools.py','workflow.py','runtime.py'):
+    for name in ('pipeline.py','inplace.py','pdf_tools.py','workflow.py','runtime.py','resources.py','coordination.py'):
         dst=sp.parent/name
         if dst.resolve()!=(here/name).resolve():shutil.copy2(here/name,dst)
     req=here.parent/'requirements.txt'
@@ -121,7 +107,7 @@ def prepare(args):
     save(sp.parent/'runtime.json', {'paths':[str(Path(p).resolve()) for p in sys.path if p],
                                     'packages':runtime_packages()})
     state['layout']['runtime_launcher'] = ref(sp.parent/'runtime.py', sp.parent)
-    for name in ('runtime.py', 'runtime.json'):
+    for name in ('runtime.py', 'runtime.json', 'resources.py'):
         state['layout'].setdefault('inputs', []).append({'path':name, 'sha256':wf.digest(sp.parent/name)})
     prefix = probe_runtime(state, sp)
     risks=[]
@@ -157,7 +143,7 @@ def prepare(args):
                           'characters':[chr(c) for c in missing], 'action':'Preserve source symbols or register a fallback font with --font.'})
     save(sp,state);save(sp.parent/'inventory.json',compact_inventory(state));save(sp.parent/'preflight.json',{'risks':risks})
     return {'state':str(sp),'runner':str(sp.parent/'pipeline.py'),'command_prefix':prefix,'inventory':str(sp.parent/'inventory.json'),
-            'state_written_bytes':sp.stat().st_size, 'extract_workers':min(workers, len(selected)),
+            'state_written_bytes':sp.stat().st_size, 'extract_workers':result['extract_workers'], 'resources':result['resources'],
             'preflight':str(sp.parent/'preflight.json'),'pages':selected,'profile':state['layout']['review_profile'],
             'risk_counts':counts(risks), 'compatibility_blockers':counts(r for r in risks if r['code'] in
                 {'interaction_preflight','link_action','bookmark_action','bookmark_tree','link_destination_outside_scope','source_pane_probe_failed'}),
@@ -291,7 +277,7 @@ def package_dependencies(state):
 
 def package(args):
     sp = Path(args.state).resolve()
-    state = wf.require_state(load(sp))
+    state = task_state(sp)
     if state.get('output') or state.get('package_preview'):
         raise ValueError('Export packages from the main authoring state')
     out = Path(args.out).resolve()
@@ -323,8 +309,7 @@ def package(args):
     for entry, key in [(state['source'], 'path'), *((f, 'source') for f in state['layout']['fonts']),
                        *((asset, 'path') for asset in state['layout'].get('inputs', []))]:
         entry[key] = ref(wf.resolve(sp.parent, entry[key]), out)
-    if state['layout'].get('runtime_launcher'):
-        state['layout']['runtime_launcher'] = ref(wf.resolve(sp.parent,state['layout']['runtime_launcher']),out)
+    state['layout']['runtime_launcher'] = ref(wf.resolve(sp.parent,state['layout']['runtime_launcher']),out)
     builder = state['layout'].get('builder')
     if builder:
         builder['path'] = ref(wf.resolve(sp.parent, builder['path']), out)
@@ -382,7 +367,7 @@ def package_status(state, directory, built, reviewed, published):
 
 def apply_edits(args):
     sp = Path(args.state).resolve()
-    state = wf.require_state(load(sp))
+    state = task_state(sp)
     changed = set()
     paths = [args.edits] if isinstance(args.edits, (str, Path)) else args.edits
     packages = getattr(args, 'package', None) or []
@@ -504,7 +489,7 @@ def candidate_progress(sp, state, selected):
 
 def status(args):
     sp = Path(args.state).resolve()
-    state = wf.require_state(load(sp))
+    state = task_state(sp)
     selected = set(ip.selected_pages(args.pages, state['source']['page_count']))
     pages = {p['source_page']: p for p in state['pages'] if p['source_page'] in selected}
     pending = [n for n, p in pages.items() if any(b['method'] == 'unresolved' for b in p['blocks'])]
@@ -539,13 +524,7 @@ def status(args):
 
 
 def build(args):
-    sp=Path(args.state).resolve();state=wf.require_state(load(sp));source=source_path(state,sp)
-    if args.source and Path(args.source).resolve()!=source:
-        supplied=Path(args.source).resolve()
-        raise ValueError(json.dumps({'code':'source_override_mismatch','expected':str(source),
-                                    'supplied':str(supplied),'supplied_exists':supplied.is_file(),
-                                    'action':'Omit --source to use the frozen authoring source; do not change state or repeat this command unchanged.'},ensure_ascii=False))
-    if args.profile and args.profile!=state['layout']['review_profile']:raise ValueError('Set profile at prepare; do not silently change an existing task')
+    sp=Path(args.state).resolve();state=task_state(sp);source=source_path(state,sp)
     check_runtime(state)
     garbage = getattr(args, 'garbage', None) or 4
     key=wf.canonical({'state':pt.content_hash(state),'source':wf.digest(source),'pages':args.pages,'garbage':garbage,
@@ -635,10 +614,9 @@ def pages_needing_review(state, report, index, records):
     return sorted(pending)
 
 
-def verification_assignments(sp, state, output):
-    # Published states retain the verified assignment sidecar in the task folder.
-    assignments = state.get('qc', {}).get('font_assignments')
-    return wf.resolve(sp.parent, assignments) if assignments else output.with_suffix('.font-runs.json')
+def verification_assignments(sp, state):
+    return wf.resolve(sp.parent,state['output']['assignments'])
+
 
 
 def verification_paths(sp, state):
@@ -660,7 +638,7 @@ def verification_paths(sp, state):
     key = wf.canonical({
         'output': state['output']['sha256'], 'source': state['source']['sha256'],
         'content': pt.content_hash(state, mechanical=True),
-        'assignments': wf.digest(verification_assignments(sp, state, output)),
+        'assignments': wf.digest(verification_assignments(sp, state)),
         'tools': [wf.digest(module.__file__) for module in (pt, wf, ip)],
         'runtime': runtime_packages(),
         'renderer': str(pt.pdfium.PDFIUM_INFO), 'evidence_schema': 'pipeline-v2',
@@ -669,13 +647,13 @@ def verification_paths(sp, state):
 
 
 def verify(args):
-    sp=Path(args.state).resolve();state=wf.require_state(load(sp));source=source_path(state,sp)
+    sp=Path(args.state).resolve();state=task_state(sp);source=source_path(state,sp)
     paths = args.previous_state or []
     if isinstance(paths, (str, Path)):
         paths = [paths]
     output=wf.resolve(sp.parent,state['output']['path']).resolve();checkdir=verification_paths(sp,state)
     content_sha = pt.content_hash(state)
-    assignments = verification_assignments(sp, state, output)
+    assignments = verification_assignments(sp, state)
     manifest=checkdir/'verification.json';cached=False
     if manifest.exists():
         old=load(manifest)
@@ -789,7 +767,7 @@ def verify(args):
             'rendered_pages':0 if cached else report.get('rendered_pages', len(index['pages'])),
             'source_rendered_pages':0 if cached else report.get('source_rendered_pages', len(index['pages'])),
             'mechanical_reused_pages':len(index['pages']) if cached else report.get('mechanical_reused_pages', 0),
-            'render_workers':report.get('workers', 1),
+            'render_workers':report['workers'], 'resources':report['resources'],
             'state_written_bytes':state_written_bytes,
             'next':('Resolve the listed mechanical blockers before delivery.' if hard or not fonts['mechanical_pass'] else
                     'Open the listed pages and submit actual observations via review.' if pending else
@@ -798,7 +776,7 @@ def verify(args):
 
 
 def review(args):
-    sp=Path(args.state).resolve();state=wf.require_state(load(sp));observations=load(args.observations)
+    sp=Path(args.state).resolve();state=task_state(sp);observations=load(args.observations)
     reviewer=observations.get('reviewer')
     if not reviewer:raise ValueError('Actual reviewer required')
     # Use the evidence bound by verify, not a path recomputed from today's runner.
@@ -927,7 +905,7 @@ def preflight_publication(targets,overwrite):
 
 
 def publish(args):
-    sp=Path(args.state).resolve();state=wf.require_state(load(sp));result=pt.check_state(sp,True,state=state)
+    sp=Path(args.state).resolve();state=task_state(sp);result=pt.check_state(sp,True,state=state)
     if not result['ready_for_delivery']:raise ValueError(json.dumps(result['errors'],ensure_ascii=False))
     destination=Path(args.output).resolve();source=source_path(state,sp)
     candidate=wf.resolve(sp.parent,state['output']['path']).resolve()
@@ -983,7 +961,9 @@ def main(argv=None):
     for name in ('prepare','apply','build','verify','review','publish','status','package'):
         p=subs.add_parser(name);p.add_argument('--state',required=True);p.add_argument('--overwrite',action='store_true')
         if name in ('prepare','build'):
-            p.add_argument('--source',required=name=='prepare');p.add_argument('--pages',default='all');p.add_argument('--profile',choices=('practical','strict'))
+            p.add_argument('--pages',default='all')
+        if name=='prepare':
+            p.add_argument('--source',required=True);p.add_argument('--profile',choices=('practical','strict'),default='practical')
         if name=='prepare':p.add_argument('--font',action='append')
         if name in ('build','publish'):p.add_argument('--output',required=name=='publish')
         if name=='build':p.add_argument('--garbage',type=int,choices=(2,4),help='Compare MuPDF write modes')
@@ -999,7 +979,7 @@ def main(argv=None):
             p.add_argument('--out',required=True)
             p.add_argument('--owner',help='Actual subagent identifier for handoff')
         if name=='verify':p.add_argument('--previous-state',action='append')
-        if name in ('prepare', 'verify'):p.add_argument('--workers',type=int,choices=(1,2),default=1)
+        if name in ('prepare', 'verify'):p.add_argument('--workers',type=worker_request,default='auto')
         if name=='review':p.add_argument('--observations',required=True)
         if name=='publish':p.add_argument('--task-dir',help='Working folder for delivery notes and optional rebuilding; inferred from work/ or recovery[-vN]/')
     args=parser.parse_args(argv);started=time.monotonic();success=False;result={};diagnostic=None
@@ -1037,7 +1017,7 @@ def main(argv=None):
         if diagnostic:event['diagnostic']=str(diagnostic)
         if args.command != 'status':
             event.update({k: result[k] for k in ('rendered_pages', 'source_rendered_pages', 'mechanical_reused_pages',
-                                                 'state_written_bytes', 'cached', 'job') if k in result})
+                                                 'state_written_bytes', 'cached', 'job', 'resources') if k in result})
             for k in ('render_workers', 'extract_workers'):
                 if k in result:
                     event[k] = result[k]

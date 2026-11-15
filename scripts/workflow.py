@@ -154,14 +154,6 @@ def document_filename(source_title=None, chinese_title=None, document_id=None, *
     return filename
 
 
-def ti_filename(english_title=None, chinese_title=None, document_id=None, *,
-                role, english_document_id=None, version=None):
-    """TI wrapper; callers must specify the actual file role explicitly."""
-    return document_filename(english_title, chinese_title, document_id, role=role,
-                             version=version, vendor='TI',
-                             english_document_id=english_document_id)
-
-
 def mechanical_page(page):
     # Inventory acknowledgement belongs to the reviewer, not the PDF or comparison.
     return {k: v for k, v in page.items() if k not in ('inventory_reviewed', 'visual_text_review')}

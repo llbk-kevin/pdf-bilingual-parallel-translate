@@ -14,6 +14,8 @@ import math
 import os
 import re
 import sys
+import time
+from resources import WorkerBudget, register_worker, peak_memory
 from pathlib import Path
 
 from pypdf import PdfReader
@@ -616,9 +618,10 @@ def cache_png(data, path):
         entry.replace(path.with_suffix('.sha256'))
 
 
-def open_worker_documents(source, output, password):
+def open_worker_documents(source, output, password, database, lease):
     import atexit
     global _WORKER_SOURCE, _WORKER_OUTPUT, _PASSWORD
+    register_worker(database, lease)
     _PASSWORD = password
     _WORKER_SOURCE, _WORKER_OUTPUT = open_document(source), open_document(output)
     atexit.register(_WORKER_SOURCE.close)
@@ -630,7 +633,14 @@ def compare_page(i, j, *args):
         return compare_page_images(sp, op, j, *args)
 
 
-def compare_page_images(sp, op, j, rect, page, compare_right, thresholds,
+def compare_page_images(*args):
+    started = time.process_time()
+    result = _compare_page_images(*args)
+    return {**result, 'worker_cpu_seconds':time.process_time()-started,
+            'worker_peak_bytes':peak_memory()}
+
+
+def _compare_page_images(sp, op, j, rect, page, compare_right, thresholds,
                         cache, source_key, appearance_key, destination):
     dpi, tolerance, ratio, max_pixels = thresholds
     record_path = Path(cache)/(appearance_key+'.json') if cache and appearance_key else None
@@ -691,7 +701,7 @@ def compare_page_images(sp, op, j, rect, page, compare_right, thresholds,
 
 
 def audit(source, output, state=None, dpi=144, pixel_tolerance=16,
-          max_changed_ratio=0.001, max_pixels=40000000, render_dir=None, *, cache=None, workers=1):
+          max_changed_ratio=0.001, max_pixels=40000000, render_dir=None, *, cache=None, workers='auto'):
     if state is not None:
         require_state(state)
     with checked_reader(source) as sr, checked_reader(output) as outreader, \
@@ -761,12 +771,14 @@ def audit_documents(source, output, sr, outreader, sm, om, source_doc, result_do
     # Keep a small rolling queue so Windows spawn never retains a book of rasters.
     from concurrent.futures import ProcessPoolExecutor
     from multiprocessing import get_context
-    pool = (ProcessPoolExecutor(max_workers=workers, mp_context=get_context('spawn'),
-                                initializer=open_worker_documents, initargs=(source, output, _PASSWORD))
-            if workers > 1 else None)
-    futures = {}
     jobs = [(i, m['output_page']-1) for i, m in sorted(mapping.items())
             if 0 <= i < len(source_doc) and 0 <= m['output_page']-1 < len(result_doc)]
+    largest_pixels = max((sm['pages'][i]['visible_size_pt'][0]*sm['pages'][i]['visible_size_pt'][1]*(dpi/72)**2
+                          for i,j in jobs), default=1)
+    budget = WorkerBudget(workers, max(1,len(jobs)), peak_memory()+largest_pixels*48, 'render',
+                          parallel_hint=max(1,math.ceil(largest_pixels*len(jobs)/16_000_000)))
+    pool = None
+    futures = {}
     version = sha256_file(__file__)
     appearance_memo = {}
     def params(i, j):
@@ -788,7 +800,12 @@ def audit_documents(source, output, sr, outreader, sm, om, source_doc, result_do
             futures[i] = pool.submit(compare_page, i, j, rect, mask_inputs, *rest)
 
     job_iter = iter(jobs)
+    budget.__enter__()
+    workers = budget.workers
     try:
+        if workers > 1:
+            pool = ProcessPoolExecutor(max_workers=workers, mp_context=get_context('spawn'),
+                       initializer=open_worker_documents, initargs=(source,output,_PASSWORD,str(budget.database),budget.id))
         if pool:
             for _ in range(workers):
                 enqueue()
@@ -856,6 +873,7 @@ def audit_documents(source, output, sr, outreader, sm, om, source_doc, result_do
                 enqueue()
             else:
                 comparison = compare_page_images(sp, op, j, *params(i, j))
+            budget.record(comparison)
             rendered_count += comparison['rendered']
             source_rendered_count += comparison['source_rendered']
             pixels = comparison['comparison']
@@ -897,8 +915,11 @@ def audit_documents(source, output, sr, outreader, sm, om, source_doc, result_do
                           "small_chinese_characters": len(small), "right_outside_regions":right_comparison})
             sp.close(); op.close()
     finally:
-        if pool:
-            pool.shutdown(cancel_futures=True)
+        try:
+            if pool:
+                pool.shutdown(cancel_futures=True)
+        finally:
+            budget.__exit__()
     expected_bookmarks = [{**b, "page": int(mapping[b["page"]-1]["output_page"])
                            if b["page"] and b["page"]-1 in mapping else b["page"]}
                           for b in sm["bookmarks"] if not subset or not b["page"] or b["page"]-1 in mapping]
@@ -922,6 +943,7 @@ def audit_documents(source, output, sr, outreader, sm, om, source_doc, result_do
             "render_dpi": dpi, "render_method":RENDER_METHOD, "pages": pages, "findings": findings,
             "rendered_pages": rendered_count, "source_rendered_pages": source_rendered_count,
             "mechanical_reused_pages": len(pages) - rendered_count, "workers": workers,
+            "resources":budget.report(),
             "page_content_streams":{"source":sc_streams,"output":oc_streams},
             "finding_summary":dict(collections.Counter(x["code"] for x in findings)),
             "mechanical_pass": not any(x["severity"]=="error" for x in findings),

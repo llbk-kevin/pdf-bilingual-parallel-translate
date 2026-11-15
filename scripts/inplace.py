@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Extract and build source-faithful in-place bilingual pages (state v3)."""
 from __future__ import annotations
-import argparse
 import io
 import json
 import math
@@ -15,6 +14,8 @@ from contextlib import closing
 from pathlib import Path
 import pymupdf as fitz
 from workflow import digest, canonical, resolve, pagination_items, state_header_error
+
+from resources import WorkerBudget, register_worker, peak_memory, worker_request
 
 METHODS = {'replace', 'cover', 'preserve', 'unresolved'}
 
@@ -178,17 +179,20 @@ def _extract_page(doc, n, output_number):
 _extract_worker_doc = None
 
 
-def _init_extract_worker(source, password):
+def _init_extract_worker(source, password, database, lease):
     global _extract_worker_doc
+    register_worker(database, lease)
     _extract_worker_doc = open_source(source, password)
 
 
 def _extract_pages_task(rows):
-    return [_extract_page(_extract_worker_doc, n, output_number) for output_number, n in rows]
+    started = time.process_time()
+    pages = [_extract_page(_extract_worker_doc, n, output_number) for output_number, n in rows]
+    return {'pages':pages, 'worker_cpu_seconds':time.process_time()-started, 'worker_peak_bytes':peak_memory()}
 
 
 def extract(source, state_path, pages='all', overwrite=False, password=None, *,
-            profile='practical', workers=1):
+            profile='practical', workers='auto'):
     source, state_path = Path(source).resolve(), Path(state_path).resolve()
     if source == state_path:
         raise ValueError('State must not overwrite the original')
@@ -205,23 +209,39 @@ def extract(source, state_path, pages='all', overwrite=False, password=None, *,
                        'coordinate_system':'visible-page-top-left-points',
                        'pagination_strategy': None}, 'glossary':[], 'issues':[], 'pages':[], 'qc':{}}
         rows = list(enumerate(selected, 1))
-        if workers not in (1, 2):
-            raise ValueError('workers must be 1 or 2')
-        if workers == 1 or len(rows) < 2:
-            state['pages'] = [_extract_page(doc, n, i) for i, n in rows]
-        else:
-            from concurrent.futures import ProcessPoolExecutor
-            from multiprocessing import get_context
-
-            # Each worker owns its document. Small batches bound IPC overhead.
-            size = min(4, (len(rows)+1)//2)
-            batches = [rows[i:i+size] for i in range(0, len(rows), size)]
-            with ProcessPoolExecutor(max_workers=workers, mp_context=get_context('spawn'),
-                                     initializer=_init_extract_worker, initargs=(source, password)) as pool:
-                for result in pool.map(_extract_pages_task, batches):
-                    state['pages'].extend(result)
+        worker_request(workers)
+        candidates = {rows[0], rows[len(rows)//2], rows[-1]}
+        sample = max(candidates, key=lambda row: (doc[row[1]-1].rect.get_area(), len(doc[row[1]-1].get_text())))
+        metrics = []
+        with WorkerBudget(1, 1, peak_memory(), 'extract-sample') as budget:
+            started = time.process_time()
+            state['pages'] = [_extract_page(doc, sample[1], sample[0])]
+            budget.record({'worker_cpu_seconds':time.process_time()-started, 'worker_peak_bytes':peak_memory()})
+            metrics.append(budget.report())
+        remaining = [row for row in rows if row != sample]
+        if remaining:
+            with WorkerBudget(workers, len(remaining), peak_memory(), 'extract',
+                              parallel_hint=max(1,math.ceil(metrics[0]['worker_cpu_seconds']*len(remaining)/.5))) as budget:
+                if budget.workers == 1:
+                    started = time.process_time()
+                    state['pages'].extend(_extract_page(doc, n, i) for i, n in remaining)
+                    budget.record({'worker_cpu_seconds':time.process_time()-started, 'worker_peak_bytes':peak_memory()})
+                else:
+                    from concurrent.futures import ProcessPoolExecutor
+                    from multiprocessing import get_context
+                    size = min(4, max(1, math.ceil(len(remaining)/budget.workers)))
+                    batches = [remaining[i:i+size] for i in range(0,len(remaining),size)]
+                    with ProcessPoolExecutor(max_workers=budget.workers, mp_context=get_context('spawn'),
+                            initializer=_init_extract_worker,
+                            initargs=(source,password,str(budget.database),budget.id)) as pool:
+                        for result in pool.map(_extract_pages_task,batches):
+                            state['pages'].extend(result['pages'])
+                            budget.record(result)
+                metrics.append(budget.report())
+        state['pages'].sort(key=lambda page:page['output_page'])
         write_json(state_path,state)
-        return {'state':str(state_path),'pages':selected,'schema_version':3}
+        return {'state':str(state_path),'pages':selected,'schema_version':3,
+                'extract_workers':max(m['workers'] for m in metrics), 'resources':metrics}
     finally:
         doc.close()
 
@@ -1631,7 +1651,8 @@ def _build(source, state_path, output, pages, overwrite, password, preview,
             if state['layout'].get('runtime_launcher'):
                 state['layout']['runtime_launcher']=relative(resolve(state_path.parent,state['layout']['runtime_launcher']),output.parent)
             state['source']['path']=relative(source,output.parent)
-            state['output']={'path':output.name,'sha256':candidate_sha}
+            state['output']={'path':output.name,'sha256':candidate_sha,
+                             'assignments':relative(destinations[2],output.parent)}
             if preview:state['output']['preview']=True
             for reg in state['layout']['fonts']:
                 reg['source']=relative(resolve(state_path.parent,reg['source']),output.parent)
@@ -1659,30 +1680,3 @@ def _build(source, state_path, output, pages, overwrite, password, preview,
         src.close()
         if not out.is_closed:
             out.close()
-
-def main(argv=None):
-    if hasattr(sys.stdout,'reconfigure'):
-        sys.stdout.reconfigure(encoding='utf-8');sys.stderr.reconfigure(encoding='utf-8')
-    parser=argparse.ArgumentParser(description=__doc__)
-    sub=parser.add_subparsers(dest='command',required=True)
-    for command in ('extract','build'):
-        p=sub.add_parser(command);p.add_argument('--source',required=True);p.add_argument('--state',required=True)
-        p.add_argument('--pages',default='all');p.add_argument('--overwrite',action='store_true');p.add_argument('--password-env')
-        if command=='build':
-            p.add_argument('--output',required=True)
-            p.add_argument('--garbage',type=int,choices=(2,4),default=4)
-        else:
-            p.add_argument('--profile', choices=('practical', 'strict'), default='practical')
-            p.add_argument('--workers',type=int,choices=(1,2),default=1)
-    a=parser.parse_args(argv)
-    password=os.environ.get(a.password_env) if a.password_env else None
-    try:
-        if a.password_env and password is None:raise ValueError('Password environment variable unavailable')
-        if a.command=='extract':result=extract(a.source,a.state,a.pages,a.overwrite,password,profile=a.profile,workers=a.workers)
-        else:result=build(a.source,a.state,a.output,a.pages,a.overwrite,password,garbage=a.garbage)
-        print(json.dumps(result,ensure_ascii=False));return 0
-    except Exception as exc:
-        print(json.dumps({'error':type(exc).__name__,'message':str(exc)},ensure_ascii=False));return 1
-
-if __name__=='__main__':
-    raise SystemExit(main())

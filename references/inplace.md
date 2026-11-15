@@ -1,15 +1,8 @@
-> Profile scope: default reading tasks follow [practical](practical.md). The strict/low-level details below are consulted as needed, not requirements to exhaust warnings, formula reviews or independent rebuilding in ordinary tasks. Actual viewing evidence remains required.
-
 # In-place translation: default builder and v3 state
 
 ## Extract, author, build
 
-Copy scripts/inplace.py and scripts/workflow.py into task recovery when a frozen, independently rebuildable package is needed. Use an existing suitable Python or install requirements.txt in a task environment. No translation service is called by these scripts.
-
-~~~text
-python inplace.py extract --source SOURCE --state state.json --pages all --profile practical
-python inplace.py build --source SOURCE --state state.json --output ../work/draft.pdf --pages 1,3-5
-~~~
+Use the [pipeline workflow](practical.md) for task operations; prepare freezes the complete runtime. This reference defines builder data and geometry contracts.
 
 extract creates an authoring inventory, not completed translation. It records the source SHA-256, page count, visible geometry and immutable glyph facts. Native alphabetic spans start unresolved; numeric/symbol-only spans start preserve and still need review. Image/outline text is not automatically recognized. Hidden OCR is marked separately. Check all visible content before setting inventory_reviewed; a page with little native text is not necessarily a page without translation.
 

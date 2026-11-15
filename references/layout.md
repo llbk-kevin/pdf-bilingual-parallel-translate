@@ -1,5 +1,3 @@
-> Profile scope: default reading tasks follow [practical](practical.md). The strict/low-level details below are consulted as needed, not requirements to exhaust warnings, formula reviews or independent rebuilding in ordinary tasks. Actual viewing evidence remains required.
-
 # Layout and translation decisions
 
 ## Preserve the page framework
@@ -32,7 +30,7 @@ Minimize cover size and occlusion. When the user permits minor local occlusion, 
 
 ## Tables and formulas
 
-Reuse the original table grid, merged-cell boundaries and line weights. Translate in individual cells, preserving row/column association, header levels, values, symbols, footnotes and continuation labels. Use table-cell blocks with source-glyph/cell mappings; for a grouped kind: table record, keep source_rows and translated_rows with equal shapes and merged-cell metadata. Enlarge dense tables when needed to confirm cell alignment.
+Reuse the original table grid, merged-cell boundaries and line weights. Translate in individual cells, preserving row/column association, header levels, values, symbols, footnotes and continuation labels. Use table-cell blocks with source-glyph/cell mappings; for a grouped kind: table record, keep source_rows and translated_rows with equal shapes and merged-cell metadata. Zoom into dense tables when needed to confirm cell alignment.
 
 Keep every repeated formula and its number as original content when no words need translating. Translate adjacent definitions separately, protecting native variables and their indices. Preserve case, Greek/Latin distinctions, signs, fractions and superscripts/subscripts. In translated prose, use supported sub/sup markup for inline notation; never substitute ASCII underscores or “same as above” for original mathematics. See [inplace.md](inplace.md) for the limited markup and [math.md](math.md) for complex cases.
 

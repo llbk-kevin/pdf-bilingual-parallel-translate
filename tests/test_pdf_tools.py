@@ -136,6 +136,7 @@ class Diagnostics(unittest.TestCase):
         a=t.audit(self.src,self.out,dpi=72)
         b=t.audit(self.src,self.out,dpi=72)
         self.assertTrue(a["mechanical_pass"],a["findings"])
+        a.pop("resources");b.pop("resources")
         self.assertEqual(a,b)
         self.assertEqual(before,t.sha256_file(self.out))
         self.assertEqual(sum(a["classified_delta_bytes"].values()),a["size_delta_bytes"])

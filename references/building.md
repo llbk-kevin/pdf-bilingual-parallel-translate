@@ -1,8 +1,6 @@
-> Profile scope: default reading tasks follow [practical](practical.md). The strict/low-level details below are consulted as needed, not requirements to exhaust warnings, formula reviews or independent rebuilding in ordinary tasks. Actual viewing evidence remains required.
-
 # State-driven construction
 
-The default builder is scripts/inplace.py; see [inplace.md](inplace.md) for extraction and v3 authoring. Freeze a copy of it and scripts/workflow.py beside the task state, and record requirements.txt with the actual environment versions. Use build --source, --state and --output explicitly. The builder reads authoring state without modification and emits the PDF, <output>.state.json and <output>.font-runs.json. Use generated state for audit/render: it records actual placement and has cleared qc. Do not replace authored translations with a new extraction when rebuilding.
+Use pipeline prepare to create the complete frozen runtime and v3 state. Run apply, build, verify, review and publish with its command_prefix/runner. Build reads saved translations and writes the PDF, state and font assignments; see [inplace.md](inplace.md) for geometry and fields.
 
 ## Working files and publication
 
