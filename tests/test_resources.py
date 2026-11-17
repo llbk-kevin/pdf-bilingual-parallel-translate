@@ -39,8 +39,12 @@ class Resources(unittest.TestCase):
         with patch.object(rs,'usable_cpus',return_value=1),patch.object(rs.psutil,'virtual_memory',return_value=SimpleNamespace(available=16*1024**3)):
             with rs.WorkerBudget(12,20,64*rs.MIB,'test',self.db) as budget:self.assertEqual(budget.workers,1)
         with patch.object(rs.psutil,'virtual_memory',return_value=SimpleNamespace(available=32*rs.MIB)):
-            with self.assertRaises(MemoryError):
+            with self.assertRaises(MemoryError) as caught:
                 with rs.WorkerBudget('auto',2,64*rs.MIB,'test',self.db):pass
+            detail=json.loads(str(caught.exception))
+            self.assertEqual(detail['code'],'insufficient_worker_memory')
+            self.assertGreater(detail['estimated_worker_bytes'],detail['memory_budget_bytes'])
+            self.assertIn('coordinator_rss_bytes',detail)
 
     def test_shared_budget_waits_then_releases_on_failure(self):
         done=threading.Event();result=[]
@@ -86,7 +90,8 @@ class Coordination(unittest.TestCase):
             config.write_text('[agents]\nenabled = false\n',encoding='utf-8')
             self.assertFalse(co.host_settings(config)['enabled'])
 
-    def test_ready_queue_has_no_role_quota_and_resumes_after_completion(self):
+    @patch.object(co.psutil,'virtual_memory',return_value=SimpleNamespace(total=32*1024**3,available=20*1024**3))
+    def test_ready_queue_has_no_role_quota_and_resumes_after_completion(self, _memory):
         tasks=[]
         for document in ('a','b','c'):
             tasks.extend([{'id':document+'-t','document':document,'phase':'translate','status':'queued','depends_on':[]},

@@ -36,6 +36,31 @@ class PracticalPipeline(unittest.TestCase):
         ep=self.root/'edits.json';pl.save(ep,edits);pl.apply_edits(self.args(edits=str(ep)))
         return wf.load(self.sp)
     def built(self):return pl.build(self.args())
+    def test_inspect_is_bounded_read_only_and_uses_glyph_ownership(self):
+        state = self.prepared()
+        original = self.sp.read_bytes()
+        args = Namespace(state=str(self.sp),pages='all',block=None,detail='summary',limit=20,offset=0)
+        result = pl.inspect_state(args)
+        self.assertEqual(result['page_count'],2)
+        args.detail='blocks'
+        with self.assertRaisesRegex(ValueError,'explicit --pages'):
+            pl.inspect_state(args)
+        args.pages='1';args.limit=1
+        result = pl.inspect_state(args)
+        self.assertEqual(len(result['items']),1)
+        self.assertIn('next_offset',result)
+        args.detail='glyphs'
+        with self.assertRaisesRegex(ValueError,'--block'):
+            pl.inspect_state(args)
+        args.block=[state['pages'][0]['blocks'][0]['id']]
+        glyphs = pl.inspect_state(args)
+        self.assertEqual(glyphs['items'][0]['block'],args.block[0])
+        self.assertEqual(self.sp.read_bytes(),original)
+        import contextlib,io
+        before = {file.relative_to(self.root) for file in self.root.rglob('*') if file.is_file()}
+        with contextlib.redirect_stdout(io.StringIO()),contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(pl.main(['inspect','--state',str(self.sp),'--detail','glyphs']),2)
+        self.assertEqual(before,{file.relative_to(self.root) for file in self.root.rglob('*') if file.is_file()})
     def observations(self,result):
         sp=Path(result['state']);s=wf.load(sp)
         obs={'reviewer':'synthetic fixture, not human QA','pages':[{'page':p['source_page'],'evidence':'Synthetic pipeline attestation for regression only','viewed_at':'2020-01-01T00:00:00+00:00'} for p in s['pages']]}

@@ -1,6 +1,7 @@
 """Machine-wide admission for independent PDF extraction and rendering processes."""
 from contextlib import contextmanager
 import hashlib
+import json
 import math
 import os
 from pathlib import Path
@@ -126,7 +127,8 @@ class WorkerBudget:
                 used_cpu, reserved = connection.execute(
                     'SELECT COALESCE(SUM(cpu),0),COALESCE(SUM(memory),0) FROM leases').fetchone()
                 cpu = max(0, usable_cpus()-used_cpu)
-                memory = max(0, int(psutil.virtual_memory().available*.75)-reserved)
+                available = psutil.virtual_memory().available
+                memory = max(0, int(available*.75)-reserved)
                 requested = min(self.pages, self.parallel_hint or self.pages) if self.requested == 'auto' else self.requested
                 count = min(requested, self.pages, cpu, memory//self.bytes_per_worker)
                 if count:
@@ -137,7 +139,14 @@ class WorkerBudget:
                                       'estimated_worker_bytes':self.bytes_per_worker, 'parallel_hint':self.parallel_hint}
                     break
                 if not used_cpu and memory < self.bytes_per_worker:
-                    raise MemoryError('Insufficient available memory for one PDF worker; free memory or reduce the render/task size')
+                    raise MemoryError(json.dumps({
+                        'code':'insufficient_worker_memory', 'phase':self.phase,
+                        'available_bytes':available, 'headroom_bytes':available-int(available*.75),
+                        'reserved_bytes':reserved, 'memory_budget_bytes':memory,
+                        'estimated_worker_bytes':self.bytes_per_worker,
+                        'coordinator_rss_bytes':process.memory_info().rss,
+                        'action':'Free verified idle tool sessions or wait for available memory; do not retry unchanged inputs.'
+                    }))
             time.sleep(.5)
         self.wait_seconds = time.perf_counter()-self.started
         return self

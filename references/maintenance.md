@@ -22,6 +22,8 @@ Keep user inputs, translations, renders, recovery files, fonts and credentials o
 
 ## Implementation constraints
 
+For tool-lifecycle changes, test success/failure/cancel/orphan/PID reuse, bounded log transport and UTF-8 paths. Run repeated synthetic large-state queries and jobs in an isolated parent, recording initial/peak/end memory and post-warmup growth. Validate real host reset by disappearance of the registered PID/start identity; mark unsupported or unverified cleanup explicitly. Keep host process details and task measurements outside the repository.
+
 - Compress non-image streams without re-encoding original images. Audit traverses reachable resources and checks encoded image streams and their display semantics. Review the encoded-stream inventory when changing the pypdf major version.
 - Normalize UserUnit in the in-memory PDFium rendering copy. Use the same matrix and pixel origin for both panes.
 - Use source drawing traces and translated fontTools outlines for deletion and collision bounds. Disable font timestamp recalculation for repeatable builds.

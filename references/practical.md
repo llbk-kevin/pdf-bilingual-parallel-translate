@@ -16,6 +16,32 @@ python SKILL/scripts/pipeline.py prepare --source ORIGINAL.pdf --state recovery/
 
 prepare freezes the current scripts, runtime launcher/configuration and resource-budget module next to state, and writes inventory.json and preflight.json. Use the returned command_prefix plus runner for every subsequent command. The examples below abbreviate this prefix as COMMAND_PREFIX. --workers accepts auto (default) or a positive integer, with machine-wide CPU/memory admission and resource telemetry. Use this frozen pipeline for all further commands, including verify/review/publish; do not revert a helper variable to SKILL/scripts/pipeline.py. Use a separate recovery directory when testing script changes on the current task. Read compact inventory first, not the large glyph state. Source groups/lines help identify paragraphs but do not establish reading order. Inspect source pages (use pdf_tools.py render ORIGINAL.pdf --pages SELECTION --out work/source, or another renderer) before deciding covers and formulas. Preflight flags are cues, not automatic translation decisions. Formula-density hints are heuristic and nonblocking; encoding problems and visible source context take precedence. Install requirements.txt for AES support. missing_encryption_dependency identifies a missing backend, and password_required identifies a source that needs a password. Preflight checks links against the full declared selection and reports sample_link_omitted for targets outside a sample. In practical mode confirmed empty or undefined named destinations are recorded with their names when available; link appearance and bookmark titles remain. Strict mode requires valid navigation.
 
+### Bounded state reads and long commands
+
+Use frozen pipeline inspect instead of parsing the full state in a persistent Node REPL:
+
+~~~text
+COMMAND_PREFIX recovery/pipeline.py inspect --state recovery/state.json
+COMMAND_PREFIX recovery/pipeline.py inspect --state recovery/state.json --pages 12 --detail blocks --limit 20
+COMMAND_PREFIX recovery/pipeline.py inspect --state recovery/state.json --pages 12 --block ACTUAL_ID --detail glyphs --offset 0 --limit 50
+~~~
+
+Summary is the default. Blocks require an explicit page selection; glyphs also require a block. Replies contain at most 200 items (default 20), next_offset for paging, and an explicit truncation flag for text beyond 4,000 characters. Reduce --limit if the 256 KiB reply budget is exceeded. Queries never alter the state, QC, diagnostics or event logs. They still load the state in a short-lived Python process, which exits after answering.
+
+For build/verify or other long frozen commands, write the exact argv array to work/job-argv.json. Use the recorded Python executable to run the frozen task_runtime.py (a process wrapper, not a replacement PDF builder):
+
+~~~text
+PYTHON recovery/task_runtime.py start --task-dir TASK --job-dir TASK/work/jobs/build-001 --argv-file TASK/work/job-argv.json
+PYTHON recovery/task_runtime.py status --job-dir TASK/work/jobs/build-001
+PYTHON recovery/task_runtime.py cancel --job-dir TASK/work/jobs/build-001
+~~~
+
+Job and argument files must be under TASK/work; job directories are new and never overwritten. --cwd optionally selects a short launch directory, otherwise the task's parent is used. The independent supervisor writes stdout.log, stderr.log and job.json and survives a REPL reset. Status returns paths and bounded error tails, not the full logs/results. Read only the needed tail or diagnostic; do not collect full output with execFile/maxBuffer. Cancellation checks PID plus start time and only terminates that job's worker tree; an orphaned supervisor is reported and can be recovered by cancel. Do not reset a kernel with an unsupervised background child.
+
+Status can be finalizing until the supervisor and its launcher exit; wait for a terminal state before renaming/removing logs. Prefer a working direct CLI tool; if one shell fails, check an available alternative before making Node the default runner.
+
+Keep only paths, small edit batches and summaries in Node. Read images one at a time and avoid persistent arrays of image buffers/Base64. Put unavoidable temporary reads in a function scope, then reset at the documented handoff boundary; nulling one variable or forcing GC is not proof that historical module bindings or native buffers were released. Session registration and cleanup commands are in [coordination.md](coordination.md).
+
 Write edits.json, then apply. Example native paragraph and retained label:
 
 ~~~json

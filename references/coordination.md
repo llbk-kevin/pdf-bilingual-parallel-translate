@@ -10,9 +10,9 @@ Follow [naming.md](naming.md) before prepare and dispatch. Give workers confirme
 
 ## Dynamic scheduling
 
-Dispatch executable tasks using available slots, with no fixed translation/review allocation. A review becomes ready when its candidate passes machine checks. Other PDFs can keep translating. If slots are full, save the queue and wait for completion or availability events. Save handoffs and release completed agents using supported host operations. Use bounded waits; attempt another spawn after availability changes. User-requested phase ordering takes precedence.
+Dispatch executable tasks using available slots and memory, with no fixed translation/review allocation. A review becomes ready when its candidate passes machine checks. Other PDFs can keep translating. If slots or memory are insufficient, save the queue and wait for completion or availability changes. Complete the session cleanup below before considering an idle worker released. Use bounded waits; attempt another spawn after availability changes. User-requested phase ordering takes precedence.
 
-Store task ID, document, page range, phase (translate/review), status (queued/running/completed/blocked), depends_on, actual agent ID and artifact paths in work/coordination.json. The helper ready_tasks(tasks, available_slots) selects dependency-ready tasks, preferring available reviews without reserving slots. The host tools perform spawning and waiting. A reviewer receives source pages, candidate renders, acceptance criteria and a blank observations template in a fresh context.
+Store task ID, document, page range, phase (translate/review), status (queued/running/completed/blocked), depends_on, actual agent ID and artifact paths in work/coordination.json. The helper ready_tasks(tasks, available_slots, memory=None, reserve_bytes=None) selects dependency-ready tasks, preferring available reviews without reserving slots. Its system reserve defaults to max(2 GiB, 20% of physical RAM); the task's work/resource-settings.json can override memory_reserve_bytes. Pass that override to ready_tasks. Each task may provide estimated_memory_bytes (default 256 MiB until measured); record observed usage to improve subsequent estimates. The host tools perform spawning and waiting. A reviewer receives source pages, candidate renders, acceptance criteria and a blank observations template in a fresh context.
 
 Each document state has one writer at a time. Different documents can update concurrently. Reviewers submit real observations; the assigned document writer registers them and merges accepted patches. The coordinator owns overall decisions and publication.
 
@@ -25,3 +25,13 @@ Use status with active packages and candidate states for progress. Keep actual a
 Use verify's review_handoff and observations_template. Save clear-page observations before repairing a blocker, then use --previous-state for valid evidence. Report meaningful stage changes and blockers. Use source plus saved state for builds and keep all artifacts in the source-stem folder.
 
 Local extraction/rendering uses --workers auto or a positive integer. Machine-wide CPU/memory leases coordinate concurrent PDF jobs. Worker count and selection reasons appear in resource telemetry. Final PDF writing has one writer.
+
+## Tool-session ownership and cleanup
+
+Run scripts/coordination.py memory --task-dir TASK before a new batch of heavy tasks. Check again at stage changes or after a resource failure, not by continuous polling. Low memory queues new heavy work while existing jobs finish. Worker admission failures include available, reserved, estimated and coordinator RSS bytes; read those facts before retrying.
+
+From the worker's own Node kernel, directly launch the frozen Python executable with scripts/coordination.py session-register --task-dir TASK --agent ACTUAL_ID. It verifies kernel.js and its session ID in the caller's parent chain, and saves PID, process start time, agent and memory under work/tool-sessions/. An unverifiable caller is reported, not guessed.
+
+Before handing off: save edits, observations and a restart checkpoint inside the task; ensure every live child job is registered with task_runtime; call session-mark --record RECORD --status cleanup_required --checkpoint FILE; then invoke that worker's own js_reset tool when available. Do not immediately restart Node just to announce completion. Resume from disk in a new kernel. If reset is unavailable, mark cleanup_unavailable and report it. Use a supported host close-agent operation only if one actually exists.
+
+The coordinator runs sessions --task-dir TASK to observe whether the recorded PID/start identity disappeared; only a previously cleanup_required session becomes reset_observed. Completed, interrupted or closed agent labels alone are not cleanup evidence. Unknown kernels are listed separately and are never terminated by name, size or a guessed working directory. Confirm no unsupervised job remains before resetting a kernel; use task_runtime cancel only for its verified job tree. A whole-app restart is a last resort when the host cannot release a known idle session.

@@ -95,7 +95,7 @@ def prepare(args):
                              selected_source_pages=selected)
     # Freeze a runnable recovery package. Use this copy for subsequent commands.
     here=Path(__file__).parent
-    for name in ('pipeline.py','inplace.py','pdf_tools.py','workflow.py','runtime.py','resources.py','coordination.py'):
+    for name in ('pipeline.py','inplace.py','pdf_tools.py','workflow.py','runtime.py','resources.py','coordination.py','task_runtime.py'):
         dst=sp.parent/name
         if dst.resolve()!=(here/name).resolve():shutil.copy2(here/name,dst)
     req=here.parent/'requirements.txt'
@@ -956,9 +956,76 @@ def publish(args):
             'state_written_bytes':sp.stat().st_size}
 
 
+def inspect_state(args):
+    """Read bounded state details in this short-lived Python process."""
+    if args.detail != 'summary' and args.pages in (None, 'all'):
+        raise ValueError('Block/glyph inspection requires explicit --pages')
+    if args.detail == 'glyphs' and not args.block:
+        raise ValueError('Glyph inspection requires --block')
+    if not 1 <= args.limit <= 200 or args.offset < 0:
+        raise ValueError('Inspection limit must be 1..200 and offset nonnegative')
+    state = task_state(Path(args.state).resolve())
+    available = {page['source_page']: page for page in state['pages']}
+    selected = sorted(available) if args.pages in (None, 'all') else [
+        i+1 for i in pt.parse_pages(args.pages, state['source']['page_count'])]
+    if any(n not in available for n in selected):
+        raise ValueError('Inspection pages must be present in the state')
+    pages = [available[n] for n in selected]
+    result = {'state':str(Path(args.state).resolve()), 'source_sha256':state['source']['sha256'],
+              'detail':args.detail, 'pages':ranges(selected)}
+    if args.detail == 'summary':
+        methods = {}
+        for page in pages:
+            for block in page['blocks']:
+                methods[block['method']] = methods.get(block['method'], 0) + 1
+        result.update(page_count=len(pages), methods=methods,
+                      inventory_pending=ranges(page['source_page'] for page in pages if not page.get('inventory_reviewed')))
+        return result
+    requested = set(args.block or [])
+    blocks = [(page, block) for page in pages for block in page['blocks']
+              if not requested or block['id'] in requested]
+    missing = requested - {block['id'] for _, block in blocks}
+    if missing:
+        raise ValueError('Unknown blocks in selected pages: '+', '.join(sorted(missing)))
+    items = []
+    glyph_maps = {}
+    def glyph_map(page):
+        number = page['source_page']
+        if number not in glyph_maps:
+            glyph_maps[number] = {g['id']:g for g in page['glyphs']}
+        return glyph_maps[number]
+    if args.detail == 'blocks':
+        keys = ('id','source_text','translation','method','reason','source_bbox','allowed_bbox',
+                'cover_bbox','font_size','font_size_min','source_group','glyph_ids')
+        total_items = len(blocks)
+        for page, block in blocks[args.offset:args.offset+args.limit]:
+            item = {'page':page['source_page'], **{k:block[k] for k in keys if k in block}}
+            item.pop('glyph_ids', None)
+            item['glyph_count'] = len(ip.selected_glyphs(block, glyph_map(page)))
+            for key in ('source_text','translation','reason'):
+                if isinstance(item.get(key),str) and len(item[key]) > 4000:
+                    item[key] = item[key][:4000]
+                    item[key+'_truncated'] = True
+            items.append(item)
+    else:
+        for page, block in blocks:
+            glyphs = ip.selected_glyphs(block, glyph_map(page))
+            for glyph in glyphs:
+                items.append({'page':page['source_page'],'block':block['id'], **glyph})
+        total_items = len(items)
+        items = items[args.offset:args.offset+args.limit]
+    result.update(total_items=total_items, offset=args.offset, items=items)
+    if args.offset+args.limit < total_items:
+        result['next_offset'] = args.offset+args.limit
+    # A pathological glyph object must not bypass the bounded transport contract.
+    if len(json.dumps(result,ensure_ascii=False).encode('utf-8')) > 256*1024:
+        raise ValueError('Inspection response too large; use a smaller --limit')
+    return result
+
+
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__);subs=parser.add_subparsers(dest='command',required=True)
-    for name in ('prepare','apply','build','verify','review','publish','status','package'):
+    for name in ('prepare','apply','build','verify','review','publish','status','package','inspect'):
         p=subs.add_parser(name);p.add_argument('--state',required=True);p.add_argument('--overwrite',action='store_true')
         if name in ('prepare','build'):
             p.add_argument('--pages',default='all')
@@ -974,6 +1041,12 @@ def main(argv=None):
             p.add_argument('--pages',default='all')
             p.add_argument('--packages',action='append',help='Package directories containing package.json and optional edits.json')
             p.add_argument('--candidate',action='append',help='Candidate state snapshots to include in progress')
+        if name=='inspect':
+            p.add_argument('--pages',default='all')
+            p.add_argument('--block',action='append')
+            p.add_argument('--detail',choices=('summary','blocks','glyphs'),default='summary')
+            p.add_argument('--limit',type=int,default=20)
+            p.add_argument('--offset',type=int,default=0)
         if name=='package':
             p.add_argument('--pages',required=True)
             p.add_argument('--out',required=True)
@@ -984,14 +1057,14 @@ def main(argv=None):
         if name=='publish':p.add_argument('--task-dir',help='Working folder for delivery notes and optional rebuilding; inferred from work/ or recovery[-vN]/')
     args=parser.parse_args(argv);started=time.monotonic();success=False;result={};diagnostic=None
     try:
-        result={'prepare':prepare,'apply':apply_edits,'build':build,'verify':verify,'review':review,'publish':publish,'status':status,'package':package}[args.command](args)
+        result={'prepare':prepare,'apply':apply_edits,'build':build,'verify':verify,'review':review,'publish':publish,'status':status,'package':package,'inspect':inspect_state}[args.command](args)
         success=(result.get('observations_saved',False) if args.command=='review' else not result.get('errors') and result.get('ok',True))
         print(json.dumps(result,ensure_ascii=False));return 0 if success else 2
     except Exception as exc:
         detail=str(exc)
         try:detail=json.loads(detail)
         except (ValueError,TypeError):pass
-        if args.command == 'status':
+        if args.command in ('status','inspect'):
             print(json.dumps({'ok': False, 'error': detail}, ensure_ascii=False), file=sys.stderr)
             return 2
         directory=Path(args.state).resolve().parent
@@ -1015,7 +1088,7 @@ def main(argv=None):
         event={'at':now(),'command':args.command,'seconds':round(time.monotonic()-started,3),'success':success,
                'state':str(Path(args.state).resolve()),'pages':getattr(args,'pages',None)}
         if diagnostic:event['diagnostic']=str(diagnostic)
-        if args.command != 'status':
+        if args.command not in ('status','inspect'):
             event.update({k: result[k] for k in ('rendered_pages', 'source_rendered_pages', 'mechanical_reused_pages',
                                                  'state_written_bytes', 'cached', 'job', 'resources') if k in result})
             for k in ('render_workers', 'extract_workers'):

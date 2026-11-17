@@ -10,9 +10,9 @@
 
 ## 动态调度
 
-按可用槽位派发当前可执行任务，翻译和复核数量动态变化。候选通过机器检查后复核就绪，其他 PDF 可以继续翻译。槽位满时保存队列，等待完成或可用事件。保存交接后，通过宿主支持的操作释放已完成代理。使用有界等待，可用情况变化后再尝试创建。用户指定的阶段顺序优先。
+按可用槽位和内存派发当前可执行任务，翻译和复核数量动态变化。候选通过机器检查后复核就绪，其他 PDF 可以继续翻译。槽位或内存不足时保存队列，等待完成或可用情况变化。按下述步骤完成会话清理后，才认定闲置工作者已释放。使用有界等待，可用情况变化后再尝试创建。用户指定的阶段顺序优先。
 
-work/coordination.json 保存任务 ID、文档、页段、phase（translate/review）、status（queued/running/completed/blocked）、depends_on、实际代理 ID 和产物路径。ready_tasks(tasks, available_slots) 选择依赖已满足的任务，优先处理就绪复核，不预留固定角色槽位。创建和等待通过宿主工具执行。复核者在全新上下文接收原文、候选渲染、验收要求及空白观察模板。
+work/coordination.json 保存任务 ID、文档、页段、phase（translate/review）、status（queued/running/completed/blocked）、depends_on、实际代理 ID 和产物路径。ready_tasks(tasks, available_slots, memory=None, reserve_bytes=None) 选择依赖已满足的任务，优先处理就绪复核，不预留固定角色槽位。系统余量默认 max(2 GiB, 物理内存的20%)；任务 work/resource-settings.json 中的 memory_reserve_bytes 可覆盖，调用 ready_tasks 时须传入该覆盖值。每项任务可给 estimated_memory_bytes，未实测时默认256 MiB；记录实际占用以改进后续估算。创建和等待通过宿主工具执行。复核者在全新上下文接收原文、候选渲染、验收要求及空白观察模板。
 
 每份文档状态同一时刻由一个写入者负责，不同文档可以并行更新。复核者提交真实观察，由指定的文档写入者登记并合入补丁。主代理负责整体决策与发布。
 
@@ -25,3 +25,13 @@ work/coordination.json 保存任务 ID、文档、页段、phase（translate/rev
 使用 verify 的 review_handoff 和 observations_template，修复阻断前先登记通过页，再通过 --previous-state 复用有效证据。汇报实际阶段变化和阻断。构建读取原文与保存状态，产物保存在同名工作目录。
 
 本地提取和渲染使用 --workers auto 或正整数，同机 CPU/内存租约协调并行 PDF 作业，资源遥测记录实际进程数及选择理由。最终 PDF 由单一写入者生成。
+
+## 工具会话归属与清理
+
+派发新一批重任务前运行 scripts/coordination.py memory --task-dir TASK；阶段切换或资源失败后再检查，不连续轮询。内存不足时让新重任务排队，现有作业继续完成。worker准入失败会报告可用量、预留量、估算需求与协调进程RSS，重试前先读这些事实。
+
+工作者从自己的 Node 内核直接启动冻结 Python，执行 scripts/coordination.py session-register --task-dir TASK --agent ACTUAL_ID。脚本核实调用者父进程链中的 kernel.js 和 session ID，在 work/tool-sessions/ 保存PID、启动时间、代理及内存。无法验证时明确报告，不猜测归属。
+
+交接前依次：在任务内保存编辑、观察及恢复检查点；确认存活子作业均已由 task_runtime 登记；执行 session-mark --record RECORD --status cleanup_required --checkpoint FILE；宿主支持时调用该工作者自己的 js_reset。不要为宣布完成又立即启动Node，续跑从磁盘恢复到新内核。不支持重置时标 cleanup_unavailable 并报告；只有宿主确实提供关闭代理操作时才使用。
+
+主代理运行 sessions --task-dir TASK，核对已记录的PID/启动时间身份是否消失；只有原先 cleanup_required 的会话才标 reset_observed。代理完成、中断或关闭标签本身不是清理证据。未知内核单独列出，绝不按名称、大小或猜测工作目录终止。重置内核前确认没有未托管作业；只用 task_runtime cancel 取消其身份核验通过的作业树。宿主无法释放已确认闲置会话时，才把完整重启应用作为最后手段。

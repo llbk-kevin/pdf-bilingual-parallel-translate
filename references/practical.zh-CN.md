@@ -16,6 +16,32 @@ python SKILL/scripts/pipeline.py prepare --source ORIGINAL.pdf --state recovery/
 
 prepare 在状态旁冻结当前脚本、运行入口/配置及资源预算模块，写 inventory.json 与 preflight.json。后续使用返回的 command_prefix 加 runner，下例用 COMMAND_PREFIX 代表这个前缀。--workers 支持 auto（默认）或正整数，按本机 CPU/内存预算准入，资源遥测记录实际选择。后续包括 verify/review/publish 均使用冻结入口，不把命令变量改回 SKILL/scripts/pipeline.py。维护时如需替换当前任务的脚本，另建恢复目录。先读简洁 inventory，不反复读巨大的字形状态。source_group/source_line 辅助段落归属但不决定阅读顺序。可用 pdf_tools.py render ORIGINAL.pdf --pages SELECTION --out work/source 查看原页，再决定覆盖与公式。风险仅为提示，不是自动翻译结论。公式密集提示属于非阻断启发式，编码异常和实际可见原文优先。AES 支持随 requirements.txt 安装。missing_encryption_dependency 提示补齐依赖，password_required 提示需要源文件密码。目录跳转按声明的选页范围检查，样本外目标报告 sample_link_omitted。practical 登记确认空目标或未定义命名目标的链接和书签，能获得名称时一并记录，并保留外观及标题。strict 要求跳转有效。
 
+### 有界状态查询与长命令
+
+用冻结 pipeline inspect 查询，避免在持久 Node REPL 内解析完整状态：
+
+~~~text
+COMMAND_PREFIX recovery/pipeline.py inspect --state recovery/state.json
+COMMAND_PREFIX recovery/pipeline.py inspect --state recovery/state.json --pages 12 --detail blocks --limit 20
+COMMAND_PREFIX recovery/pipeline.py inspect --state recovery/state.json --pages 12 --block ACTUAL_ID --detail glyphs --offset 0 --limit 50
+~~~
+
+默认summary；blocks必须显式选页，glyphs还须指定文字块。每次最多200项（默认20），next_offset用于翻页；超过4,000字符的文本会附明确截断标记。超过256 KiB响应预算时减小--limit。查询不修改状态、QC、诊断或事件日志；仍会在短生命周期Python进程加载状态，回答后退出。
+
+build/verify等冻结长命令，把精确argv数组写入work/job-argv.json。使用记录的Python执行冻结task_runtime.py；它是进程包装器，不替代PDF构建器：
+
+~~~text
+PYTHON recovery/task_runtime.py start --task-dir TASK --job-dir TASK/work/jobs/build-001 --argv-file TASK/work/job-argv.json
+PYTHON recovery/task_runtime.py status --job-dir TASK/work/jobs/build-001
+PYTHON recovery/task_runtime.py cancel --job-dir TASK/work/jobs/build-001
+~~~
+
+作业和参数文件都在TASK/work内，作业目录必须新建、不覆盖。--cwd可指定短启动目录，缺省使用任务父目录。独立监督进程写stdout.log、stderr.log和job.json，不依赖REPL存活；status只返回路径和有界错误尾部，不返回全部日志或结果。按需读取尾部或诊断，不用execFile/maxBuffer收集全量输出。取消核对PID及启动时间，只终止本作业worker树；监督进程异常退出会报告orphaned，可通过cancel恢复清理。存在未托管后台子进程时不重置内核。
+
+监督进程及其启动器退出前，status可能为finalizing；等终态后再改名或删除日志。优先使用可用的直接CLI工具；一种shell失败时先检查可用替代入口，再决定是否用Node运行。
+
+Node只保存路径、小批编辑和摘要。图片逐张读取，避免持久图片Buffer/Base64数组；必要临时读取放函数作用域，并在约定交接点重置。清空一个变量或强制GC不能证明历史模块绑定和原生缓冲已释放。会话登记与清理命令见[集群协作](coordination.zh-CN.md)。
+
 批量 edits.json 原生段落示例：
 
 ~~~json
