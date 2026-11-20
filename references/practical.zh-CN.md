@@ -4,7 +4,7 @@
 
 ## 准备与翻译
 
-先完成[命名流程](naming.zh-CN.md)，再按确认后的原文路径和工作目录运行 `prepare`。等待确认期间只做原文与路径的只读检查。
+先一并确认[命名](naming.zh-CN.md)与[代理工作计划](coordination.zh-CN.md)，再按确认后的路径运行 `prepare`。等待确认期间只做原文与路径的只读检查。
 
 使用具备 requirements.txt 的现有或隔离 Python，查找许可允许的中文 TTF/OTF，必要时登记后备字体。路径加引号。在文档工作目录运行：
 
@@ -56,7 +56,7 @@ Node只保存路径、小批编辑和摘要。图片逐张读取，避免持久�
 {"blocks":[{"page":3,"id":"scan-note-1","method":"cover","kind":"text","source_text":"Visible English label","source_bbox":[10,20,90,32],"cover_bbox":[10,20,90,32],"allowed_bbox":[10,20,90,32],"translation":"中文说明","font_size":8,"reason":"局部图片标签，已对照图纸检查边界"}],"inventory_reviewed_pages":[3]}
 ~~~
 
-若从原文渲染图量坐标，在编辑 JSON 顶层加 "source_render_index":"work/source/index.json"（相对编辑 JSON）。该批所有 source_bbox/cover_bbox/allowed_bbox 均按原始渲染图片像素输入，apply 核对源指纹、图片尺寸并按记录 DPI 换算。不从缩放后的查看器估算倍率，不在同批混用点和像素；未提供该字段仍是 PDF 点。双语图或裁剪图不能用作原文索引。
+从原文渲染图量坐标时，索引路径相对编辑JSON：TASK/work/edits.json引用TASK/work/source/index.json，顶层写 "source_render_index":"source/index.json"，不要再加work/。该批所有source_bbox/cover_bbox/allowed_bbox按原始渲染像素输入，apply核对指纹/图片尺寸并按记录DPI换算。不从缩放查看器猜倍率、不混用点和像素；未提供该字段仍是PDF点。双语图或裁剪图不能作为原文索引。
 
 仅在已核实的对应位置添加浮层。practical 只要求中文可读、原文对应关系清楚，不要求完全擦除英文、边界精确或背景同色；保留小残字，不为此扩大框或重复重建。可选 cover_fill 和 cover_text_color 为 [0,1] RGB 三元组，缺省为白底黑字。选定一种可读样式即可，不做自动配色。照片上的型号、板卡丝印及微小软件界面标签，在已有必要中文图注或解释时可保留。allowed_bbox 扩展必须用 expansion_reason 说明邻接空白，不跨表格格子。apply 也接受按源页键的 context_pages、link_overrides、glossary、issues。逐条更正优先使用 link_overrides_patch，例如 {"link_overrides_patch":{"1":[{"source_link":0,"target_block":"paragraph-1","target_text":"设计","occurrence":2}]}}。按 source_link 新增或替换，保留其他链接；link_overrides 仍替换整页列表（空列表清空），同页不能同时使用两种接口。occurrence 是 target_block 内匹配的从 1 开始序号，重复锚点须明确指定。link_overrides 的 source_link 按原页 /Link 批注从 0 起算，0 是首个链接，不是从 1 开始的页码；对照原始可点击区域检查生成的 page.link_mappings。链接文字翻译后用 target_block 加 target_text 指向相应文本。术语表和布局为共享依赖。practical 默认本页及声明上下文依赖，strict 未确认上下文时使用全书依赖。改 authoring state 不覆盖旧候选和审核史。
 
@@ -81,6 +81,14 @@ COMMAND_PREFIX recovery/pipeline.py apply --state recovery/state.json --edits wo
 多份文档、长文档或独立复核的分包、归属与恢复见[集群协作](coordination.zh-CN.md)。使用编写状态查询翻译进度，使用构建返回的候选状态查询核验与复核。任一批次失败时原编写状态保持原样。局部预览可省略范围外跳转且不能发布，交付时构建完整声明范围。
 
 
+## 代表页预览与连贯正文
+
+按实际原文选取适用的行内/独立公式、密集单元格或截图代表页。先翻译小段完整内容，用preview_argv构建并查看，再推广到同类页；这是排版方法验证，不另做整本复核。
+
+独立公式原位保留。行内变量正文先组织完整中文句，必要时在句中复写核实的短变量/数值，原生字形仍保留。保持字形归属并记录可见残留；不能为了碰撞检查通过而围绕每个保留字符拆散中文，或把句子散布到远处空白。预览整个段落、相关公式和表格单元格，重要符号/数值不可遮挡；完整句与公式可读时，少量孤立原字形按practical保留。
+
+unresolved_count为零后仍对照可见页和inventory，尤其检查提取遗漏的截图、栅格曲线和转曲标签，用局部浮层或明确关联的中文说明翻译主要内容。不能用继续编辑已译原生文字代替这项检查。
+
 ## 集中检查与真实记录
 
 ~~~text
@@ -89,7 +97,7 @@ COMMAND_PREFIX recovery/pipeline.py verify --state work/RETURNED.state.json
 
 verify 检查状态、字体、审计，一次生成原文、输出及相关差异图，返回 render_index、错误汇总和 review_needed。首次 verify 同时报告 inventory_review_needed。将可见原页与清单对照确认后，在该页的实际观察中填 `"inventory_reviewed": true`。同一候选补记清点可复用审计和渲染。verify 返回 rendered_pages、source_rendered_pages、mechanical_reused_pages 和 state_written_bytes，耗时见事件日志。修改后可复用未变化的源页和候选渲染，文档级检查照常执行。保留差异也不修改原始测量和 mechanical_pass。
 
-打开 review_needed 中的双栏页检查主要图文。遇到疑点再看差分图或放大局部。若安排独立复核，由实际查看者登记观察。发现阻断项时，先为已查看且无阻断的页提交 observations.json，另报待修页。使用 review_handoff，将 observations_template 复制为新文件。模板绑定候选和渲染索引指纹，pages 初始为空；由实际查看者填写 reviewer 和已看页面。缺少字段和指纹不符分别诊断。
+打开review_needed或inventory_review_needed中的页面，在同一次真实查看中核对源清单、必要覆盖及当前具体差异，登记适用的inventory_reviewed/covers_checked/retain_right_difference证据。仅疑点看差分或放大。独立复核者提交自己的观察；多人复核各存文件，由状态写入者串行登记。先保存无阻断页证据，再修复并用--previous-state复用。使用review_handoff复制observations_template；模板绑定候选/渲染指纹，pages为空。缺字段和错绑分别诊断；不能为避免重看而虚报已完成检查。
 
 ~~~json
 {"output_sha256":"COPY_FROM_VERIFY","render_index_sha256":"COPY_FROM_VERIFY","reviewer":"实际代理或人员","pages":[{"page":1,"evidence":"实际图片查看记录及观察","retained":["保留轻微断行"],"retain_right_difference":"仅确实检查了审计右侧差异时填写：为何不影响阅读"}],"structure_notes":"已检查基本可读性及所需范围"}
@@ -106,6 +114,8 @@ verify 列出 cover_review_needed。逐处对照原图与右侧浮层，确认�
 集中修改后先预览受影响页，再构建完整候选。运行 verify --previous-state PREVIOUS.state.json，上一版只登记部分页面时也可复用。可重复传入该选项，带上多份相关候选或分包。脚本逐页检查像素、设置和依赖，保留有效记录的原查看者、时间和证据。当前候选的有效观察优先。按 review_needed 补查，并为变化后的差分记录新的判断。完整候选仍执行自动检查。
 
 review 返回 observations_saved、saved_pages、reviewed_pages 和 review_needed。查看 ready 和 errors 确认能否交付。局部审核可通过 verify --previous-state 复用。
+
+观察复用、机械缓存复用和实际渲染页数分别报告。即使登记字体不变，改字也可能改变共享的嵌入字体子集，使其他页的绘制指纹失效。保留实测计数，不改掩码或把审核复用说成无需渲染。
 
 ## 交付与维护
 

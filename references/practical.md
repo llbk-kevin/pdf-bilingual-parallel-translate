@@ -4,7 +4,7 @@ Use the main entry's practical/strict rules. The examples below are executable i
 
 ## Prepare and translate
 
-Before running `prepare`, complete [the naming procedure](naming.md) and use the confirmed source path and working folder. While confirmation is pending, perform read-only source and path checks.
+Before `prepare`, confirm [names](naming.md) together with the [agent work plan](coordination.md), then use confirmed paths. While confirmation is pending, perform read-only source and path checks.
 
 Use an existing suitable environment or isolated install of requirements.txt; no external translation service is used. Find a permitted Chinese TTF/OTF font (register fallbacks if needed). Quote paths. Run from the document's working folder:
 
@@ -59,7 +59,7 @@ New image/outline cover example (coordinates are visible top-left PDF points):
 {"blocks":[{"page":3,"id":"scan-note-1","method":"cover","kind":"text","source_text":"Visible English label","source_bbox":[10,20,90,32],"cover_bbox":[10,20,90,32],"allowed_bbox":[10,20,90,32],"translation":"中文说明","font_size":8,"reason":"Local raster label; bounds checked against drawing"}],"inventory_reviewed_pages":[3]}
 ~~~
 
-For coordinates measured on a source render, add top-level "source_render_index":"work/source/index.json" (relative to the edits JSON). Every supplied source_bbox/cover_bbox/allowed_bbox in that batch is then in ORIGINAL source-image pixels; apply verifies the source fingerprint/image dimensions and converts using recorded DPI. Do not estimate a scale from a resized viewer or mix point/pixel boxes in one batch. Without source_render_index, boxes remain PDF points. Never use bilingual or cropped images as this source index.
+For coordinates measured on a source render, the index is relative to the edits JSON: for TASK/work/edits.json referencing TASK/work/source/index.json, use top-level "source_render_index":"source/index.json" (do not add another work/). Every supplied source_bbox/cover_bbox/allowed_bbox in that batch is then in ORIGINAL source-image pixels; apply verifies fingerprint/image dimensions and converts using recorded DPI. Do not estimate scale from a resized viewer or mix point/pixel boxes. Without source_render_index, boxes remain PDF points. Never use bilingual or cropped images as this source index.
 
 Only add overlays at verified corresponding positions. Practical acceptance is readable Chinese with an understandable association to the source; it does not require complete erasure of the English, exact label boundaries or matched background colors. Keep small remnants instead of enlarging boxes or repeatedly rebuilding. cover_fill and cover_text_color optionally set RGB triples in [0,1]; the defaults are white and black. Choose a readable style once, without automatic color matching. Printed model names, board markings and tiny software UI labels can remain when translated captions/explanations provide the needed meaning. Extension of allowed_bbox requires expansion_reason describing adjacent empty space, never another table cell. apply also accepts context_pages keyed by source page, link_overrides, glossary and issues. Use link_overrides_patch for incremental corrections, e.g. {"link_overrides_patch":{"1":[{"source_link":0,"target_block":"paragraph-1","target_text":"设计","occurrence":2}]}}. Entries upsert by source_link and keep other links; link_overrides replaces the whole page list (an empty list clears it). Do not use both for the same page. occurrence is one-based among matches inside target_block; specify it when an anchor repeats. In link_overrides, source_link is ZERO-based among the original page's /Link annotations (0 means its first link), not a one-based page number; verify generated page.link_mappings against original clickable regions. For translated link text use target_block plus target_text for the corresponding anchor; changing glossary/layout is a shared dependency. Practical defaults to page-local review dependency, plus explicitly declared context_pages; strict uses whole-document dependency unless context has been reviewed and declared. Editing authoring state does not overwrite earlier candidates/review history.
 
@@ -83,6 +83,14 @@ COMMAND_PREFIX recovery/pipeline.py apply --state recovery/state.json --edits wo
 
 For multiple documents, long documents or independent review, use [coordination.md](coordination.md) for packages, ownership and recovery. Use the authoring state for translation progress and the returned candidate state for verification and review progress. A failing batch leaves the authoring state unchanged. A preview can omit links to unselected pages and cannot be published. Use a complete build of the declared scope for delivery.
 
+## Representative previews and coherent prose
+
+Choose representative pages from the actual source: inline/standalone formulas, dense cells or screenshots as applicable. Translate a small coherent sample, build with preview_argv and view it before repeating the method across the document. This is layout validation, not another full-document review.
+
+Preserve standalone formulas in place. For inline variables, compose a complete Chinese sentence and, when needed, repeat verified short variables/values in that sentence while leaving native glyphs intact. Keep native ownership and record any visible leftovers. Do not split Chinese around each preserved character or spread it across distant blank spaces merely to pass collision checks. Preview the whole paragraph, associated formula and table cells; substantive symbols/values cannot be obscured. A few isolated residual glyphs are practical retained details when the complete sentence and formula remain readable.
+
+After unresolved_count reaches zero, still compare the visible page with inventory, especially screenshots, raster graphs and outlined labels absent from extraction. Translate their main explanation/labels with local overlays or a clearly associated Chinese explanation. Do not replace this check with more edits to already translated native text.
+
 ## Check once and record real observations
 
 ~~~text
@@ -91,7 +99,7 @@ COMMAND_PREFIX recovery/pipeline.py verify --state work/RETURNED.state.json
 
 verify performs state/font/audit checks and produces the source, output and relevant difference images in one pass. It returns a render_index, grouped findings and review_needed source pages. Read detailed audit only for actionable findings. The first verify reports `inventory_review_needed`. Include `"inventory_reviewed": true` in a page observation only after confirming its source inventory against the visible page. Recording this on the same candidate reuses the audit and renders. Verify reports `rendered_pages`, `source_rendered_pages`, `mechanical_reused_pages` and `state_written_bytes`. Inspect the event log for elapsed times. After an edit, unchanged original and candidate images may be reused; document-level checks still run. Raw pixel values and mechanical_pass remain unchanged even when a practical difference is retained.
 
-Open the bilingual pages listed in review_needed. Use difference images and local zoom to investigate specific concerns. When an independent reviewer is assigned, have that reviewer record their observations. If a page needs repair, submit observations for the pages already viewed and clear, and report the repair separately. Use review_handoff and copy observations_template to a new file. The template binds the candidate and render-index hashes and starts with an empty pages list. Fill the actual reviewer and only viewed pages. Missing binding fields and mismatched hashes have distinct diagnostics.
+Open pages listed in review_needed or inventory_review_needed. During the same actual view, check the source inventory, required covers and any exact difference findings, and record applicable inventory_reviewed/covers_checked/retain_right_difference evidence. Use differences and zoom only for concerns. Independent reviewers submit their own observations; multiple reviewers save separate files for serial registration by the state writer. Save clear-page evidence before repairs, and reuse it through --previous-state. Use review_handoff and copy observations_template to a new file; it binds candidate/render hashes and starts with empty pages. Missing fields and mismatched hashes are diagnosed separately. Never mark a check completed merely to avoid another view.
 
 ~~~json
 {"output_sha256":"COPY_FROM_VERIFY","render_index_sha256":"COPY_FROM_VERIFY","reviewer":"actual-agent-or-person","pages":[{"page":1,"evidence":"Actual image view reference and readability observations","retained":["Minor line break retained"],"retain_right_difference":"If a reported right-side difference was actually inspected: why it does not impair reading"}],"structure_notes":"Basic readability and requested coverage checked"}
@@ -108,6 +116,8 @@ Do not fill observations before viewing. Do not directly edit qc to pass. Render
 Batch repairs, preview the affected pages, then build the complete candidate. Run verify --previous-state PREVIOUS.state.json even if only some pages were recorded. Repeat the option for multiple relevant candidates or packages. It checks pixels, settings and dependencies per page and keeps each valid record’s original viewer, time and evidence. Valid observations on the current candidate take priority. Follow review_needed and record a new decision for any changed difference finding. Automated checks still cover the complete candidate.
 
 review returns observations_saved, saved_pages, reviewed_pages and review_needed. Check ready and errors for delivery readiness. Use verify --previous-state to reuse partial observations.
+
+Report observation reuse separately from mechanical cache reuse and actual rendered pages. A text edit can change a shared embedded font subset even with unchanged registered fonts, invalidating painting fingerprints on other pages. Preserve the measured counts rather than altering masks or claiming that review reuse means no rendering.
 
 ## Deliver and maintain
 

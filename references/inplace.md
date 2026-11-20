@@ -18,7 +18,7 @@ Each glyph fact includes id, text, bbox, origin, font, size, hidden and trace_ty
 
 Each native block references glyph_ids and optional half-open glyph_ranges, e.g. [[0,5],[8,12]]. Every non-whitespace source glyph must belong to exactly one selected range, including preserved formulas and hidden OCR. To merge spans, concatenate their IDs into one coherent block; to keep inline values, split prose and value IDs into separate blocks. Update expected_blocks and reading_order to match the final ordered blocks. Keep source_text/source_bbox and semantic/table/figure anchors meaningful. Use table-cell blocks for in-place table text; the original grid stays intact. A deliberately grouped kind: table also needs the existing source_rows/translated_rows metadata.
 
-The automatic extractor does not decide mathematical semantics. Split and preserve variable names, signs, formula numbers, subscripts and numeric data before replacing adjacent prose. Review every repeated formula. Source issues retain original wording and an explicit treatment.
+The extractor does not decide mathematical semantics. Separate native ownership for symbols/values that must be preserved, but do not turn those ranges into a fragmented Chinese reading order. Preserve standalone formulas; for inline notation use coherent Chinese with verified short variables repeated as needed, following the representative-preview procedure in [practical.md](practical.md). Check affected formulas and table values when previewing the changed page, and reuse valid observations for unchanged pages. Keep source issues and their explicit treatment on record.
 
 ## Block decisions
 

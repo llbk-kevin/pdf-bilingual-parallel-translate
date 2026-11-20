@@ -22,6 +22,8 @@ Keep user inputs, translations, renders, recovery files, fonts and credentials o
 
 ## Implementation constraints
 
+For coordination changes, test the work-plan validator with full/split page ownership, independent review identities, explicit model requests and real-evidence classification, repeated original-worker continuations and lightweight progress during a heavy-work queue. A static model list is not a capability test. Use a small independent trial from the revised entrypoint; keep its confirmation table, dispatch ledger and checkpoints outside the repository. Count unique agent IDs separately from continuations and concurrent activity.
+
 For tool-lifecycle changes, test success/failure/cancel/orphan/PID reuse, bounded log transport and UTF-8 paths. Run repeated synthetic large-state queries and jobs in an isolated parent, recording initial/peak/end memory and post-warmup growth. Validate real host reset by disappearance of the registered PID/start identity; mark unsupported or unverified cleanup explicitly. Keep host process details and task measurements outside the repository.
 
 - Compress non-image streams without re-encoding original images. Audit traverses reachable resources and checks encoded image streams and their display semantics. Review the encoded-stream inventory when changing the pypdf major version.

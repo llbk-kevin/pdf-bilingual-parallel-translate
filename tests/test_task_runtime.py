@@ -155,7 +155,7 @@ class SessionLifecycle(unittest.TestCase):
                 co.register_session(temp,'fixture',fake)
 
     def test_dynamic_memory_queue_and_override(self):
-        memory = SimpleNamespace(total=32*1024**3, available=4*1024**3)
+        memory = SimpleNamespace(total=32*1024**3, available=int(2.5*1024**3))
         task = {'id':'a','status':'queued','phase':'translate','depends_on':[]}
         self.assertEqual(co.ready_tasks([task],64,memory),[])
         self.assertEqual(co.ready_tasks([task],64,memory,reserve_bytes=2*1024**3),[task])
