@@ -13,7 +13,7 @@ from collections import defaultdict
 from contextlib import closing
 from pathlib import Path
 import pymupdf as fitz
-from workflow import digest, canonical, resolve, pagination_items, state_header_error
+from workflow import digest, canonical, resolve, pagination_items, state_header_error, valid_rectangle
 
 from resources import WorkerBudget, register_worker, peak_memory, worker_request
 
@@ -56,7 +56,10 @@ def open_source(source, password=None):
     return doc
 
 def relative(path, base):
-    return os.path.relpath(Path(path).resolve(), Path(base).resolve()).replace('\\', '/')
+    target, root = Path(path).resolve(), Path(base).resolve()
+    if target.drive.lower() != root.drive.lower():
+        return target.as_posix()
+    return os.path.relpath(target, root).replace('\\', '/')
 
 def write_compact_state(stream, state):
     """Keep the fast JSON encoder, bounding its output to one page at a time."""
@@ -307,10 +310,16 @@ def validate_page(page, fresh, final=False):
                 if g['id'] in owned:
                     raise ValueError('Glyph assigned twice: '+g['id'])
                 owned[g['id']] = method
-            allowed = rect(block['allowed_bbox'])
+            preserve = method == 'preserve'
+            if not valid_rectangle(block['source_bbox'], allow_empty=preserve) or not valid_rectangle(block['allowed_bbox'], allow_empty=preserve):
+                raise ValueError('Invalid source/allowed rectangle: '+block['id'])
+            source_box = fitz.Rect(block['source_bbox'])
+            allowed = fitz.Rect(block['allowed_bbox'])
+            if source_box.is_empty and (not glyphs or any(not fitz.Rect(g['bbox']).is_empty or not contains(source_box, fitz.Rect(g['bbox'])) for g in glyphs)):
+                raise ValueError('Degenerate preserve box must match source glyph facts: '+block['id'])
             if method != 'preserve' and not contains(bounds,allowed):
                 raise ValueError('Allowed box outside visible page: '+block['id'])
-            if not contains(rect(block['source_bbox']),allowed) and not block.get('expansion_reason'):
+            if not contains(source_box,allowed) and not block.get('expansion_reason'):
                 raise ValueError('Expanded box requires an explicit adjacent-blank-space reason: '+block['id'])
             actual = block.get('actual_bbox')
             if actual is not None and not contains(allowed,rect(actual)):

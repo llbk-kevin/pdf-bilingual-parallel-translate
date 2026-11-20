@@ -23,6 +23,8 @@ Omit absent number fields. Chinese originals contain the title only once. Append
 
 The original, accepted translation and working folder sit beside one another. The working folder uses the complete source filename stem without an extra suffix; the accepted PDF uses that stem plus the translation suffix. All per-document supporting files and drafts remain inside the working folder. Honor explicitly selected destination directories. Never overwrite the source or an existing target.
 
+If the user keeps the original filename, derive both the work folder and bilingual filename from that kept stem too; do not independently give only the bilingual PDF a different stem.
+
 ## TI additions
 
 Lowercase confirmed TI publication numbers while retaining revision letters, for example SLVA317B becomes slva317b. Read the number from the document, not a reference list. Official Chinese TI documents use an explicit English Document reference for the English number; omit only unavailable number fields. Official Chinese documents do not receive a generated-translation suffix or need retranslation merely for naming.

@@ -8,6 +8,14 @@ from html import unescape
 from pathlib import Path
 
 
+def valid_rectangle(value, *, allow_empty=False):
+    """A preserved source span may be degenerate, never reversed or nonfinite."""
+    if (not isinstance(value, (list, tuple)) or len(value) != 4
+            or not all(type(v) in (int, float) and math.isfinite(v) for v in value)):
+        return False
+    return (value[2] >= value[0] and value[3] >= value[1]) if allow_empty else (value[2] > value[0] and value[3] > value[1])
+
+
 def digest(path):
     sha = hashlib.sha256()
     with Path(path).open('rb') as stream:

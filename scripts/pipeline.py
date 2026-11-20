@@ -79,39 +79,88 @@ def probe_runtime(state, sp):
     return prefix
 
 
-def prepare(args):
-    sp=Path(args.state).resolve()
-    # Check the original reader before writing a recovery package. The builder
-    # uses it for raw destinations even when MuPDF already opens the document.
-    with pt.checked_reader(args.source):
-        pass
-    workers = worker_count(args)
-    result=ip.extract(args.source,sp,args.pages,args.overwrite,profile=args.profile or 'practical',
-                      workers=workers)
-    state=load(sp)
-    selected=result['pages']
-    state['layout']['runtime_packages'] = runtime_packages()
-    state['document'].update(delivery_scope='full' if len(selected)==state['source']['page_count'] else 'sample',
-                             selected_source_pages=selected)
-    # Freeze a runnable recovery package. Use this copy for subsequent commands.
-    here=Path(__file__).parent
-    for name in ('pipeline.py','inplace.py','pdf_tools.py','workflow.py','runtime.py','resources.py','coordination.py','task_runtime.py'):
-        dst=sp.parent/name
-        if dst.resolve()!=(here/name).resolve():shutil.copy2(here/name,dst)
-    req=here.parent/'requirements.txt'
-    if req.exists() and req.resolve()!=(sp.parent/'requirements.txt').resolve():shutil.copy2(req,sp.parent/'requirements.txt')
-    for i,value in enumerate(args.font or []):
-        p=Path(value).resolve()
-        state['layout']['fonts'].append({'name':'Body' if i==0 else 'Fallback'+str(i),'source':ref(p,sp.parent),
-                                        'sha256':wf.digest(p),'purpose':'User-selected translation font'})
+FROZEN_FILES = ('pipeline.py','inplace.py','pdf_tools.py','workflow.py','runtime.py','resources.py','coordination.py','task_runtime.py')
+
+
+def relocate_state(state, old, new, *, move_internal=False):
+    """Resolve references before changing a state's directory."""
+    entries = [(state['source'], 'path'), *((f, 'source') for f in state['layout']['fonts']),
+               *((item, 'path') for item in state['layout'].get('inputs', []))]
+    layout = state['layout']
+    if layout.get('runtime_launcher'):
+        entries.append((layout, 'runtime_launcher'))
+    if layout.get('builder'):
+        entries.append((layout['builder'], 'path'))
+    for item, key in entries:
+        target = wf.resolve(old, item[key]).resolve()
+        if move_internal and target.is_relative_to(old):
+            target = new / target.relative_to(old)
+        item[key] = ref(target, new)
+
+
+def freeze_runtime(state, sp, old_runtime_dir=None):
+    here = Path(__file__).resolve().parent
+    for name in FROZEN_FILES:
+        shutil.copy2(here/name, sp.parent/name)
+    req = here.parent/'requirements.txt'
+    if not req.exists():
+        req = here/'requirements.txt'
+    if req.exists():
+        shutil.copy2(req, sp.parent/'requirements.txt')
+    layout = state['layout']
+    layout['runtime_packages'] = runtime_packages()
     save(sp.parent/'runtime.json', {'paths':[str(Path(p).resolve()) for p in sys.path if p],
-                                    'packages':runtime_packages()})
-    state['layout']['runtime_launcher'] = ref(sp.parent/'runtime.py', sp.parent)
-    for name in ('runtime.py', 'runtime.json', 'resources.py'):
-        state['layout'].setdefault('inputs', []).append({'path':name, 'sha256':wf.digest(sp.parent/name)})
-    prefix = probe_runtime(state, sp)
+                                   'packages':layout['runtime_packages']})
+    layout['runtime_launcher'] = 'runtime.py'
+    roots = {sp.parent, old_runtime_dir}
+    layout['inputs'] = [item for item in layout.get('inputs', [])
+                        if not (wf.resolve(sp.parent,item['path']).resolve().parent in roots
+                                and Path(item['path']).name in (*FROZEN_FILES, 'runtime.json'))]
+    layout['inputs'].extend({'path':name, 'sha256':wf.digest(sp.parent/name)}
+                            for name in (*FROZEN_FILES, 'runtime.json'))
+    layout.pop('builder', None)
+    return probe_runtime(state, sp)
+
+
+def commit_recovery(stage, sp):
+    """Publish managed files with state last; restore existing files on failure."""
+    sp.parent.mkdir(parents=True, exist_ok=True)
+    names = sorted(p.name for p in stage.iterdir() if p.is_file() and p.name != sp.name) + [sp.name]
+    backup = stage/'rollback'
+    backup.mkdir()
+    changed = []
+    try:
+        for name in names:
+            target = sp.parent/name
+            if target.exists():
+                shutil.copy2(target, backup/name)
+            changed.append(name)
+            (stage/name).replace(target)
+    except BaseException:
+        for name in reversed(changed):
+            target = sp.parent/name
+            if (backup/name).exists():
+                shutil.copy2(backup/name, target)
+            else:
+                target.unlink(missing_ok=True)
+        raise
+
+
+def task_commands(state, sp):
+    prefix = runtime_prefix(state, sp)
+    runner = wf.resolve(sp.parent,state['layout']['runtime_launcher']).resolve().parent/'pipeline.py'
+    work = sp.parent if state.get('package_preview') else sp.parent.parent/'work'
+    selection = ranges(p['source_page'] for p in state['pages'])
+    return {'source_render_argv':prefix+[str(runner.with_name('pdf_tools.py')), 'render',
+                str(source_path(state,sp)), '--pages',selection,'--out',str(work/'source')],
+            'status_argv':prefix+[str(runner),'status','--state',str(sp)],
+            'inspect_argv':prefix+[str(runner),'inspect','--state',str(sp)],
+            'build_argv':prefix+[str(runner),'build','--state',str(sp),'--pages',selection]}
+
+
+def preflight(state, sp, source, selected):
     risks=[]
-    with ip.open_source(args.source) as doc, pt.checked_reader(args.source) as reader:
+    with ip.open_source(source) as doc, pt.checked_reader(source) as reader:
         for page in state['pages']:
             n=page['source_page']
             if not page['glyphs']:risks.append({'page':n,'code':'image_or_outline_page','action':'Inspect source image; add local covers without hiding artwork'})
@@ -121,13 +170,16 @@ def prepare(args):
                               'blocks':[{'id':b['id'],'bbox':b['source_bbox']} for b in math_blocks],
                               'action':'Prefer preserving original notation; this cue does not require exhaustive formula review'})
             for b in page['blocks']:
+                if wf.valid_rectangle(b['source_bbox'],allow_empty=True) and not wf.valid_rectangle(b['source_bbox']):
+                    risks.append({'page':n,'block':b['id'],'code':'degenerate_source_span','method':b['method'],
+                                  'action':'Preserve source glyphs; zero-area spans cannot be replacement/cover regions'})
                 text=b['source_text']
                 if any(ord(c)<32 and c not in '\n\r\t' for c in text):
                     risks.append({'page':n,'block':b['id'],'code':'unreliable_text_encoding','action':'Read source crop; preserve formula/identifier instead of guessing'})
                 if b.get('hidden_ocr'):risks.append({'page':n,'block':b['id'],'code':'hidden_ocr','action':'Cover visible scan only after checking local bounds'})
         risks.extend(ip.check_interactions(doc, selected, state, collect=True, reader=reader))
         if not doc.get_ocgs() and not any(r['code'] in {'interaction_preflight','link_action','bookmark_action','bookmark_tree'} for r in risks):
-            fidelity = ip.probe_left_pane(doc, args.source, selected, reader)
+            fidelity = ip.probe_left_pane(doc, source, selected, reader)
             risks.extend(fidelity)
             native = {r['page'] for r in fidelity if r['code'] == 'native_left_required'}
             for page in state['pages']:
@@ -141,13 +193,74 @@ def prepare(args):
         if fonts and missing:
             risks.append({'page':page['source_page'], 'code':'source_symbol_font_hint',
                           'characters':[chr(c) for c in missing], 'action':'Preserve source symbols or register a fallback font with --font.'})
-    save(sp,state);save(sp.parent/'inventory.json',compact_inventory(state));save(sp.parent/'preflight.json',{'risks':risks})
+    return risks
+
+
+def prepare(args):
+    sp=Path(args.state).resolve()
+    managed={sp.parent/name for name in (*FROZEN_FILES,'runtime.json','requirements.txt','inventory.json','preflight.json',sp.name)}
+    if any(Path(value).resolve() in managed for value in [args.source, *(args.font or [])]):
+        raise ValueError('Recovery files must not overwrite source or font inputs')
+    if sp.exists() and not args.overwrite:
+        raise ValueError('State exists; use --overwrite explicitly')
+    # Check the original reader before writing a recovery package. The builder
+    # uses it for raw destinations even when MuPDF already opens the document.
+    with pt.checked_reader(args.source):
+        pass
+    sp.parent.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix='.prepare-',dir=sp.parent.parent) as temporary:
+        stage=Path(temporary); staged=stage/sp.name
+        result=ip.extract(args.source,staged,args.pages,profile=args.profile or 'practical',workers=worker_count(args))
+        state=load(staged); selected=result['pages']
+        state['document'].update(delivery_scope='full' if len(selected)==state['source']['page_count'] else 'sample',selected_source_pages=selected)
+        for i,value in enumerate(args.font or []):
+            p=Path(value).resolve()
+            state['layout']['fonts'].append({'name':'Body' if i==0 else 'Fallback'+str(i),'source':ref(p,stage),
+                                            'sha256':wf.digest(p),'purpose':'User-selected translation font'})
+        freeze_runtime(state,staged)
+        risks=preflight(state,staged,args.source,selected)
+        relocate_state(state,stage,sp.parent,move_internal=True)
+        save(staged,state);save(stage/'inventory.json',compact_inventory(state));save(stage/'preflight.json',{'risks':risks})
+        commit_recovery(stage,sp)
+    prefix=runtime_prefix(state,sp)
     return {'state':str(sp),'runner':str(sp.parent/'pipeline.py'),'command_prefix':prefix,'inventory':str(sp.parent/'inventory.json'),
             'state_written_bytes':sp.stat().st_size, 'extract_workers':result['extract_workers'], 'resources':result['resources'],
             'preflight':str(sp.parent/'preflight.json'),'pages':selected,'profile':state['layout']['review_profile'],
             'risk_counts':counts(risks), 'compatibility_blockers':counts(r for r in risks if r['code'] in
                 {'interaction_preflight','link_action','bookmark_action','bookmark_tree','link_destination_outside_scope','source_pane_probe_failed'}),
+            'commands':task_commands(state,sp),
             'next':'Resolve compatibility blockers in preflight.json before translation; then apply coherent groups.'}
+
+
+def refreeze(args):
+    old=Path(args.state).resolve(); state=task_state(old)
+    if state.get('output') or state.get('package_preview'):
+        raise ValueError('Refreeze requires the main authoring state')
+    out=Path(args.out).resolve()
+    if out.exists():
+        raise ValueError('Refreeze requires a new recovery directory')
+    source=source_path(state,old)
+    if wf.digest(source) != state['source']['sha256']:
+        raise ValueError('Source fingerprint changed')
+    previous=copy.deepcopy(state['layout'])
+    out.parent.mkdir(parents=True,exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix='.refreeze-',dir=out.parent) as temporary:
+        stage=Path(temporary);sp=stage/'state.json'
+        relocate_state(state,old.parent,stage)
+        freeze_runtime(state,sp,old.parent)
+        state['qc']={};state.pop('applied_packages',None)
+        selected=[p['source_page'] for p in state['pages']]
+        risks=preflight(state,sp,source,selected)
+        errors=ip.validate_state(state,source)
+        if errors:raise ValueError(json.dumps(errors,ensure_ascii=False))
+        relocate_state(state,stage,out,move_internal=True)
+        save(sp,state);save(stage/'inventory.json',compact_inventory(state));save(stage/'preflight.json',{'risks':risks})
+        stage.rename(out)
+    sp=out/'state.json'
+    return {'state':str(sp),'runner':str(out/'pipeline.py'),'command_prefix':runtime_prefix(state,sp),
+            'inventory':str(out/'inventory.json'),'preflight':str(out/'preflight.json'),
+            'commands':task_commands(state,sp),'dependency_changes':{'previous':wf.canonical(previous),'current':wf.canonical(state['layout'])},
+            'next':'Re-export affected packages from this state; validate existing edits against their new baselines.'}
 
 
 def counts(items):
@@ -323,7 +436,8 @@ def package(args):
         stage.rename(out)
     return {'id': metadata['id'], 'pages': selection, 'state': str(out/'state.json'),
             'inventory': str(out/'inventory.json'), 'context': str(out/'context.json'),
-            'package': str(out/'package.json')}
+            'package': str(out/'package.json'), 'command_prefix':runtime_prefix(state,out/'state.json'),
+            'commands':task_commands(state,out/'state.json')}
 
 
 def edit_pages(changes):
@@ -1025,7 +1139,7 @@ def inspect_state(args):
 
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__);subs=parser.add_subparsers(dest='command',required=True)
-    for name in ('prepare','apply','build','verify','review','publish','status','package','inspect'):
+    for name in ('prepare','refreeze','apply','build','verify','review','publish','status','package','inspect'):
         p=subs.add_parser(name);p.add_argument('--state',required=True);p.add_argument('--overwrite',action='store_true')
         if name in ('prepare','build'):
             p.add_argument('--pages',default='all')
@@ -1051,13 +1165,14 @@ def main(argv=None):
             p.add_argument('--pages',required=True)
             p.add_argument('--out',required=True)
             p.add_argument('--owner',help='Actual subagent identifier for handoff')
+        if name=='refreeze':p.add_argument('--out',required=True,help='New recovery directory; old package is untouched')
         if name=='verify':p.add_argument('--previous-state',action='append')
         if name in ('prepare', 'verify'):p.add_argument('--workers',type=worker_request,default='auto')
         if name=='review':p.add_argument('--observations',required=True)
         if name=='publish':p.add_argument('--task-dir',help='Working folder for delivery notes and optional rebuilding; inferred from work/ or recovery[-vN]/')
     args=parser.parse_args(argv);started=time.monotonic();success=False;result={};diagnostic=None
     try:
-        result={'prepare':prepare,'apply':apply_edits,'build':build,'verify':verify,'review':review,'publish':publish,'status':status,'package':package,'inspect':inspect_state}[args.command](args)
+        result={'prepare':prepare,'refreeze':refreeze,'apply':apply_edits,'build':build,'verify':verify,'review':review,'publish':publish,'status':status,'package':package,'inspect':inspect_state}[args.command](args)
         success=(result.get('observations_saved',False) if args.command=='review' else not result.get('errors') and result.get('ok',True))
         print(json.dumps(result,ensure_ascii=False));return 0 if success else 2
     except Exception as exc:
@@ -1067,7 +1182,8 @@ def main(argv=None):
         if args.command in ('status','inspect'):
             print(json.dumps({'ok': False, 'error': detail}, ensure_ascii=False), file=sys.stderr)
             return 2
-        directory=Path(args.state).resolve().parent
+        directory=(Path(args.out).resolve().parent/'refreeze-diagnostics' if args.command=='refreeze'
+                   else Path(args.state).resolve().parent)
         diagnostic=directory/'diagnostics'/('attempt-'+uuid.uuid4().hex+'.json')
         payload={'at':now(), 'command':args.command, 'detail':detail}
         if isinstance(detail,dict):payload['stage']=detail.get('stage')
@@ -1096,7 +1212,8 @@ def main(argv=None):
                     event[k] = result[k]
             if 'reused_pages' in result:
                 event['reused_pages'] = len(result['reused_pages'])
-            p = Path(args.state).resolve().parent / 'pipeline-events.jsonl'
+            directory=(Path(args.out).resolve() if success else Path(args.out).resolve().parent/'refreeze-diagnostics') if args.command=='refreeze' else Path(args.state).resolve().parent
+            p = directory / 'pipeline-events.jsonl'
             p.parent.mkdir(parents=True, exist_ok=True)
             with p.open('a', encoding='utf-8') as stream:
                 stream.write(json.dumps(event, ensure_ascii=False) + '\n')

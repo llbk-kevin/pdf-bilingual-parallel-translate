@@ -16,6 +16,18 @@ python SKILL/scripts/pipeline.py prepare --source ORIGINAL.pdf --state recovery/
 
 prepare 在状态旁冻结当前脚本、运行入口/配置及资源预算模块，写 inventory.json 与 preflight.json。后续使用返回的 command_prefix 加 runner，下例用 COMMAND_PREFIX 代表这个前缀。--workers 支持 auto（默认）或正整数，按本机 CPU/内存预算准入，资源遥测记录实际选择。后续包括 verify/review/publish 均使用冻结入口，不把命令变量改回 SKILL/scripts/pipeline.py。维护时如需替换当前任务的脚本，另建恢复目录。先读简洁 inventory，不反复读巨大的字形状态。source_group/source_line 辅助段落归属但不决定阅读顺序。可用 pdf_tools.py render ORIGINAL.pdf --pages SELECTION --out work/source 查看原页，再决定覆盖与公式。风险仅为提示，不是自动翻译结论。公式密集提示属于非阻断启发式，编码异常和实际可见原文优先。AES 支持随 requirements.txt 安装。missing_encryption_dependency 提示补齐依赖，password_required 提示需要源文件密码。目录跳转按声明的选页范围检查，样本外目标报告 sample_link_omitted。practical 登记确认空目标或未定义命名目标的链接和书签，能获得名称时一并记录，并保留外观及标题。strict 要求跳转有效。
 
+准备过程先暂存提取、字体和冷启动检查，通过后提交管理文件，状态最后提交。失败保留已有恢复包及用户自放文件，诊断仍可读取。同盘引用用相对路径，跨盘引用用绝对路径并核对指纹，无需手工复制字体。
+
+派工前直接执行返回的 commands.source_render_argv 一次。commands.status_argv、inspect_argv、build_argv 也带冻结运行器和精确路径，参数数组直接交给子进程 API。package 返回适用于自身状态的命令。shell/import 失败应诊断环境，不绕过冻结入口。
+
+需要修构建代码时，从修订后的仓库入口执行：
+
+~~~text
+python SKILL/scripts/pipeline.py refreeze --state recovery/state.json --out recovery-v2
+~~~
+
+仅接受作者状态和新目录。保留源文件、字体、译文、字形归属、清点及上下文；新版清空 QC 和分包已应用凭据。核对源哈希及当前状态有效性。旧脚本、候选和证据保持原样。结果返回依赖指纹和新命令。受影响分包重新导出，原补丁按新 manifest 验证；不改依赖或基线哈希来压过冲突。
+
 ### 有界状态查询与长命令
 
 用冻结 pipeline inspect 查询，避免在持久 Node REPL 内解析完整状态：
@@ -40,7 +52,7 @@ PYTHON recovery/task_runtime.py cancel --job-dir TASK/work/jobs/build-001
 
 监督进程及其启动器退出前，status可能为finalizing；等终态后再改名或删除日志。优先使用可用的直接CLI工具；一种shell失败时先检查可用替代入口，再决定是否用Node运行。
 
-Node只保存路径、小批编辑和摘要。图片逐张读取，避免持久图片Buffer/Base64数组；必要临时读取放函数作用域，并在约定交接点重置。清空一个变量或强制GC不能证明历史模块绑定和原生缓冲已释放。会话登记与清理命令见[集群协作](coordination.zh-CN.md)。
+在新的 Node 内核处理 PDF 前，先用协调会话命令登记并保留记录路径，复核者也适用。Node只保存路径、小批编辑和摘要。图片逐张读取，避免持久图片Buffer/Base64数组；必要临时读取放函数作用域，并在约定交接点重置。清空一个变量或强制GC不能证明历史模块绑定和原生缓冲已释放。会话登记与清理命令见[集群协作](coordination.zh-CN.md)。
 
 批量 edits.json 原生段落示例：
 
@@ -85,11 +97,13 @@ COMMAND_PREFIX recovery/pipeline.py apply --state recovery/state.json --edits wo
 
 按实际原文选取适用的行内/独立公式、密集单元格或截图代表页。先翻译小段完整内容，用preview_argv构建并查看，再推广到同类页；这是排版方法验证，不另做整本复核。
 
-独立公式原位保留。行内变量正文先组织完整中文句，必要时在句中复写核实的短变量/数值，原生字形仍保留。保持字形归属并记录可见残留；不能为了碰撞检查通过而围绕每个保留字符拆散中文，或把句子散布到远处空白。预览整个段落、相关公式和表格单元格，重要符号/数值不可遮挡；完整句与公式可读时，少量孤立原字形按practical保留。
+独立公式原位保留。行内变量正文先组织完整中文句，必要时在句中复写核实的短变量/数值，原生字形仍保留。保持字形归属并记录可见残留；不能为了碰撞检查通过而围绕每个保留字符拆散中文，或把句子散布到远处空白。公式混排同时检查保留符号与译文完整公式是否重复；表格按实际单元格归并，不采用固定横坐标阈值跨列合并。预览整个段落、相关公式和表格单元格，重要符号/数值不可遮挡；完整句与公式可读时，少量孤立原字形按practical保留。
 
 unresolved_count为零后仍对照可见页和inventory，尤其检查提取遗漏的截图、栅格曲线和转曲标签，用局部浮层或明确关联的中文说明翻译主要内容。不能用继续编辑已译原生文字代替这项检查。
 
 ## 集中检查与真实记录
+
+译者检查完整性、代表版式和冲突页，独立复核者覆盖交付范围；不额外要求译者登记第二套正式逐页审核。
 
 ~~~text
 COMMAND_PREFIX recovery/pipeline.py verify --state work/RETURNED.state.json

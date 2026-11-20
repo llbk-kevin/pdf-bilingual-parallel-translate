@@ -28,6 +28,30 @@ def plan():
 
 
 class WorkPlans(unittest.TestCase):
+    def test_record_events_are_idempotent_atomic_and_keep_model_identity(self):
+        with tempfile.TemporaryDirectory() as root:
+            ledger=Path(root)/'台账 空格.json';co.write(ledger,plan())
+            event={'id':'launch-1','type':'launch','task':'d01_translate','agent_id':'original',
+                   'requested_model':'gpt-6-luna','requested_effort':'xhigh'}
+            self.assertEqual(co.record_event(ledger,event)['summary']['created_agents'],1)
+            original=ledger.read_bytes()
+            self.assertTrue(co.record_event(ledger,event)['replayed'])
+            self.assertEqual(ledger.read_bytes(),original)
+            with self.assertRaisesRegex(ValueError,'different content'):co.record_event(ledger,{**event,'requested_effort':'high'})
+            resumed=co.record_event(ledger,{'id':'resume-1','type':'resume','task':'d01_translate','agent_id':'original'})
+            self.assertEqual((resumed['summary']['created_agents'],resumed['summary']['resume_count']),(1,1))
+            original=ledger.read_bytes()
+            with self.assertRaises(ValueError):co.record_event(ledger,{'id':'wrong','type':'status','task':'d01_translate','status':'lost'})
+            self.assertEqual(ledger.read_bytes(),original)
+            checked=co.record_event(ledger,{'id':'model-1','type':'model-evidence','task':'d01_translate',
+                'agent_id':'original','actual_model':'gpt-6-luna','actual_effort':'xhigh','evidence':'host-record','evidence_agent_id':'original'})
+            self.assertEqual(checked['models'][0]['status'],'verified')
+            with self.assertRaises(ValueError):co.record_event(ledger,{'id':'review-launch','type':'launch',
+                'task':'d01_review','agent_id':'original','requested_model':'gpt-6-luna','requested_effort':'xhigh'})
+            result=co.record_event(ledger,{'id':'finish','type':'status','task':'d01_translate','status':'completed',
+                                           'artifacts':{'candidate':'work/candidate.pdf'}})
+            self.assertEqual(result['summary']['running_agents'],0)
+
     def assert_invalid(self, value, text):
         result=co.validate_plan(value)
         self.assertFalse(result['ok'], result)

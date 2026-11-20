@@ -6,6 +6,7 @@ from pathlib import Path
 import tomllib
 import hashlib
 import datetime
+import copy
 import psutil
 
 from task_runtime import write
@@ -336,6 +337,52 @@ def validate_plan(plan):
             'note': 'Structure only: user confirmation and a real model/tool probe are separate evidence'}
 
 
+def record_event(plan_path, event):
+    """The coordinator is the single ledger writer; event IDs make retries safe."""
+    plan_path=Path(plan_path)
+    plan=json.loads(plan_path.read_text(encoding='utf-8'))
+    if not isinstance(event,dict) or not isinstance(event.get('id'),str) or not event['id']:
+        raise ValueError('Event requires a nonempty id')
+    fingerprint=hashlib.sha256(json.dumps(event,sort_keys=True,ensure_ascii=False).encode('utf-8')).hexdigest()
+    history=plan.setdefault('events',[])
+    prior=next((item for item in history if item['id']==event['id']),None)
+    if prior:
+        if prior['sha256'] != fingerprint:raise ValueError('Event id reused with different content')
+        return {**validate_plan(plan),'replayed':True}
+    updated=copy.deepcopy(plan)
+    task=next((item for item in updated['tasks'] if item['id']==event.get('task')),None)
+    if task is None:raise ValueError('Event references an unknown task')
+    action=event.get('type')
+    if action=='launch':
+        launch={key:event[key] for key in ('task','agent_id','requested_model','requested_effort')}
+        if any(item.get('agent_id')==launch['agent_id'] for item in updated.get('launches',[])):
+            raise ValueError('Agent already launched; record resume instead')
+        updated.setdefault('launches',[]).append(launch)
+        task.update(agent_id=launch['agent_id'],status='running')
+    elif action=='resume':
+        if not task.get('agent_id') or task['agent_id'] != event.get('agent_id'):
+            raise ValueError('Resume must identify the original task agent')
+        task.update(resume_count=task.get('resume_count',0)+1,status='running')
+    elif action=='status':
+        task['status']=event['status']
+        if 'artifacts' in event:
+            if not isinstance(event['artifacts'],dict):raise ValueError('artifacts must be an object')
+            task['artifacts']=event['artifacts']
+    elif action=='model-evidence':
+        launch=next((item for item in updated.get('launches',[]) if item.get('task')==task['id'] and item.get('agent_id')==event.get('agent_id')),None)
+        if launch is None:raise ValueError('Model evidence must identify an existing task launch')
+        allowed=('actual_model','actual_effort','evidence','evidence_agent_id','error')
+        launch.update({key:event[key] for key in allowed if key in event})
+    else:
+        raise ValueError('Event type must be launch, resume, status or model-evidence')
+    result=validate_plan(updated)
+    if not result['ok']:raise ValueError(json.dumps(result,ensure_ascii=False))
+    updated['events'].append({'id':event['id'],'sha256':fingerprint,'type':action,'task':task['id'],
+                              'at':datetime.datetime.now(datetime.timezone.utc).isoformat()})
+    write(plan_path,updated)
+    return {**result,'replayed':False}
+
+
 def main():
     import sys
     if hasattr(sys.stdout,'reconfigure'):
@@ -346,6 +393,9 @@ def main():
     sub = parser.add_subparsers(dest='command')
     validate = sub.add_parser('validate-plan')
     validate.add_argument('--plan', required=True, type=Path)
+    record = sub.add_parser('record')
+    record.add_argument('--plan',required=True,type=Path)
+    record.add_argument('--event',required=True,type=Path)
     for name in ('memory','session-register','sessions'):
         child = sub.add_parser(name)
         child.add_argument('--task-dir',required=True)
@@ -360,6 +410,10 @@ def main():
     args = parser.parse_args()
     if args.command=='validate-plan':
         result = validate_plan(json.loads(args.plan.read_text(encoding='utf-8')))
+    elif args.command=='record':
+        try:result=record_event(args.plan,json.loads(args.event.read_text(encoding='utf-8')))
+        except (ValueError,KeyError,TypeError,OSError) as exc:
+            result={'ok':False,'error':str(exc)}
     elif args.command=='memory':
         config = Path(args.task_dir)/'work'/'resource-settings.json'
         settings = json.loads(config.read_text(encoding='utf-8')) if config.exists() else {}
@@ -374,7 +428,7 @@ def main():
     else:
         result = host_settings(args.config)
     print(json.dumps(result,ensure_ascii=False))
-    if args.command == 'validate-plan' and not result['ok']:
+    if args.command in ('validate-plan','record') and not result['ok']:
         raise SystemExit(1)
 
 

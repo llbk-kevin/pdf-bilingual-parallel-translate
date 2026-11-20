@@ -26,7 +26,7 @@ import pypdfium2.raw as pdfium_c
 from PIL import Image, ImageChops, ImageDraw
 
 from workflow import (canonical_pages, check_fonts, mechanical_page, page_fingerprint,
-                      pagination_items, require_state, state_header_error, validate_reviews)
+                      pagination_items, require_state, state_header_error, validate_reviews, valid_rectangle)
 
 SCHEMA_VERSION = 2
 _PASSWORD = None
@@ -1077,7 +1077,7 @@ def check_state(state_path, final=False, *, state=None):
             if not isinstance(block.get("kind"),str):
                 error("missing_block_kind",page=n,block=bid)
             bbox = block.get("source_bbox")
-            if not isinstance(bbox,list) or len(bbox)!=4 or not all(type(v) in (int,float) and math.isfinite(v) for v in bbox) or bbox[2]<=bbox[0] or bbox[3]<=bbox[1]:
+            if not valid_rectangle(bbox, allow_empty=block.get('method') == 'preserve'):
                 error("invalid_source_bbox",page=n,block=bid)
 
             target_bbox = block.get("target_bbox")
