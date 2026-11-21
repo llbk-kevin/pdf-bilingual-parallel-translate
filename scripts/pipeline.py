@@ -79,7 +79,7 @@ def probe_runtime(state, sp):
     return prefix
 
 
-FROZEN_FILES = ('pipeline.py','inplace.py','pdf_tools.py','workflow.py','runtime.py','resources.py','coordination.py','task_runtime.py')
+FROZEN_FILES = ('pipeline.py','inplace.py','pdf_tools.py','workflow.py','runtime.py','resources.py','coordination.py','task_runtime.py','vector_forms.py')
 
 
 def relocate_state(state, old, new, *, move_internal=False):

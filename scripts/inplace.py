@@ -928,7 +928,7 @@ def check_right_links(source_doc, reader, selected, state):
 
 
 def migrate_raw_links(source_doc, source_path, composed_stream, output_stream, selected,
-                      password=None, state=None, *, reader=None, native_pages=(), metrics=None, right_links=None):
+                      password=None, state=None, *, reader=None, native_pages=(), metrics=None, right_links=None, vectors=None):
     """Preserve destination modes and nullable axes that get_links cannot represent."""
     from pypdf import PdfReader, PdfWriter
     from pypdf.generic import ArrayObject, DictionaryObject, NameObject, NullObject, FloatObject
@@ -1093,6 +1093,8 @@ def migrate_raw_links(source_doc, source_path, composed_stream, output_stream, s
                     'subtype':str(annotation['/Subtype']),'source_bbox':box(source_rect),
                     'right_bbox':box(source_rect),'appearance':'preserved-normal-stream'})
     if link_conflicts:raise ValueError(json.dumps({'link_conflicts':link_conflicts},ensure_ascii=False))
+    if vectors is not None:
+        vectors.apply(writer, selected)
     layers = attach_layer_catalog(writer, layer_catalog(reader))
     if native_pages:
         share_native_images(writer)
@@ -1506,6 +1508,8 @@ def _build(source, state_path, output, pages, overwrite, password, preview,
         if catalog is not None:
             for i, ref in enumerate(catalog['/OCGs']):
                 src.xref_set_key(ref.idnum, _LAYER_ID[1:], str(i))
+        from vector_forms import VectorSharing
+        vectors = VectorSharing()
         native_pages = set()
         # Capture source rotation before zeroing it. show_pdf_page does not account for
         # the source page Rotate entry; an explicit inverse rotation is required.
@@ -1520,6 +1524,8 @@ def _build(source, state_path, output, pages, overwrite, password, preview,
             if native:
                 native_pages.add(n)
             effective_boxes=effective_glyph_boxes(original,pstate['glyphs'])
+            if not native and catalog is None:
+                vectors.mark(src, reader, original, n)
             original.set_rotation(0)
             page=out.new_page(width=2*w,height=h)
             page_fonts=set()
@@ -1654,13 +1660,14 @@ def _build(source, state_path, output, pages, overwrite, password, preview,
             with composed_path.open('rb') as composed, final_path.open('wb') as final:
                 metrics.objects.update(migrate_raw_links(
                     src, source, composed, final, selected, password, state,
-                    reader=reader, native_pages=native_pages, metrics=metrics, right_links=right_links))
+                    reader=reader, native_pages=native_pages, metrics=metrics, right_links=right_links, vectors=vectors))
             metrics.enter('state_write')
+            vector_report = vectors.report(final_path, selected)
             candidate_sha = digest(final_path)
             if state['layout'].get('runtime_launcher'):
                 state['layout']['runtime_launcher']=relative(resolve(state_path.parent,state['layout']['runtime_launcher']),output.parent)
             state['source']['path']=relative(source,output.parent)
-            state['output']={'path':output.name,'sha256':candidate_sha,
+            state['output']={'path':output.name,'sha256':candidate_sha,'vector_forms':vector_report,
                              'assignments':relative(destinations[2],output.parent)}
             if preview:state['output']['preview']=True
             for reg in state['layout']['fonts']:
@@ -1679,6 +1686,7 @@ def _build(source, state_path, output, pages, overwrite, password, preview,
             final_path.replace(output)
         result = {'output':str(output),'state':str(destinations[1]),'assignments':str(destinations[2]),'pages':selected,
                   'state_written_bytes':destinations[1].stat().st_size,
+                  'vector_forms':vector_report,
                   'omitted_link_pages': [p['source_page'] for p in state['pages'] if p.get('omitted_links')]}
         if return_state:
             result['_state'] = state

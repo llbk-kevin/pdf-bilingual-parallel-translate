@@ -939,6 +939,7 @@ def audit_documents(source, output, sr, outreader, sm, om, source_doc, result_do
             "source": {"sha256": sm["sha256"], "bytes": sm["bytes"], "pages": sm["page_count"]},
             "output": {"sha256": om["sha256"], "bytes": om["bytes"], "pages": om["page_count"]},
             "size_delta_bytes": om["bytes"]-sm["bytes"], "classified_delta_bytes": delta,
+            "vector_forms": (state or {}).get("output", {}).get("vector_forms", {}),
             "source_resources": sm["resources"], "output_resources": om["resources"],
             "render_dpi": dpi, "render_method":RENDER_METHOD, "pages": pages, "findings": findings,
             "rendered_pages": rendered_count, "source_rendered_pages": source_rendered_count,
