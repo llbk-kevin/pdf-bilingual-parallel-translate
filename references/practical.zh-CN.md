@@ -60,7 +60,7 @@ PYTHON recovery/task_runtime.py cancel --job-dir TASK/work/jobs/build-001
 {"blocks":[{"page":1,"id":"paragraph-1","merge_ids":["EXTRACTED-ID-1","EXTRACTED-ID-2"],"method":"replace","translation":"完整段落的中文。","font_size":10,"font_size_min":9},{"page":1,"id":"EXTRACTED-FORMULA-ID","method":"preserve","reason":"保留原公式及数值"}],"inventory_reviewed_pages":[1]}
 ~~~
 
-替换真实 ID 并核对原文。合并的新 ID 必须唯一，或属于本次 merge_ids；不能借用别的段落 ID。merge_ids 合并字形引用与原框，不跨栏或跨单元格；普通块编辑省略 merge_ids。上述合并成功后再次修改，直接指定新 ID，例如 {"blocks":[{"page":1,"id":"paragraph-1","font_size":9,"font_size_min":8}]}；不要重复已经移除的原 merge_ids。公式混合正文确需拆字形时查 inplace.md，可写小型 JSON 编辑操作处理例外，不从乱码重绘整式。每个原文字形必须且只由一块拥有。短标识、单位、尺寸、公式保留，说明性正文翻译，不能为了省事把正文 preserve。用 apply 返回的 unresolved_count 和 unresolved_by_page 对照待处理块。已预置 preserve 的块仍须核实，只有改变处理方式时才提交编辑。失效 merge_ids 诊断列出源页、目标块和缺失 ID。
+替换真实 ID 并核对原文。合并的新 ID 必须唯一，或属于本次 merge_ids；不能借用别的段落 ID。merge_ids 合并字形引用与原框，不跨栏或跨单元格；普通块编辑省略 merge_ids。上述合并成功后再次修改，直接指定新 ID，例如 {"blocks":[{"page":1,"id":"paragraph-1","font_size":9,"font_size_min":8}]}；不要重复已经移除的原 merge_ids。公式混合正文确需拆字形时查 inplace.md，可写小型 JSON 编辑操作处理例外，不从乱码重绘整式。每个原文字形必须且只由一块拥有。短标识、单位、尺寸、公式保留，说明性正文翻译，不能为了省事把正文 preserve。用 apply 返回的 unresolved_count 和 unresolved_by_page 对照待处理块。已预置 preserve 的块仍须核实，只有改变处理方式时才提交编辑。提取清单可能包含已被原页后续绘图遮住的底层文字；查看原图确认后，把这类重叠字形合入同一区域替换，不再单独 preserve；保留不可变字形事实，链接动作独立迁移。失效 merge_ids 诊断列出源页、目标块和缺失 ID。
 
 图片/转曲新覆盖示例，坐标为可见页左上角 PDF 点：
 
@@ -79,7 +79,7 @@ COMMAND_PREFIX recovery/pipeline.py build --state recovery/state.json
 
 apply 返回 preview_skipped_pages 和 unresolved_by_page，preview_argv 仅包含已完成处理的变化页。preview_argv 参数数组使用当前冻结入口、authoring state 和变化页。直接传给子进程 API，不拼成未转义的 shell 命令。局部调整使用该预览，最终完整候选省略 --pages。build 从当前状态读取原文路径。
 
-build 返回 PDF、生成状态及字形运行记录。verify/review/publish 必须用返回的生成状态。使用 --pages 3 局部预览，交付时构建完整声明范围。局部检查在 PDF 写出前解析最终交付范围内的右栏锚点，包括预览外目标，分包保留 final_source_pages。同类冲突从 last-error.json 集中修复后重建。链接映射错误按选定页集中写入 link_conflicts，包含 page、source_link 和 source_bbox，一批修完，不为逐条报错重复全本构建。降低字号时同时检查 font_size 和 font_size_min，下限不能高于指定字号。font_size_min 空或缺省为固定字号，不为强制通过不断缩小到不可读。preserved_glyph_removed 会指出缺失字符、原页位置、保留块及相邻替换块。先检查原图局部和相关掩码。同一字符及位置重复报错时先诊断，再修复已确认的碰撞并预览完整公式。
+build 返回 PDF、生成状态及字形运行记录。verify/review/publish 必须用返回的生成状态。使用 --pages 3 局部预览，交付时构建完整声明范围。局部检查在 PDF 写出前解析最终交付范围内的右栏锚点，包括预览外目标，分包保留 final_source_pages。同类冲突从 last-error.json 集中修复后重建。链接映射错误按选定页集中写入 link_conflicts，包含 page、source_link 和 source_bbox，一批修完，不为逐条报错重复全本构建。降低字号时同时检查 font_size 和 font_size_min，下限不能高于指定字号。apply 保存后返回 layout_check 的 passed/adapted/needs_attention/fixed_size 计数、分类受影响页及 apply-layout.json 明细路径；溢出不丢弃已保存译文。代表文字类别先确定可读范围，再复用于同类块，不设统一最小字号。build 去字前使用同一试排。font_size_min 空或缺省为固定字号，不为强制通过不断缩小到不可读。preserved_glyph_removed 会指出缺失字符、原页位置、保留块及相邻替换块。先检查原图局部和相关掩码。无相关掩码时检查全页归并，不猜测附近修改。preserved_duplicate_reduced 表示同位同外观的重复字形减少但仍有完整副本；practical 须实际查看位置并用 retain_right_difference 处置，strict 阻断。原始像素差异照常测量。同一字符及位置重复报错时先诊断，再修复已确认的碰撞并预览完整公式。
 
 ## 长文档恢复与分包
 

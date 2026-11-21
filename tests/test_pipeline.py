@@ -36,6 +36,41 @@ class PracticalPipeline(unittest.TestCase):
         ep=self.root/'edits.json';pl.save(ep,edits);pl.apply_edits(self.args(edits=str(ep)))
         return wf.load(self.sp)
     def built(self):return pl.build(self.args())
+    def test_apply_keeps_translation_and_reports_local_layout(self):
+        state=self.prepared()
+        block=next(b for b in state['pages'][0]['blocks'] if b['method']=='replace')
+        ep=self.root/'overflow.json'
+        pl.save(ep,{'blocks':[{'page':1,'id':block['id'],'translation':'中文'*100,'font_size':8,'font_size_min':8}]})
+        result=pl.apply_edits(self.args(edits=str(ep)))
+        self.assertEqual(result['changed_pages'],[1])
+        self.assertEqual(result['preview_argv'][-2:],['--pages','1'])
+        self.assertGreater(result['layout_check']['counts']['needs_attention'],0)
+        saved=wf.load(self.sp)
+        self.assertEqual(next(b for b in saved['pages'][0]['blocks'] if b['id']==block['id'])['translation'],'中文'*100)
+        report=wf.load(result['layout_check']['details'])
+        self.assertEqual(report['groups']['height_overflow']['pages'],[1])
+        with patch.object(ip.fitz.Page,'apply_redactions',side_effect=AssertionError('redaction must not start')):
+            with self.assertRaisesRegex(ValueError,'height_overflow'):
+                self.built()
+
+    def test_duplicate_finding_requires_specific_review_disposition(self):
+        self.prepared()
+        built=self.built()
+        sp=Path(built['state']);state=wf.load(sp)
+        state['pages'][0]['build_findings']=[{'code':'preserved_duplicate_reduced','page':1,
+            'block':'synthetic','character':'X','origin':[20,40],'before_count':2,'after_count':1}]
+        pl.save(sp,state)
+        verified=pl.verify(Namespace(state=str(sp),previous_state=None))
+        reviewed=self.observations(verified)
+        obs=wf.load(reviewed.observations)
+        obs['pages'][0]['retain_right_difference']='Viewed synthetic native label and retained its overprint reduction'
+        pl.save(reviewed.observations,obs)
+        result=pl.review(reviewed)
+        final=wf.load(sp)
+        self.assertTrue(final['qc']['audit_dispositions'])
+        audit=wf.load(wf.resolve(sp.parent,final['qc']['audit_path']))
+        self.assertTrue(wf.audit_accepted(audit,final))
+
     def test_inspect_is_bounded_read_only_and_uses_glyph_ownership(self):
         state = self.prepared()
         original = self.sp.read_bytes()

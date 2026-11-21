@@ -721,6 +721,11 @@ def audit_documents(source, output, sr, outreader, sm, om, source_doc, result_do
     def issue(severity, code, page=None, **extra):
         findings.append({"severity": severity, "code": code, **({"page": page} if page else {}), **extra})
 
+    for source_page in (state or {}).get('pages',[]):
+        for finding in source_page.get('build_findings',[]):
+            if finding.get('code')=='preserved_duplicate_reduced':
+                issue('error', **finding)
+
     subset = bool(state and len(state["pages"]) != sm["page_count"])
     if (len(state["pages"]) if subset else sm["page_count"]) != om["page_count"]:
         issue("error", "page_count_changed")

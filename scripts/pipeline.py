@@ -527,6 +527,16 @@ def apply_edits(args):
         save(inventory, compact_inventory(state))
         save(sp, state)
         inventory.replace(sp.parent / inventory.name)
+    # Translation stays saved even when layout still needs work.
+    import copy
+    try:
+        fonts = ip.load_fonts(state, sp)
+        _, layout_report = ip.layout_preflight(
+            copy.deepcopy([p for p in state['pages'] if p['source_page'] in changed]), fonts)
+    except (ValueError, OSError) as exc:
+        layout_report = {'counts':{}, 'groups':{}, 'findings':[{'code':'layout_check_failed','detail':str(exc)}]}
+    layout_path = sp.parent / 'apply-layout.json'
+    save(layout_path, layout_report)
     pending_pages = {p['source_page'] for p in state['pages'] if any(b['method']=='unresolved' for b in p['blocks'])}
     ready_pages = changed - pending_pages
     preview = runtime_prefix(state, sp) + [str(Path(__file__).resolve()),'build','--state',str(sp),'--pages',ranges(ready_pages)] if ready_pages else None
@@ -536,6 +546,7 @@ def apply_edits(args):
     ]
     unresolved = [row for row in unresolved if row['blocks']]
     return {'state':str(sp),'changed_pages':sorted(changed),'preview_argv':preview,
+            'layout_check':{'counts':layout_report['counts'],'groups':layout_report['groups'],'details':str(layout_path)},
             'state_written_bytes':sp.stat().st_size,'replayed':replayed,
              'preview_skipped_pages':sorted(changed & pending_pages),
              'unresolved_count':sum(len(row['blocks']) for row in unresolved),
@@ -579,7 +590,7 @@ def candidate_progress(sp, state, selected):
     decisions = {d['finding_sha256'] for d in qc.get('audit_dispositions', [])}
     blockers = [f for f in report['findings'] if f['severity'] == 'error'
                 and not (state['layout']['review_profile'] == 'practical'
-                         and f['code'] == 'right_graphics_changed_outside_recorded_regions'
+                         and f['code'] in ('right_graphics_changed_outside_recorded_regions','preserved_duplicate_reduced')
                          and wf.canonical(f) in decisions)]
     reviewed -= {f.get('page') for f in blockers}
     record_path = sp.parent/'publication.json'
@@ -590,7 +601,7 @@ def candidate_progress(sp, state, selected):
                 and record.get('output_sha256', output['sha256']) == output['sha256']):
             published = reviewed
     reason = 'audit_blocker' if any(
-        f.get('page') is None or f['code'] != 'right_graphics_changed_outside_recorded_regions'
+        f.get('page') is None or f['code'] not in ('right_graphics_changed_outside_recorded_regions','preserved_duplicate_reduced')
         or state['layout']['review_profile'] == 'strict' for f in blockers) else None
     font_ref = qc.get('font_report')
     if font_ref:
@@ -723,7 +734,7 @@ def pages_needing_review(state, report, index, records):
     if state['layout']['review_profile'] == 'practical':
         decisions = {d['finding_sha256'] for d in state['qc']['audit_dispositions']}
         pending.update(f['page'] for f in report['findings']
-                       if f['code'] == 'right_graphics_changed_outside_recorded_regions'
+                       if f['code'] in ('right_graphics_changed_outside_recorded_regions','preserved_duplicate_reduced')
                        and wf.canonical(f) not in decisions)
     return sorted(pending)
 
@@ -856,7 +867,7 @@ def verify(args):
         state_written_bytes = sp.stat().st_size
     fonts=load(checkdir/'fonts.json')
     hard=[f for f in report['findings'] if f['severity']=='error' and not
-          (state['layout']['review_profile']=='practical' and f['code']=='right_graphics_changed_outside_recorded_regions')]
+          (state['layout']['review_profile']=='practical' and f['code'] in ('right_graphics_changed_outside_recorded_regions','preserved_duplicate_reduced'))]
     pending = pages_needing_review(state, report, index, {r['page']: r for r in records})
     handoff_path = checkdir/'review-handoff.json'
     template_path = checkdir/'observations-template.json'
@@ -944,7 +955,7 @@ def review(args):
         note=observation.get('retain_right_difference')
         if note:
             for finding in audit['findings']:
-                if finding.get('page')==n and finding['code']=='right_graphics_changed_outside_recorded_regions':
+                if finding.get('page')==n and finding['code'] in ('right_graphics_changed_outside_recorded_regions','preserved_duplicate_reduced'):
                     h=wf.canonical(finding);dispositions[h]={'finding_sha256':h,'decision':'retain','note':str(note)}
         for note in observation.get('retained',[]):
             item={'page':n,'note':note}

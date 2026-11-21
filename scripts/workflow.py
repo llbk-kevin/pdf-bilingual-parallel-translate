@@ -394,6 +394,6 @@ def audit_accepted(report, state):
               if isinstance(d,dict) and d.get('decision')=='retain' and str(d.get('note','')).strip()}
     for finding in report.get('findings',[]):
         if finding['severity']!='error':continue
-        if finding['code']!='right_graphics_changed_outside_recorded_regions':return False
+        if finding['code'] not in ('right_graphics_changed_outside_recorded_regions','preserved_duplicate_reduced'):return False
         if canonical(finding) not in retained:return False
     return True

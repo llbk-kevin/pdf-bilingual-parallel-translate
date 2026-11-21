@@ -2,6 +2,7 @@
 """Extract and build source-faithful in-place bilingual pages (state v3)."""
 from __future__ import annotations
 import io
+import hashlib
 import json
 import math
 import os
@@ -1210,13 +1211,13 @@ def _layout_text_once(block,fonts):
         for chunk in chunks:
             chunk_width=sum(c[2] for c in chunk)
             if chunk_width>width+.001:
-                raise ValueError('Block overflow (single glyph): '+block['id'])
+                raise LayoutFailure('single_glyph_too_wide', block, width, height, chunk_width, None, len(lines))
             if lines[-1] and lengths[-1]+chunk_width>width+.001:
                 lines.append([]);lengths.append(0)
             lines[-1].extend(chunk);lengths[-1]+=chunk_width
     used_height=ascent+descent+(len(lines)-1)*leading
     if used_height>height+.01:
-        raise ValueError('Block overflow: %s needs %.2f pt, allowed %.2f; edit explicit adjacent blank box or font size'%(block['id'],used_height,height))
+        raise LayoutFailure('height_overflow', block, width, height, max(lengths), used_height, len(lines))
     def transform(x,y):
         if rotation==0:return fitz.Point(allowed.x0+x,allowed.y0+y)
         if rotation==90:return fitz.Point(allowed.x0+y,allowed.y1-x)
@@ -1236,6 +1237,54 @@ def _layout_text_once(block,fonts):
                 glyph_boxes.append(box(fitz.Rect(min(p.x for p in xy),min(p.y for p in xy),max(p.x for p in xy),max(p.y for p in xy))))
             x+=advance
     return lines,leading,ascent,transform,box(actual),preferred,glyph_boxes
+
+class LayoutFailure(ValueError):
+    def __init__(self, code, block, width, height, needed_width, needed_height, lines):
+        self.finding = dict(code=code, block=block['id'], allowed_width=width,
+                            allowed_height=height, needed_width=needed_width,
+                            needed_height=needed_height, line_count=lines, attempted_font_size=block.get('font_size',10))
+        super().__init__('Block overflow: '+block['id']+' '+code)
+
+
+def layout_preflight(pages, fonts):
+    """Trial layout without changing source facts; share results within a build."""
+    cache, findings, counts = {}, [], {'passed':0, 'adapted':0, 'needs_attention':0, 'fixed_size':0}
+    for page in pages:
+        n = page['source_page']
+        collisions = CollisionIndex()
+        for block in page['blocks']:
+            if block['method'] not in ('replace', 'cover', 'label'):
+                continue
+            if block.get('font_size_min') is None:
+                counts['fixed_size'] += 1
+            try:
+                value = layout_text(block, fonts)
+                cache[(n, block['id'])] = value
+                overlaps = list(verify_draw_collisions(block,value[-1],collisions))
+                category = 'needs_attention' if overlaps else 'adapted' if block['actual_font_size'] < block.get('font_size',10) else 'passed'
+                counts[category] += 1
+                for detail in overlaps:
+                    findings.append(dict(page=n,block=block['id'],code='translation_overlap',detail=detail))
+                for bounds in value[-1]:
+                    collisions.add('translation',block['id'],bounds)
+            except ValueError as exc:
+                item = dict(getattr(exc,'finding',{}))
+                item.update(page=n,block=block['id'],detail=str(exc),
+                            font_size=block.get('font_size',10),
+                            font_size_min=block.get('font_size_min'),
+                            bounded=block.get('font_size_min') is not None)
+                item.setdefault('code','layout_invalid')
+                item['at_font_minimum'] = isinstance(exc,LayoutFailure) and block.get('font_size_min') is not None
+                findings.append(item)
+                counts['needs_attention'] += 1
+    groups = {}
+    for item in findings:
+        group = groups.setdefault(item['code'], {'count':0,'pages':set()})
+        group['count'] += 1
+        group['pages'].add(item['page'])
+    return cache, {'counts':counts, 'groups':{k:{'count':v['count'],'pages':sorted(v['pages'])} for k,v in groups.items()},
+                   'findings':findings}
+
 
 def layout_text(block,fonts):
     maximum=block.get('font_size',10)
@@ -1294,15 +1343,143 @@ def glyph_location(code, origin):
     return code, origin[0], origin[1]
 
 
+def split_zero_leading_resets(data):
+    """Keep zero-leading overprints in separate text objects for redaction.
+
+    ET changes text clipping timing, so text objects that used clipping are
+    excluded. Only page-level imported streams with known initial text state
+    enter this helper; nested Form inheritance is deliberately not guessed.
+    """
+    if b'T*' not in data:
+        return data, 0
+    from pypdf.generic import ContentStream, DecodedStreamObject, FloatObject
+    stream = DecodedStreamObject()
+    stream.set_data(data)
+    content = ContentStream(stream, None, forced_encoding='bytes')
+    leading, mode, active, clipped, shown = 0., 0, False, False, False
+    matrix = [1.,0.,0.,1.,0.,0.]
+    stack, operations = [], []
+    count = 0
+    for args, op in content.operations:
+        if op == b'q':
+            stack.append((leading,mode))
+        elif op == b'Q':
+            if not stack:
+                return data, 0
+            leading,mode = stack.pop()
+        elif op == b'BT':
+            if active:
+                return data, 0
+            active,clipped,shown = True,False,False
+            matrix = [1.,0.,0.,1.,0.,0.]
+        elif op == b'ET':
+            active = False
+        elif op == b'TL':
+            leading = float(args[0])
+        elif op == b'Tr':
+            mode = int(args[0])
+        elif op == b'Tm':
+            matrix = list(map(float,args))
+        elif op in (b'Td',b'TD'):
+            x,y = map(float,args)
+            if op == b'TD':
+                leading = -y
+            matrix[4] += x*matrix[0]+y*matrix[2]
+            matrix[5] += x*matrix[1]+y*matrix[3]
+        elif op in (b'T*',b"'",b'"'):
+            matrix[4] -= leading*matrix[2]
+            matrix[5] -= leading*matrix[3]
+            if op == b'T*' and active and shown and not clipped and mode < 4 and leading == 0:
+                operations.extend([([],b'ET'),([],b'BT')])
+                args,op = [FloatObject(v) for v in matrix],b'Tm'
+                count += 1
+                shown = False
+        if op in (b'Tj',b'TJ',b"'",b'"'):
+            shown = True
+            clipped = clipped or mode >= 4
+        operations.append((args,op))
+    if active or stack or not count:
+        return data, 0
+    content.operations = operations
+    return content.get_data(), count
+
+
+def native_reset_context_safe(source_page):
+    """Restrict text-object splitting to opaque, ungrouped page contexts."""
+    if source_page.get('/Group'):
+        return False
+    resources = source_page.get('/Resources',{})
+    resources = resources.get_object() if hasattr(resources,'get_object') else resources
+    if resources.get('/Pattern'):
+        return False
+    states = resources.get('/ExtGState',{})
+    states = states.get_object() if hasattr(states,'get_object') else states
+    for reference in states.values():
+        gs = reference.get_object()
+        if (float(gs.get('/ca',1)) != 1 or float(gs.get('/CA',1)) != 1
+                or gs.get('/SMask','/None') != '/None'
+                or gs.get('/BM','/Normal') not in ('/Normal','/Compatible')
+                or getattr(gs.get('/TK',True),'value',gs.get('/TK',True)) is False
+                or getattr(gs.get('/AIS',False),'value',gs.get('/AIS',False)) is True):
+            return False
+    return True
+
+
+def isolate_native_resets(page, imported):
+    """Clone only the right wrapper's page Form; never edit the source graft."""
+    doc = page.parent
+    raw = doc.xref_stream(imported)
+    normalized,count = split_zero_leading_resets(raw)
+    if not count:
+        return 0
+    references = [(name,parent) for xref,name,parent,_ in page.get_xobjects()
+                  if xref == imported and parent]
+    if len(references) != 1:
+        return 0
+    name,parent = references[0]
+    clone = doc.get_new_xref()
+    doc.update_object(clone,doc.xref_object(imported))
+    doc.update_stream(clone,normalized)
+    doc.xref_set_key(parent,'Resources/XObject/'+name,str(clone)+' 0 R')
+    return count
+
+
+class VisibleTrace(list):
+    pass
+
+
 def right_visible_trace(page, width):
-    """Return visible, positioned glyphs in the reused right pane."""
-    return [
-        glyph_location(code, (origin[0]-width, origin[1]))
-        for trace in page.get_texttrace()
-        if trace['type'] in (0, 1) and trace.get('opacity', 1) > 0
-        for code, gid, origin, bounds in trace['chars']
-        if gid >= 0 and origin[0] >= width and not fitz.Rect(bounds).is_empty
-    ]
+    """Locations plus appearance identities; ambiguous fonts cannot be relaxed."""
+    result = VisibleTrace()
+    result.appearances = []
+    fonts = defaultdict(set)
+    for item in page.get_fonts(full=True):
+        name = re.sub(r'^[A-Z]{6}\+', '', item[3])
+        data = page.parent.extract_font(item[0])[3]
+        base14 = {'Courier','Courier-Bold','Courier-Oblique','Courier-BoldOblique',
+                  'Helvetica','Helvetica-Bold','Helvetica-Oblique','Helvetica-BoldOblique',
+                  'Times-Roman','Times-Bold','Times-Italic','Times-BoldItalic','Symbol','ZapfDingbats'}
+        identity = hashlib.sha256(data).hexdigest() if data else (
+            ('builtin',item[3],item[2]) if item[3] in base14 and item[2]=='Type1' else None)
+        fonts[name].add(identity)
+    for trace in page.get_texttrace():
+        if trace['type'] not in (0,1) or trace.get('opacity',1) <= 0:
+            continue
+        font_ids = fonts.get(trace['font'], set())
+        for code, gid, origin, bounds in trace['chars']:
+            if gid < 0 or origin[0] < width or fitz.Rect(bounds).is_empty:
+                continue
+            result.append(glyph_location(code,(origin[0]-width,origin[1])))
+            # Never infer equivalent appearances from the Unicode value alone.
+            signature = None
+            if len(font_ids)==1 and None not in font_ids and trace.get('opacity',1)==1:
+                signature = (tuple(sorted(font_ids,key=str)),gid,trace['font'],trace['size'],
+                    trace['type'],tuple(trace['dir']),trace.get('wmode'),
+                    repr(trace.get('color')),trace.get('opacity',1),
+                    trace.get('layer'),trace.get('linewidth'),trace.get('flags'),
+                    trace.get('ascender'),trace.get('descender'),tuple(round(v,2) for v in bounds))
+            result.appearances.append(signature)
+    return result
 
 
 def match_glyph_locations(expected, actual, tolerance=GLYPH_POSITION_TOLERANCE):
@@ -1350,7 +1527,7 @@ def match_glyph_locations(expected, actual, tolerance=GLYPH_POSITION_TOLERANCE):
     return left_to_right
 
 
-def preserved_glyph_conflicts(page_number, protected, before, after, mask_index):
+def preserved_glyph_conflicts(page_number, protected, before, after, mask_index, *, profile="strict"):
     entries = [(location, g, owner) for location, glyphs in protected.items()
                for g, owner in glyphs]
     initial = match_glyph_locations([entry[0] for entry in entries], before)
@@ -1362,17 +1539,36 @@ def preserved_glyph_conflicts(page_number, protected, before, after, mask_index)
             location, glyph, owner = entries[i]
             missing[location].append((glyph, owner))
     conflicts = []
+    unchanged_after = match_glyph_locations(after, before) if missing else {}
+    moved_codes = {value[0] for i,value in enumerate(after) if i not in unchanged_after} if missing else set()
     for location, glyphs in missing.items():
         # MuPDF can remove text using font-wide boxes. The raw boxes help
         # identify replacement masks that may have triggered the removal.
         related = sorted({bid for g, _ in glyphs
                           for _, bid in mask_index.intersections(g['bbox'], 0)})
+        code = 'preserved_glyph_removed'
+        same = lambda v: v[0]==location[0] and abs(v[1]-location[1])<=GLYPH_POSITION_TOLERANCE and abs(v[2]-location[2])<=GLYPH_POSITION_TOLERANCE
+        old_indices = [i for i,v in enumerate(before) if same(v)]
+        new_indices = [i for i,v in enumerate(after) if same(v)]
+        # A displaced duplicate is not a reduced overprint.
+        moved = location[0] in moved_codes
+        signatures = getattr(before,'appearances',[])
+        new_signatures = getattr(after,'appearances',[])
+        if (profile=='practical' and not moved and len(old_indices)>len(new_indices)>0 and signatures and new_signatures
+                and signatures[old_indices[0]] is not None
+                and all(signatures[i]==signatures[old_indices[0]] for i in old_indices)
+                and all(new_signatures[i]==signatures[old_indices[0]] for i in new_indices)):
+            code = 'preserved_duplicate_reduced'
         conflicts.append({
-            'page': page_number, 'code': 'preserved_glyph_removed',
+            'page': page_number, 'code': code,
+            'before_count':len(old_indices), 'after_count':len(new_indices),
             'block': glyphs[0][1], 'preserved_blocks': sorted({bid for _, bid in glyphs}),
             'character': chr(location[0]), 'origin': [round(v, 2) for v in location[1:]],
             'missing_count': len(glyphs), 'related_replacement_blocks': related,
-            'detail': 'Right-pane redaction removed preserved text; inspect the nearby replacements before rebuilding.',
+            'detail': ('Repeated identical glyph drawing reduced; inspect original and output at this location.'
+                       if code=='preserved_duplicate_reduced' else
+                       'Preserved text changed; inspect related replacement masks.' if related else
+                       'Preserved text changed without a nearby mask; inspect duplicate drawing or page-wide redaction normalization.'),
         })
     return conflicts
 
@@ -1492,6 +1688,9 @@ def _build(source, state_path, output, pages, overwrite, password, preview,
         if any(n not in available for n in selected):
             raise ValueError('Selected page missing from state')
         state['pages']=[available[n] for n in selected]
+        for page_state in state['pages']:
+            page_state.pop('build_findings',None)
+            page_state.pop('native_text_normalization',None)
         metrics.total_pages = len(selected)
         errors = [error for p in state['pages'] for error in validate_page(p,p,True)]
         if errors:
@@ -1501,6 +1700,10 @@ def _build(source, state_path, output, pages, overwrite, password, preview,
         check_interactions(src, selected, state, preview=preview, reader=reader)
         metrics.enter('fonts')
         fonts=load_fonts(state,state_path)
+        metrics.enter('layout_preflight')
+        layout_cache, layout_report = layout_preflight(state['pages'], fonts)
+        if layout_report['findings']:
+            raise ValueError(json.dumps({'layout_conflicts':layout_report['findings'], 'layout_summary':layout_report['groups']},ensure_ascii=False))
         labels=dict(pagination_items(state))
         build_errors=[]
         runs=[]
@@ -1530,7 +1733,7 @@ def _build(source, state_path, output, pages, overwrite, password, preview,
             page=out.new_page(width=2*w,height=h)
             page_fonts=set()
             if original.get_contents():
-                page.show_pdf_page(fitz.Rect(w,0,2*w,h),src,n-1,rotate=-rotation)
+                imported = page.show_pdf_page(fitz.Rect(w,0,2*w,h),src,n-1,rotate=-rotation)
             by_id={g['id']:g for g in pstate['glyphs']}
             pstate['redaction_regions']=[]
             deleted=set();masks=[];carriers=ligature_carriers(pstate['glyphs'])
@@ -1565,6 +1768,9 @@ def _build(source, state_path, output, pages, overwrite, password, preview,
                 if collisions:build_errors.append({'page':n,'block':'redaction','glyph':gid,'detail':'Redaction mask intersects preserved glyphs: '+','.join(collisions)})
                 page.add_redact_annot(mask+fitz.Rect(w,0,w,0),fill=False,cross_out=False)
             if masks:
+                normalized = isolate_native_resets(page,imported) if catalog is None and native_reset_context_safe(reader.pages[n-1]) else 0
+                if normalized:
+                    pstate['native_text_normalization'] = {'zero_leading_resets':normalized}
                 protected = defaultdict(list)
                 for g in pstate['glyphs']:
                     if (g['id'] not in deleted and g['id'] not in carriers
@@ -1578,7 +1784,12 @@ def _build(source, state_path, output, pages, overwrite, password, preview,
                     for ids, mask in merged:
                         for bid in {owners[gid] for gid in ids.split(',')}:
                             mask_index.add('replacement', bid, mask)
-                    build_errors.extend(preserved_glyph_conflicts(n, protected, before, after, mask_index))
+                    for finding in preserved_glyph_conflicts(n, protected, before, after, mask_index,
+                            profile=state['layout'].get('review_profile','strict')):
+                        if finding['code']=='preserved_duplicate_reduced':
+                            pstate.setdefault('build_findings',[]).append(finding)
+                        else:
+                            build_errors.append(finding)
             collision_index=CollisionIndex()
             for g in pstate['glyphs']:
                 if g['id'] not in deleted and not g['hidden'] and g['text'].strip():collision_index.add('preserved',g['id'],effective_boxes[g['id']])
@@ -1603,7 +1814,7 @@ def _build(source, state_path, output, pages, overwrite, password, preview,
                     if protected:build_errors.append({'page':n,'block':b['id'],'detail':'Cover intersects preserved native text: '+','.join(protected)})
                     page.draw_rect(cover+fitz.Rect(w,0,w,0),color=None,fill=tuple(b.get('cover_fill',(1,1,1))),overlay=True)
                 try:
-                    lines,leading,ascent,transform,actual,preferred,glyph_boxes=layout_text(b,fonts)
+                    lines,leading,ascent,transform,actual,preferred,glyph_boxes=layout_cache.get((n,b['id'])) or layout_text(b,fonts)
                 except ValueError as exc:
                     build_errors.append({'page':n,'block':b['id'],'detail':str(exc)});continue
                 for detail in verify_draw_collisions(b,glyph_boxes,collision_index):
@@ -1635,6 +1846,9 @@ def _build(source, state_path, output, pages, overwrite, password, preview,
             metrics.completed_pages = j+1
             metrics.emit()
         metrics.source_page = None
+        if build_errors:
+            metrics.enter('glyph_and_collision_check')
+            raise ValueError(json.dumps({'layout_conflicts':build_errors},ensure_ascii=False))
         metrics.enter('right_link_preflight')
         link_errors, right_links = check_right_links(src, reader, selected, state)
         if build_errors or link_errors:
