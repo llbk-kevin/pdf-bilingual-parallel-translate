@@ -52,6 +52,61 @@ def compact_inventory(state):
                      'blocks':[{k:b[k] for k in keys if k in b} for b in p['blocks']]} for p in state['pages']]}
 
 
+def grouped_inventory(state):
+    """Expose consecutive source runs, not inferred semantic paragraphs."""
+    pages = []
+    for page in state['pages']:
+        groups = []
+        previous = None
+        for block in page['blocks']:
+            number = block.get('source_group')
+            key = (number, block.get('rotation',0), block['method'],
+                   wf.canonical(block.get('table')))
+            line = block.get('source_line')
+            contiguous = (previous is not None and key == previous[0]
+                          and number is not None and block['method'] != 'cover')
+            if contiguous and isinstance(line,int) and isinstance(previous[1],int):
+                contiguous = previous[1] <= line <= previous[1]+1
+            if not contiguous:
+                groups.append({'id':block['id'], 'source_group':number,
+                               'rotation':block.get('rotation',0), 'method':block['method'],
+                               'block_ids':[], 'source_bbox':list(block['source_bbox']),
+                               'source_text':'', 'blocks':[]})
+            group = groups[-1]
+            group['block_ids'].append(block['id'])
+            group['blocks'].append({k:block[k] for k in
+                ('id','source_text','source_bbox','source_line','method','rotation') if k in block})
+            group['source_text'] = ' '.join(b['source_text'] for b in group['blocks'])
+            group['source_bbox'] = ip.box(ip.rect(group['source_bbox']) | ip.rect(block['source_bbox']))
+            previous = (key,line)
+        pages.append({'page':page['source_page'],'groups':groups})
+    return {'pages':pages}
+
+
+def editing_materials(state):
+    groups = grouped_inventory(state)
+    pages = {p['source_page']:p for p in state['pages']}
+    edits = []
+    for page in groups['pages']:
+        blocks = {b['id']:b for b in pages[page['page']]['blocks']}
+        for group in page['groups']:
+            if group['method'] != 'unresolved':
+                continue
+            first = blocks[group['block_ids'][0]]
+            edit = {'page':page['page'],'id':first['id'],'method':'replace','translation':'',
+                    'font_size':first.get('font_size',10)}
+            if len(group['block_ids'])>1:
+                edit['merge_ids'] = group['block_ids'][:]
+            edits.append(edit)
+    return groups, {'blocks':edits}
+
+
+def save_editing_materials(directory, state):
+    groups, template = editing_materials(state)
+    save(directory/'groups.json',groups)
+    save(directory/'edits-template.json',template)
+
+
 def task_state(path):
     state = wf.require_state(load(path))
     layout = state['layout']
@@ -198,7 +253,7 @@ def preflight(state, sp, source, selected):
 
 def prepare(args):
     sp=Path(args.state).resolve()
-    managed={sp.parent/name for name in (*FROZEN_FILES,'runtime.json','requirements.txt','inventory.json','preflight.json',sp.name)}
+    managed={sp.parent/name for name in (*FROZEN_FILES,'runtime.json','requirements.txt','inventory.json','groups.json','edits-template.json','preflight.json',sp.name)}
     if any(Path(value).resolve() in managed for value in [args.source, *(args.font or [])]):
         raise ValueError('Recovery files must not overwrite source or font inputs')
     if sp.exists() and not args.overwrite:
@@ -221,9 +276,11 @@ def prepare(args):
         risks=preflight(state,staged,args.source,selected)
         relocate_state(state,stage,sp.parent,move_internal=True)
         save(staged,state);save(stage/'inventory.json',compact_inventory(state));save(stage/'preflight.json',{'risks':risks})
+        save_editing_materials(stage,state)
         commit_recovery(stage,sp)
     prefix=runtime_prefix(state,sp)
     return {'state':str(sp),'runner':str(sp.parent/'pipeline.py'),'command_prefix':prefix,'inventory':str(sp.parent/'inventory.json'),
+            'groups':str(sp.parent/'groups.json'),'edits_template':str(sp.parent/'edits-template.json'),
             'state_written_bytes':sp.stat().st_size, 'extract_workers':result['extract_workers'], 'resources':result['resources'],
             'preflight':str(sp.parent/'preflight.json'),'pages':selected,'profile':state['layout']['review_profile'],
             'risk_counts':counts(risks), 'compatibility_blockers':counts(r for r in risks if r['code'] in
@@ -255,10 +312,12 @@ def refreeze(args):
         if errors:raise ValueError(json.dumps(errors,ensure_ascii=False))
         relocate_state(state,stage,out,move_internal=True)
         save(sp,state);save(stage/'inventory.json',compact_inventory(state));save(stage/'preflight.json',{'risks':risks})
+        save_editing_materials(stage,state)
         stage.rename(out)
     sp=out/'state.json'
     return {'state':str(sp),'runner':str(out/'pipeline.py'),'command_prefix':runtime_prefix(state,sp),
             'inventory':str(out/'inventory.json'),'preflight':str(out/'preflight.json'),
+            'groups':str(out/'groups.json'),'edits_template':str(out/'edits-template.json'),
             'commands':task_commands(state,sp),'dependency_changes':{'previous':wf.canonical(previous),'current':wf.canonical(state['layout'])},
             'next':'Re-export affected packages from this state; validate existing edits against their new baselines.'}
 
@@ -432,10 +491,12 @@ def package(args):
         save(stage/'package.json', metadata)
         save(stage/'state.json', state)
         save(stage/'inventory.json', compact_inventory(state))
+        save_editing_materials(stage,state)
         save(stage/'context.json', {'read_only': list(compact.values())})
         stage.rename(out)
     return {'id': metadata['id'], 'pages': selection, 'state': str(out/'state.json'),
             'inventory': str(out/'inventory.json'), 'context': str(out/'context.json'),
+            'groups':str(out/'groups.json'),'edits_template':str(out/'edits-template.json'),
             'package': str(out/'package.json'), 'command_prefix':runtime_prefix(state,out/'state.json'),
             'commands':task_commands(state,out/'state.json')}
 
@@ -533,12 +594,22 @@ def apply_edits(args):
         fonts = ip.load_fonts(state, sp)
         _, layout_report = ip.layout_preflight(
             copy.deepcopy([p for p in state['pages'] if p['source_page'] in changed]), fonts)
-    except (ValueError, OSError) as exc:
-        layout_report = {'counts':{}, 'groups':{}, 'findings':[{'code':'layout_check_failed','detail':str(exc)}]}
+    except Exception as exc:
+        # Edits are already committed; an unsuccessful diagnostic must suppress
+        # preview rather than report the saved translation as lost.
+        layout_report = {'counts':{}, 'groups':{}, 'findings':[
+            {'code':'layout_check_failed','error_type':type(exc).__name__,'detail':str(exc)}]}
     layout_path = sp.parent / 'apply-layout.json'
     save(layout_path, layout_report)
     pending_pages = {p['source_page'] for p in state['pages'] if any(b['method']=='unresolved' for b in p['blocks'])}
-    ready_pages = changed - pending_pages
+    blocked = {}
+    for n in changed & pending_pages:
+        blocked[n] = {'pending_translation'}
+    for finding in layout_report['findings']:
+        affected = {finding['page']} if finding.get('page') in changed else changed
+        for n in affected:
+            blocked.setdefault(n,set()).add(finding.get('code','layout_check_failed'))
+    ready_pages = changed - set(blocked)
     preview = runtime_prefix(state, sp) + [str(Path(__file__).resolve()),'build','--state',str(sp),'--pages',ranges(ready_pages)] if ready_pages else None
     unresolved = [
         {'page': page['source_page'], 'blocks': [b['id'] for b in page['blocks'] if b['method'] == 'unresolved']}
@@ -548,10 +619,13 @@ def apply_edits(args):
     return {'state':str(sp),'changed_pages':sorted(changed),'preview_argv':preview,
             'layout_check':{'counts':layout_report['counts'],'groups':layout_report['groups'],'details':str(layout_path)},
             'state_written_bytes':sp.stat().st_size,'replayed':replayed,
-             'preview_skipped_pages':sorted(changed & pending_pages),
+             'preview_skipped_pages':sorted(blocked),
+             'preview_blocked_by_page':[{'page':n,'reasons':sorted(blocked[n])} for n in sorted(blocked)],
              'unresolved_count':sum(len(row['blocks']) for row in unresolved),
             'unresolved_by_page':unresolved,
-            'next':'Use preview_argv for local adjustments; omit --pages for final full selection. Repeat verify --previous-state for each relevant reviewed candidate.'}
+            'next':('Fix pages '+ranges(blocked)+' using saved layout details or unresolved blocks. ' if blocked else '')
+                    +('Preview ready pages '+ranges(ready_pages)+' using preview_argv. ' if ready_pages else 'No preview is ready. ')
+                    +'Build the full selection when all pages are ready; reuse reviews with verify --previous-state.'}
 
 
 def ranges(numbers):
@@ -1084,7 +1158,7 @@ def publish(args):
 def inspect_state(args):
     """Read bounded state details in this short-lived Python process."""
     if args.detail != 'summary' and args.pages in (None, 'all'):
-        raise ValueError('Block/glyph inspection requires explicit --pages')
+        raise ValueError('Block/group/glyph inspection requires explicit --pages')
     if args.detail == 'glyphs' and not args.block:
         raise ValueError('Glyph inspection requires --block')
     if not 1 <= args.limit <= 200 or args.offset < 0:
@@ -1119,7 +1193,13 @@ def inspect_state(args):
         if number not in glyph_maps:
             glyph_maps[number] = {g['id']:g for g in page['glyphs']}
         return glyph_maps[number]
-    if args.detail == 'blocks':
+    if args.detail == 'groups':
+        items = [{'page':page['page'], **group} for page in grouped_inventory({'pages':pages})['pages']
+                 for group in page['groups']
+                 if not requested or requested.intersection(group['block_ids'])]
+        total_items = len(items)
+        items = items[args.offset:args.offset+args.limit]
+    elif args.detail == 'blocks':
         keys = ('id','source_text','translation','method','reason','source_bbox','allowed_bbox',
                 'cover_bbox','font_size','font_size_min','source_group','glyph_ids')
         total_items = len(blocks)
@@ -1144,7 +1224,7 @@ def inspect_state(args):
         result['next_offset'] = args.offset+args.limit
     # A pathological glyph object must not bypass the bounded transport contract.
     if len(json.dumps(result,ensure_ascii=False).encode('utf-8')) > 256*1024:
-        raise ValueError('Inspection response too large; use a smaller --limit')
+        raise ValueError('Inspection response too large; use a smaller --limit or inspect individual blocks with --detail blocks --block ID')
     return result
 
 
@@ -1169,7 +1249,7 @@ def main(argv=None):
         if name=='inspect':
             p.add_argument('--pages',default='all')
             p.add_argument('--block',action='append')
-            p.add_argument('--detail',choices=('summary','blocks','glyphs'),default='summary')
+            p.add_argument('--detail',choices=('summary','blocks','glyphs','groups'),default='summary')
             p.add_argument('--limit',type=int,default=20)
             p.add_argument('--offset',type=int,default=0)
         if name=='package':

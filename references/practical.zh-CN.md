@@ -14,7 +14,7 @@ python SKILL/scripts/pipeline.py prepare --source ORIGINAL.pdf --state recovery/
 
 --pages 为原文物理页号，从 1 开始，默认 all。选页明确标为 sample：输出连续编号，source_page 保留源页号；样本外书签及链接记为省略，不重定向。整本仍要求完整源页。字体以路径和哈希登记，重建需可用；PDF 内嵌实际用字子集，阅读不需外部字体。
 
-prepare 在状态旁冻结当前脚本、运行入口/配置及资源预算模块，写 inventory.json 与 preflight.json。后续使用返回的 command_prefix 加 runner，下例用 COMMAND_PREFIX 代表这个前缀。--workers 支持 auto（默认）或正整数，按本机 CPU/内存预算准入，资源遥测记录实际选择。后续包括 verify/review/publish 均使用冻结入口，不把命令变量改回 SKILL/scripts/pipeline.py。维护时如需替换当前任务的脚本，另建恢复目录。先读简洁 inventory，不反复读巨大的字形状态。source_group/source_line 辅助段落归属但不决定阅读顺序。可用 pdf_tools.py render ORIGINAL.pdf --pages SELECTION --out work/source 查看原页，再决定覆盖与公式。风险仅为提示，不是自动翻译结论。公式密集提示属于非阻断启发式，编码异常和实际可见原文优先。AES 支持随 requirements.txt 安装。missing_encryption_dependency 提示补齐依赖，password_required 提示需要源文件密码。目录跳转按声明的选页范围检查，样本外目标报告 sample_link_omitted。practical 登记确认空目标或未定义命名目标的链接和书签，能获得名称时一并记录，并保留外观及标题。strict 要求跳转有效。
+prepare 在状态旁冻结当前脚本、运行入口/配置及资源预算模块，写 inventory.json、groups.json、edits-template.json 和 preflight.json。后续使用返回的 command_prefix 加 runner，下例用 COMMAND_PREFIX 代表这个前缀。--workers 支持 auto（默认）或正整数，按本机 CPU/内存预算准入，资源遥测记录实际选择。后续包括 verify/review/publish 均使用冻结入口，不把命令变量改回 SKILL/scripts/pipeline.py。维护时如需替换当前任务的脚本，另建恢复目录。先读简洁 inventory，不反复读巨大的字形状态。source_group/source_line 辅助段落归属但不决定阅读顺序。可用 pdf_tools.py render ORIGINAL.pdf --pages SELECTION --out work/source 查看原页，再决定覆盖与公式。风险仅为提示，不是自动翻译结论。公式密集提示属于非阻断启发式，编码异常和实际可见原文优先。AES 支持随 requirements.txt 安装。missing_encryption_dependency 提示补齐依赖，password_required 提示需要源文件密码。目录跳转按声明的选页范围检查，样本外目标报告 sample_link_omitted。practical 登记确认空目标或未定义命名目标的链接和书签，能获得名称时一并记录，并保留外观及标题。strict 要求跳转有效。
 
 准备过程先暂存提取、字体和冷启动检查，通过后提交管理文件，状态最后提交。失败保留已有恢复包及用户自放文件，诊断仍可读取。同盘引用用相对路径，跨盘引用用绝对路径并核对指纹，无需手工复制字体。
 
@@ -60,6 +60,8 @@ PYTHON recovery/task_runtime.py cancel --job-dir TASK/work/jobs/build-001
 {"blocks":[{"page":1,"id":"paragraph-1","merge_ids":["EXTRACTED-ID-1","EXTRACTED-ID-2"],"method":"replace","translation":"完整段落的中文。","font_size":10,"font_size_min":9},{"page":1,"id":"EXTRACTED-FORMULA-ID","method":"preserve","reason":"保留原公式及数值"}],"inventory_reviewed_pages":[1]}
 ~~~
 
+groups.json 按同页连续 source_group 给出候选，包含块 ID、逐块原框、联合框、旋转及处理方式；不同旋转、源行跳跃、保留块与缺少分组编号会分开。候选不判断段落语义、分栏或单元格，须对照原图确认，必要时拆分或重新选择 merge_ids。edits-template.json 只为待处理候选生成空白替换项，保留符号在 groups.json 单列。这是模板默认分界；核对原图后，完整短标签可人工合入其单位或上标块，准确保留含义。复制模板、确认合并、填写译文及可读字号范围后再 apply，不自动应用模板。这两个文件对应 prepare/package 基线；编辑后用 inspect --state STATE --pages RANGE --detail groups [--limit N --offset N] 查当前分组，修改已有合并 ID 时不再重复 merge_ids。
+
 替换真实 ID 并核对原文。合并的新 ID 必须唯一，或属于本次 merge_ids；不能借用别的段落 ID。merge_ids 合并字形引用与原框，不跨栏或跨单元格；普通块编辑省略 merge_ids。上述合并成功后再次修改，直接指定新 ID，例如 {"blocks":[{"page":1,"id":"paragraph-1","font_size":9,"font_size_min":8}]}；不要重复已经移除的原 merge_ids。公式混合正文确需拆字形时查 inplace.md，可写小型 JSON 编辑操作处理例外，不从乱码重绘整式。每个原文字形必须且只由一块拥有。短标识、单位、尺寸、公式保留，说明性正文翻译，不能为了省事把正文 preserve。用 apply 返回的 unresolved_count 和 unresolved_by_page 对照待处理块。已预置 preserve 的块仍须核实，只有改变处理方式时才提交编辑。提取清单可能包含已被原页后续绘图遮住的底层文字；查看原图确认后，把这类重叠字形合入同一区域替换，不再单独 preserve；保留不可变字形事实，链接动作独立迁移。失效 merge_ids 诊断列出源页、目标块和缺失 ID。
 
 图片/转曲新覆盖示例，坐标为可见页左上角 PDF 点：
@@ -77,7 +79,7 @@ COMMAND_PREFIX recovery/pipeline.py apply --state recovery/state.json --edits ed
 COMMAND_PREFIX recovery/pipeline.py build --state recovery/state.json
 ~~~
 
-apply 返回 preview_skipped_pages 和 unresolved_by_page，preview_argv 仅包含已完成处理的变化页。preview_argv 参数数组使用当前冻结入口、authoring state 和变化页。直接传给子进程 API，不拼成未转义的 shell 命令。局部调整使用该预览，最终完整候选省略 --pages。build 从当前状态读取原文路径。
+apply 返回 preview_skipped_pages 和 unresolved_by_page，preview_argv 仅包含已完成处理且无排版阻断的变化页，无就绪页时为 null。preview_skipped_pages 汇总待译及排版阻断页，preview_blocked_by_page 列出原因；字体或整体排版检查失败时，本批均不提供预览。先看 layout_check 再构建，译文仍已保存。preview_argv 参数数组使用当前冻结入口、authoring state 和变化页。直接传给子进程 API，不拼成未转义的 shell 命令。局部调整使用该预览，最终完整候选省略 --pages。build 从当前状态读取原文路径。
 
 build 返回 PDF、生成状态及字形运行记录。verify/review/publish 必须用返回的生成状态。使用 --pages 3 局部预览，交付时构建完整声明范围。局部检查在 PDF 写出前解析最终交付范围内的右栏锚点，包括预览外目标，分包保留 final_source_pages。同类冲突从 last-error.json 集中修复后重建。链接映射错误按选定页集中写入 link_conflicts，包含 page、source_link 和 source_bbox，一批修完，不为逐条报错重复全本构建。降低字号时同时检查 font_size 和 font_size_min，下限不能高于指定字号。apply 保存后返回 layout_check 的 passed/adapted/needs_attention/fixed_size 计数、分类受影响页及 apply-layout.json 明细路径；溢出不丢弃已保存译文。代表文字类别先确定可读范围，再复用于同类块，不设统一最小字号。build 去字前使用同一试排。font_size_min 空或缺省为固定字号，不为强制通过不断缩小到不可读。preserved_glyph_removed 会指出缺失字符、原页位置、保留块及相邻替换块。先检查原图局部和相关掩码。无相关掩码时检查全页归并，不猜测附近修改。preserved_duplicate_reduced 表示同位同外观的重复字形减少但仍有完整副本；practical 须实际查看位置并用 retain_right_difference 处置，strict 阻断。原始像素差异照常测量。同一字符及位置重复报错时先诊断，再修复已确认的碰撞并预览完整公式。
 
