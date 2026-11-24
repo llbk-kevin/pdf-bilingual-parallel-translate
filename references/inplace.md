@@ -4,7 +4,7 @@
 
 Use the [pipeline workflow](practical.md) for task operations; prepare freezes the complete runtime. This reference defines builder data and geometry contracts.
 
-extract creates an authoring inventory, not completed translation. It records the source SHA-256, page count, visible geometry and immutable glyph facts. Native alphabetic spans start unresolved; numeric/symbol-only spans start preserve and still need review. Image/outline text is not automatically recognized. Hidden OCR is marked separately. Check all visible content before setting inventory_reviewed; a page with little native text is not necessarily a page without translation.
+extract creates an authoring inventory, not completed translation. It records the source SHA-256, page count, visible geometry and immutable glyph facts. Native alphabetic spans start unresolved; numeric/symbol-only spans start preserve and still need review. Image/outline text is not automatically recognized. Hidden OCR is marked separately. The independent reviewer checks all visible content; review records the inventory acknowledgement. a page with little native text is not necessarily a page without translation.
 
 Match translations to extract's stable block ID **and source_text**. A separate rawdict/dict extraction with other flags can have different span order and blank-block grouping. Never paste translations by those unrelated block indices. IDs are stable for the same source/extractor, not across arbitrary PDF edits or engine upgrades; the source hash and fresh glyph inventory detect such changes.
 
@@ -74,3 +74,7 @@ See [building.md](building.md) for publication and recovery and [state-and-qc.md
 The built state records `annotation_mappings` for migrated static appearances and `redaction_regions` from selected source drawing-trace boxes. Both audit and render check the right pane against the original at the same pixel origin, masking only those source regions, actual translated glyph outline boxes, explicit covers, generated labels and moved visible link borders. A two-pixel raster margin absorbs antialiasing; any remaining pixel above the configured channel tolerance fails (`right_graphics_changed_outside_recorded_regions`). `allowed_bbox` never exempts a whole paragraph from this check. Missing recorded deletion regions fail rather than bypassing the comparison.
 
 No-action bookmark headings preserve the original outline tree. A null font-size minimum means the fixed requested size.
+
+Before right-pane redaction, nested Forms containing the single-quote text operator are parsed and expanded to T* then Tj with the original string bytes. Only changed Form/resource chains become private to the right pane; unaffected resources remain shared. Page-level BT/ET reset isolation retains its original prerequisites and is not recursively applied to arbitrary Forms. Preserved glyph count, appearance and position are checked against the unmodified imported right pane.
+
+Extraction also records verified axis-aligned stroked separators. Group suggestions require consistent orientation and adjacent geometry; a separator across the full pair prevents a cross-cell merge. apply split restores a complete, unambiguously recoverable source-span merge, keeps the old translation as a reference and revalidates ownership.

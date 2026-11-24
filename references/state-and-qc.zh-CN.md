@@ -31,3 +31,11 @@ publish 按原字节复制成品，更新 output.path，保持证据与相同字
 两份 PDF 各自包含阅读资源。工作目录保存可编辑状态和审核证据。用户删除工作目录后，须恢复这些文件才能重新检查状态或复用证据。
 
 当前任务的 layout.runtime_launcher、layout.runtime_packages、layout.inputs 和 layout.fonts 必需，由 prepare 生成。output.assignments 明确记录字体分配文件路径，发布后仍从该路径读取。
+
+## 作者分包与复核判断
+
+apply/build 接收主文档或分包作者状态；verify/review/publish 接收候选状态；status/inspect 可读两者。候选记录精确 authoring_state 修复路径。发布生成已验收作者决定的 accepted.author.json，在 publication.json 记录指纹，恢复命令使用该快照，不改活跃作者状态。
+
+import-package 核对清单、原文字节、分配页、页级基线及冻结依赖；依赖比较实际内容，不把相对路径重定位当作变化。仅导入明确白名单中的页级作者内容，候选绘制结果、QC、输出映射及包内路径不导入。重新提取并验证原文字形事实与归属；原子提交，相同最终结果重复导入无修改。冲突需重导受影响分包。
+
+verify 生成已绑定的观察模板。实际查看页使用 pass 或 repair；pass 确认本页列出的清点／覆盖检查，并按生成 ID 明确解释每项可保留差异；repair 说明位置和原因，不计入有效通过覆盖。脚本从同一观察生成 review-summary.json 及就绪结果，不手工填写哈希和内部覆盖字段。

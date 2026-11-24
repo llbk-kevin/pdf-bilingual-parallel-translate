@@ -1,10 +1,10 @@
 # State-driven construction
 
-Use pipeline prepare to create the complete frozen runtime and v3 state. Run apply, build, verify, review and publish with its command_prefix/runner. Build reads saved translations and writes the PDF, state and font assignments; see [inplace.md](inplace.md) for geometry and fields.
+Use pipeline prepare to create the complete frozen runtime and v3 state. Run apply, build, verify, review and publish with its returned frozen actions. Build reads saved translations and writes the PDF, state and font assignments; see [inplace.md](inplace.md) for geometry and fields.
 
 ## Working files and publication
 
-Use <source-stem>/recovery/ for authoring state and builders, and <source-stem>/work/ for candidate PDFs, generated sidecars, extraction, renders and audit reports. Always build inside the working folder: the builder emits sidecars beside their PDFs. Do not build directly to the outer delivery path. Keep 交付说明.md inside <source-stem>/. Optional rebuilding writes work/rebuild/accepted.rebuilt.pdf and all sidecars inside that folder. pipeline publish returns notes and recovery_argv with these locations; use --task-dir for nonstandard state locations. Ordinary delivery checks recovery dependencies without running a full rebuild.
+Use <source-stem>/recovery/ for authoring state and builders, and <source-stem>/work/ for candidate PDFs, generated sidecars, extraction, renders and audit reports. Always build inside the working folder: the builder emits sidecars beside their PDFs. Do not build directly to the outer delivery path. Keep 交付说明.md inside <source-stem>/. Optional rebuilding writes work/rebuild/accepted.rebuilt.pdf and all sidecars inside that folder. pipeline publish returns artifacts.notes and an optional recovery action with these locations; use --task-dir for nonstandard state locations. Ordinary delivery checks recovery dependencies without running a full rebuild.
 
 After the frozen candidate has passed translation, visual and structural acceptance:
 
@@ -20,10 +20,10 @@ Author v3 decisions with source glyph IDs, method, translation, allowed_bbox, fo
 
 For a PDF assembled from multiple sources, retain a sample-to-original page manifest and original SHA-256 values. Check the original-to-sample chain, including image semantics, links and rendering. At delivery, list the selected source pages and links omitted because their target pages were not selected.
 
-## Common font and recovery verification
+## Maintainer checks
 
-Run check-fonts OUTPUT.state.json --assignments OUTPUT.font-runs.json --out fonts.json. A custom builder emits the same run shape: schema_version:1, output_sha256 and runs containing page, block, font, text, optional fallback_from. Runs must represent actual draw calls, identify registry font names, and cover every newly drawn block's text and complete translated cells in order. v3 preserve blocks correctly have no new draw runs. Inspect glyph display in the rendered output.
+verify checks actual font runs against the declared registry and drawn text. The run contract is in [inplace.md](inplace.md); ordinary translators do not assemble assignments or a custom builder.
 
-For recovery validation, copy state/builder/helper to an independent folder, keep the original external PDF/font dependencies identified, and rebuild there. Change one existing translated block in the copy and, if tables are present, one cell; verify extracted/rendered output changes accordingly and edited input is not reset. A prose-only document does not need a table added for this check. Build the unchanged copy twice and compare bytes/resources; no resources may accumulate. Record dependencies and commands in recovery instructions. Never mutate the accepted package merely to run a test.
+For a recovery experiment, copy the complete task materials into an independent directory, resolve its recorded external PDF/font dependencies, and use the generated accepted-author snapshot and frozen pipeline build command. Change one real translated block (and one table cell if present) through apply, then confirm the extracted/rendered change. Unchanged repeated builds must not accumulate resources. Preserve the accepted task and observations.
 
-The builder verifies declared layout.inputs and records the PyMuPDF version in generated state. Record the interpreter and relevant library versions for recovery. If cross-environment rebuilding differs in bytes, compare drawing operations, text, resources and renders, and document the precise cause; repeated runs must still be stable. Visual similarity alone cannot excuse unexplained differences.
+The builder checks declared layout.inputs and records its library version. If an intentionally different environment changes output bytes, compare content, resources and pixels and record the concrete cause. GC comparison (--garbage 2 or 4), worker budgets and independent reconstruction belong to maintenance experiments, not ordinary translation.

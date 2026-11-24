@@ -1,10 +1,10 @@
 # 状态驱动的构建
 
-通过 pipeline prepare 生成完整冻结环境及 v3 状态，按返回的 command_prefix/runner 依次执行 apply、build、verify、review、publish。构建读取保存译文并生成 PDF、状态及字体分配文件；几何和字段见 [inplace.zh-CN.md](inplace.zh-CN.md)。
+通过 pipeline prepare 生成完整冻结环境及 v3 状态，按返回的冻结动作依次执行 apply、build、verify、review、publish。构建读取保存译文并生成 PDF、状态及字体分配文件；几何和字段见 [inplace.zh-CN.md](inplace.zh-CN.md)。
 
 ## 工作文件与发布
 
-输入状态和构建器放在 <source-stem>/recovery/，候选 PDF、构建伴随文件、提取、渲染及审计报告放在 <source-stem>/work/。构建始终在工作文件夹内进行，因为构建器会在 PDF 旁生成伴随文件；不要直接构建到外层交付路径。交付说明.md 保留在 <source-stem>/ 内。按需恢复的 PDF 及全部配套文件写入该文件夹的 work/rebuild/accepted.rebuilt.pdf。pipeline publish 返回对应的 notes 与 recovery_argv；状态位置非标准时使用 --task-dir。普通交付核对恢复依赖，不执行完整重建。
+输入状态和构建器放在 <source-stem>/recovery/，候选 PDF、构建伴随文件、提取、渲染及审计报告放在 <source-stem>/work/。构建始终在工作文件夹内进行，因为构建器会在 PDF 旁生成伴随文件；不要直接构建到外层交付路径。交付说明.md 保留在 <source-stem>/ 内。按需恢复的 PDF 及全部配套文件写入该文件夹的 work/rebuild/accepted.rebuilt.pdf。pipeline publish 返回对应的 artifacts.notes 与按需恢复动作；状态位置非标准时使用 --task-dir。普通交付核对恢复依赖，不执行完整重建。
 
 冻结的候选版本通过翻译、视觉和结构验收后：
 
@@ -20,10 +20,10 @@
 
 从多份源文件合订样张时，保留样本页到原文件页的映射及原文件 SHA-256。检查原文件到合并样本的链条，包括图片语义、链接与渲染。交付时列明抽取的源页，以及因目标页未入选而省略的链接。
 
-## 通用字体与恢复验证
+## 维护检查
 
-执行 check-fonts OUTPUT.state.json --assignments OUTPUT.font-runs.json --out fonts.json。自定义构建器输出同样结构：schema_version:1、output_sha256，以及包含 page、block、font、text、可选 fallback_from 的 runs。片段须来自实际绘制，字体名称对应登记表，并按顺序覆盖每个新增绘制块及完整译后单元格。v3 preserve 块不产生新增绘制片段。在渲染结果中检查实际字形。
+verify 根据登记字体和实际绘制文字检查字体片段。片段合同见[原位构建](inplace.zh-CN.md)，普通译者不手工拼装分配文件或自定义构建器。
 
-恢复验证时将状态、构建器及辅助模块复制到独立目录，标明外部原文和字体依赖并在那里重建。修改副本中一个实际存在的译文块；有表格时再修改一个单元格，确认提取/渲染结果变化且输入没有被重置。纯文字文档无需为此检查新增表格。不改数据重复构建两次，对比字节/资源，不能累积资源。恢复说明记录依赖和命令，不为了测试而修改已验收包。
+恢复实验将完整任务材料复制到独立目录，解析记录的外部 PDF／字体依赖，使用生成的已验收作者快照及冻结 pipeline build 命令。通过 apply 修改一个真实译文块，有表格时再改一个单元格，确认提取／渲染变化。不改数据重复构建不能累积资源；已验收任务及观察保持原样。
 
-构建器核对已声明的 layout.inputs，并在生成状态记录 PyMuPDF 版本。恢复说明记录实际解释器及相关依赖版本。跨环境重建若字节不同，核对绘制指令、文字、资源及渲染结果，并记录具体原因；重复运行仍应稳定，不能仅因视觉相同就忽略不明差异。
+构建器核对 layout.inputs 并记录库版本。主动更换环境后若输出字节变化，核对内容、资源和像素，记录具体原因。GC 对比（--garbage 2 或 4）、worker 预算及独立重建属于维护实验，普通翻译无需选择。
