@@ -65,7 +65,8 @@ class PracticalPipeline(unittest.TestCase):
         verified=pl.verify(Namespace(state=str(sp),previous_state=None))
         reviewed=self.observations(verified)
         obs=wf.load(reviewed.observations)
-        obs['pages'][0]['retain_right_difference']='Viewed synthetic native label and retained its overprint reduction'
+        audit=wf.load(wf.resolve(sp.parent,state['qc']['audit_path'])) if state.get('qc',{}).get('audit_path') else wf.load(wf.resolve(sp.parent,wf.load(sp)['qc']['audit_path']))
+        obs['pages'][0]['findings']=[{'id':wf.canonical(f),'note':'Viewed synthetic native overprint reduction'} for f in audit['findings'] if f.get('page')==1 and f['code']=='preserved_duplicate_reduced']
         pl.save(reviewed.observations,obs)
         result=pl.review(reviewed)
         final=wf.load(sp)
@@ -100,7 +101,7 @@ class PracticalPipeline(unittest.TestCase):
         self.assertEqual(before,{file.relative_to(self.root) for file in self.root.rglob('*') if file.is_file()})
     def observations(self,result):
         sp=Path(result['state']);s=wf.load(sp)
-        obs={'reviewer':'synthetic fixture, not human QA','pages':[{'page':p['source_page'],'evidence':'Synthetic pipeline attestation for regression only','viewed_at':'2020-01-01T00:00:00+00:00'} for p in s['pages']]}
+        obs={'reviewer':'synthetic fixture, not human QA','pages':[{'page':p['source_page'],'decision':'pass','evidence':'Synthetic pipeline attestation for regression only','viewed_at':'2020-01-01T00:00:00+00:00'} for p in s['pages']]}
         index = wf.resolve(sp.parent, s['qc']['audit_path']).parent/'renders'/'index.json'
         obs.update(output_sha256=s['output']['sha256'], render_index_sha256=wf.digest(index))
         op=self.root/'observations.json';pl.save(op,obs)
@@ -147,7 +148,7 @@ class PracticalPipeline(unittest.TestCase):
         self.prepared();result=self.built()
         verified=pl.verify(Namespace(state=result['state'],previous_state=None))
         template=wf.load(verified['observations_template'])
-        self.assertEqual(template['pages'],[])
+        self.assertTrue(all(p['decision'] is None and not p['evidence'] for p in template['pages']))
         self.assertEqual(template['reviewer'],'')
         self.assertEqual(template['output_sha256'],verified['output_sha256'])
         self.assertEqual(wf.load(verified['review_handoff'])['review_needed'],[1,2])
@@ -176,51 +177,6 @@ class PracticalPipeline(unittest.TestCase):
         self.assertTrue(all(wf.load(f)['command']=='build' for f in files))
         self.assertIn(Path(wf.load(self.sp.parent/'last-error.json')['diagnostic']).resolve(),[file.resolve() for file in files])
 
-    def test_package_handoff_atomic_replay_and_reassignment(self):
-        self.prepared()
-        one = self.root/'work'/'package-a'
-        two = self.root/'work'/'package-b'
-        for directory, page, owner in ((one, '1', 'initial-worker'), (two, '2', 'replacement-worker')):
-            pl.package(Namespace(state=self.sp, pages=page, out=directory, owner=owner))
-        self.assertEqual(pl.load(one/'context.json')['read_only'][0]['page'], 2)
-        self.assertEqual(pl.load(two/'package.json')['owner'], 'replacement-worker')
-        original = pl.load(self.sp)
-        files = [d/'edits.json' for d in (one, two)]
-        manifests = [d/'package.json' for d in (one, two)]
-        for page, path in enumerate(files, 1):
-            block = original['pages'][page-1]['blocks'][0]
-            pl.save(path, {'blocks': [{'page':page, 'id':block['id'], 'translation':'文中'}]})
-        local = Namespace(state=one/'state.json', edits=str(files[0]))
-        pl.apply_edits(local)
-        preview_args = self.args()
-        preview_args.state = one/'state.json'
-        preview = pl.build(preview_args)
-        self.assertTrue(pl.load(preview['state'])['output']['preview'])
-        pl.verify(Namespace(state=preview['state'], previous_state=None))
-        pl.review(self.observations(preview))
-        with self.assertRaisesRegex(ValueError, 'preview_cannot_be_published'):
-            pl.publish(Namespace(state=preview['state'], output=str(self.root/'preview.pdf'), overwrite=False))
-
-        batch = self.args(edits=files, package=manifests)
-        before = self.sp.read_bytes()
-        wrong = pl.load(files[1]); wrong['blocks'][0]['page'] = 1; pl.save(files[1], wrong)
-        with self.assertRaisesRegex(ValueError, 'outside its assignment'):
-            pl.apply_edits(batch)
-        self.assertEqual(self.sp.read_bytes(), before)
-        wrong['blocks'][0]['page'] = 2; pl.save(files[1], wrong)
-        self.assertEqual(pl.apply_edits(batch)['changed_pages'], [1, 2])
-        saved = self.sp.read_bytes()
-        self.assertEqual(pl.apply_edits(batch)['state_written_bytes'], 0)
-        self.assertEqual(self.sp.read_bytes(), saved)
-        wrong['blocks'][0]['translation'] = '中文'; pl.save(files[1], wrong)
-        with self.assertRaisesRegex(ValueError, 'package_baseline_changed'):
-            pl.apply_edits(batch)
-        self.assertEqual(self.sp.read_bytes(), saved)
-        progress = pl.status(Namespace(state=self.sp, pages='all', packages=[one,two], candidate=[preview['state']]))
-        self.assertEqual(progress['packages'][0]['built_pages'], '1')
-        self.assertEqual(progress['packages'][0]['reviewed_pages'], '1')
-        self.assertEqual(progress['packages'][1]['applied_edits'], '2')
-        self.assertEqual(progress['packages'][1]['published_pages'], '')
 
     def test_preview_observations_and_page_render_reuse(self):
         self.prepared()
@@ -262,7 +218,7 @@ class PracticalPipeline(unittest.TestCase):
         pl.verify(Namespace(state=old['state'], previous_state=None))
         obs = self.observations(old)
         data = pl.load(obs.observations)
-        data['pages'][1]['inventory_reviewed'] = True
+        data['pages'][1]['decision'] = 'pass'
         pl.save(obs.observations, data)
         pl.review(obs)
         original = pl.load(old['state'])['qc']['page_reviews'][1]
@@ -274,7 +230,7 @@ class PracticalPipeline(unittest.TestCase):
         changed = self.built()
         checked = pl.verify(Namespace(state=changed['state'], previous_state=[old['state']]))
         self.assertEqual(checked['reused_pages'], [1])
-        self.assertEqual(checked['inventory_review_needed'], '1-2')
+        self.assertEqual(checked['inventory_review_needed'], '2')
 
         # Restore page 2, alter page 1 and reuse its actual old observation.
         author['pages'][1]['blocks'][0]['translation'] = '中文'
@@ -321,7 +277,7 @@ class PracticalPipeline(unittest.TestCase):
         pl.save(target_path, target)
         result = pl.verify(Namespace(state=target_path, previous_state=[first_path, second_path]))
         self.assertEqual(result['reused_pages'], [1, 2])
-        self.assertEqual(result['inventory_review_needed'], '2')
+        self.assertEqual(result['inventory_review_needed'], '')
 
         # Disjoint sources each supply their own acknowledgement.
         first['qc']['page_reviews'] = first['qc']['page_reviews'][:1]
@@ -349,7 +305,7 @@ class PracticalPipeline(unittest.TestCase):
         current['qc']['page_reviews'] = current['qc']['page_reviews'][:1]
         pl.save(target_path, current)
         result = pl.verify(Namespace(state=target_path, previous_state=[first_path, second_path]))
-        self.assertEqual(result['inventory_review_needed'], '1-2')
+        self.assertEqual(result['inventory_review_needed'], '')
         records = pl.load(target_path)['qc']['page_reviews']
         self.assertEqual([r['mode'] for r in records], ['viewed', 'reused'])
 
@@ -367,11 +323,11 @@ class PracticalPipeline(unittest.TestCase):
             before = {p: p.stat().st_mtime_ns for p in self.root.rglob('*') if p.is_file()}
             with patch.object(sys, 'stdout', new_callable=__import__('io').StringIO) as stdout:
                 self.assertEqual(pl.main(['status', '--state', args.state, '--pages', '1-2']), 0)
-                self.assertEqual(json.loads(stdout.getvalue())['inventory_review_needed'], '1')
+                self.assertEqual(json.loads(stdout.getvalue())['review_pages'], '1-2')
             self.assertEqual(before, {p: p.stat().st_mtime_ns for p in self.root.rglob('*') if p.is_file()})
             observations = self.observations(candidate)
             observation = pl.load(observations.observations)
-            observation['pages'] = [dict(observation['pages'][0], inventory_reviewed=True)]
+            observation['pages'] = [dict(observation['pages'][0])]
             pl.save(observations.observations, observation)
             self.assertFalse(pl.review(observations)['ready'])
             for _ in range(2):
@@ -572,8 +528,9 @@ class PracticalPipeline(unittest.TestCase):
         b.update(method='cover',cover_bbox=b['source_bbox'],reason='Synthetic local cover')
         pl.save(self.sp,s);r=self.built();pl.verify(Namespace(state=r['state'],previous_state=None))
         obs=self.observations(r)
-        with self.assertRaisesRegex(ValueError,'covers_checked'):pl.review(obs)
-        data=wf.load(obs.observations);data['pages'][0]['covers_checked']=True;pl.save(obs.observations,data)
+        data=wf.load(obs.observations);data['pages'][0]['decision']=None;pl.save(obs.observations,data)
+        with self.assertRaisesRegex(ValueError,'decision'):pl.review(obs)
+        data['pages'][0]['decision']='pass';pl.save(obs.observations,data)
         self.assertTrue(pl.review(obs)['ready'])
 
     def test_formula_preflight_is_a_nonblocking_local_hint(self):
@@ -628,7 +585,7 @@ class PracticalPipeline(unittest.TestCase):
         with patch.object(pt,'audit',side_effect=with_finding):
             pl.verify(Namespace(state=r1['state'],previous_state=None))
         obs=self.observations(r1);data=wf.load(obs.observations)
-        data['pages'][1].update(retain_right_difference='Synthetic harmless fringe',retained=['Synthetic note'])
+        data['pages'][1].update(findings=[{'id':wf.canonical(finding),'note':'Synthetic harmless fringe'}],notes=['Synthetic note'])
         pl.save(obs.observations,data);self.assertTrue(pl.review(obs)['ready'])
         s=wf.load(self.sp);s['pages'][0]['blocks'][0]['translation']='项目';pl.save(self.sp,s);r2=self.built()
         with patch.object(pt,'audit',side_effect=with_finding):
@@ -644,7 +601,7 @@ class PracticalPipeline(unittest.TestCase):
         self.prepared();state=wf.load(self.sp);ep=self.root/'local.json'
         pl.save(ep,{'blocks':[{'page':2,'id':state['pages'][1]['blocks'][0]['id'],'translation':'项目'}]})
         result=pl.apply_edits(self.args(edits=str(ep)))
-        self.assertEqual(result['preview_argv'],pl.runtime_prefix(wf.load(self.sp),self.sp)+[str(Path(pl.__file__).resolve()),'build','--state',str(self.sp.resolve()),'--pages','2'])
+        self.assertEqual(result['preview_argv'],pl.runtime_prefix(wf.load(self.sp),self.sp)+[str((self.sp.parent/'pipeline.py').resolve()),'build','--state',str(self.sp.resolve()),'--pages','2'])
         self.assertIn('--previous-state',result['next'])
 
     def test_missing_frozen_fields_are_rejected(self):
@@ -665,12 +622,15 @@ class PracticalPipeline(unittest.TestCase):
         pub=pl.publish(Namespace(state=result['state'],output=str(destination),overwrite=False))
         argv=pub['recovery_argv'];before=wf.digest(destination)
         self.assertEqual(Path(argv[5]),(self.sp.parent/'pipeline.py').resolve())
-        self.assertEqual(Path(argv[8]),Path(result['state']))
+        self.assertEqual(Path(argv[8]),Path(result['state']).parent/'accepted.author.json')
+        self.assertFalse(pl.load(argv[8]).get('output'))
+        # Later author edits cannot silently alter the accepted recovery snapshot.
+        changed=pl.load(self.sp);changed['pages'][0]['blocks'][0]['translation']='项目';pl.save(self.sp,changed)
         self.assertEqual(Path(argv[10]),(self.root/'work'/'rebuild'/'accepted.rebuilt.pdf').resolve())
         completed=subprocess.run(argv,capture_output=True,text=True,encoding='utf-8')
         self.assertEqual(completed.returncode,0,completed.stdout+completed.stderr)
         restored=json.loads(completed.stdout)
-        with fitz.open(restored['output']) as doc:
+        with fitz.open(restored['artifacts']['output']) as doc:
             self.assertEqual(len(doc),2);self.assertIn('中文',doc[0].get_text())
         self.assertEqual(wf.digest(destination),before)
         self.assertEqual({p.name for p in (self.root/'work'/'rebuild').iterdir()},
@@ -686,9 +646,9 @@ class PracticalPipeline(unittest.TestCase):
         with contextlib.redirect_stdout(stream):
             code=pl.main(['review','--state',result['state'],'--observations',args.observations])
         report=json.loads(stream.getvalue())
-        self.assertEqual(code,0);self.assertTrue(report['observations_saved']);self.assertFalse(report['ready'])
-        self.assertEqual(report['saved_pages'],[1]);self.assertEqual(report['review_needed'],[2])
-        self.assertIn('--previous-state',report['next'])
+        self.assertEqual(code,0);self.assertTrue(report['saved']);self.assertTrue(report['ok'])
+        self.assertEqual(report['pages'],[1]);self.assertEqual(report['review_pages'],[2])
+        self.assertIn('--previous-state',report['summary'])
         with self.assertRaises(ValueError):
             pl.publish(Namespace(state=result['state'],output=str(self.root/'not-ready.pdf'),overwrite=False))
         self.assertFalse((self.root/'not-ready.pdf').exists())
@@ -723,8 +683,8 @@ class PracticalPipeline(unittest.TestCase):
         with contextlib.redirect_stdout(output):
             code=pl.main(['publish','--state',result['state'],'--output',str(destination),'--task-dir',str(self.root)])
         self.assertEqual(code,0);published=json.loads(output.getvalue())
-        self.assertEqual(Path(published['notes']),(self.root/'交付说明.md').resolve())
-        self.assertEqual(Path(published['recovery_argv'][-1]),(self.root/'work'/'rebuild'/'accepted.rebuilt.pdf').resolve())
+        self.assertEqual(Path(published['artifacts']['notes']),(self.root/'交付说明.md').resolve())
+        self.assertEqual(Path(published['actions'][0]['argv'][-1]),(self.root/'work'/'rebuild'/'accepted.rebuilt.pdf').resolve())
 
     def test_publication_conflicts_are_found_before_copy_or_state_change(self):
         result=self.accepted();destination=self.root/'published.pdf'

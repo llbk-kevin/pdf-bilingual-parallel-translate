@@ -97,9 +97,10 @@ class RecoveryHandoff(unittest.TestCase):
         self.assertEqual(snapshot,{p.name:p.read_bytes() for p in self.sp.parent.iterdir() if p.is_file()})
         edits=self.root/'patch.json';pl.save(edits,{'blocks':[{'page':1,'id':new['pages'][0]['blocks'][0]['id'],'translation':'文中'}]})
         with self.assertRaisesRegex(ValueError,'shared dependencies changed'):
-            pl.apply_edits(Namespace(state=sp,edits=[str(edits)],package=[package['package']]))
+            pl.import_package(Namespace(state=sp,package=Path(package['package']).parent))
         fresh=pl.package(Namespace(state=sp,pages='1',out=self.root/'new-package',owner='translator'))
-        result=pl.apply_edits(Namespace(state=sp,edits=[str(edits)],package=[fresh['package']]))
+        pl.apply_edits(Namespace(state=fresh['state'],edits=[str(edits)]))
+        result=pl.import_package(Namespace(state=sp,package=Path(fresh['package']).parent))
         self.assertEqual(result['changed_pages'],[1])
         build=pl.build(Namespace(state=sp,pages='1',source=None,output=None,overwrite=False))
         self.assertTrue(Path(build['output']).exists())

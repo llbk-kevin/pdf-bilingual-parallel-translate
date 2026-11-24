@@ -17,7 +17,7 @@ class EditingMaterials(unittest.TestCase):
     def test_group_boundaries_and_unresolved_only_template(self):
         def block(identifier, group=1, rotation=0, method='unresolved', line=0):
             return dict(id=identifier,source_group=group,rotation=rotation,method=method,
-                        source_line=line,source_text=identifier,source_bbox=[0,0,10,10])
+                        source_line=line,source_text=identifier,source_bbox=[0,line*12,10,line*12+10])
         blocks = [block('a'),block('b',line=1),block('c',rotation=90),
                   block('formula',method='preserve'),block('d'),block('e',group=None),
                   block('f',group=None),block('g',line=4),block('h',line=7)]

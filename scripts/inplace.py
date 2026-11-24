@@ -168,6 +168,44 @@ def text_inventory(page, number):
     # exclude them from coverage, since they carry no visible semantic content.
     return glyphs, blocks
 
+def source_separators(page):
+    """Axis-aligned stroked separators; used only for unambiguous crossings."""
+    lines = set()
+    for drawing in page.get_drawings():
+        if 's' not in drawing['type']:
+            continue
+        for item in drawing['items']:
+            segments = []
+            if item[0] == 'l':
+                segments = [(item[1], item[2])]
+            elif item[0] == 're':
+                r = item[1]
+                segments = [(r.tl,r.tr),(r.tr,r.br),(r.br,r.bl),(r.bl,r.tl)]
+            for a,b in segments:
+                a,b = a*page.rotation_matrix, b*page.rotation_matrix
+                if abs(a.x-b.x)<.01 or abs(a.y-b.y)<.01:
+                    values = (round(min(a.x,b.x),3),round(min(a.y,b.y),3),
+                              round(max(a.x,b.x),3),round(max(a.y,b.y),3))
+                    if max(values[2]-values[0],values[3]-values[1])>=4:
+                        lines.add(values)
+    return [list(line) for line in sorted(lines)]
+
+
+def separated_blocks(page, blocks):
+    for i,a in enumerate(blocks):
+        ra=rect(a['source_bbox'])
+        for b in blocks[i+1:]:
+            rb=rect(b['source_bbox']); union=ra|rb
+            for x0,y0,x1,y1 in page.get('source_separators',[]):
+                if (x1-x0<.01 and y0<=union.y0+.5 and y1>=union.y1-.5
+                        and min(ra.x1,rb.x1)<=x0<=max(ra.x0,rb.x0)):
+                    return True
+                if (y1-y0<.01 and x0<=union.x0+.5 and x1>=union.x1-.5
+                        and min(ra.y1,rb.y1)<=y0<=max(ra.y0,rb.y0)):
+                    return True
+    return False
+
+
 def _extract_page(doc, n, output_number):
     page = doc[n-1]
     glyphs, blocks = text_inventory(page, n)
@@ -176,6 +214,7 @@ def _extract_page(doc, n, output_number):
             'kind':'translated' if blocks else 'no-translation-needed',
             'reason':'' if blocks else 'No native text found; inspect images and vector outlines before accepting',
             'inventory_reviewed':False, 'glyphs':glyphs, 'blocks':blocks,
+            'source_separators':source_separators(page),
             'expected_blocks':[b['id'] for b in blocks], 'reading_order':[b['id'] for b in blocks],
             'context_pages':[], 'visual_text_review':'pending'}
 
@@ -371,6 +410,8 @@ def validate_state(state, source, password=None, final=False, *, pages=None):
                 errors.append({'code':'invalid_source_page','page':n}); continue
             glyphs, _ = text_inventory(doc[n-1],n)
             errors.extend(validate_page(page,{'geometry':geometry(doc[n-1]),'glyphs':glyphs},final))
+            if page.get('source_separators',[]) != source_separators(doc[n-1]):
+                errors.append({'code':'source_separators_changed','page':n})
     return errors
 
 STATIC_ANNOTATIONS={'/Text','/Highlight','/Underline','/StrikeOut','/Squiggly','/Square','/Circle','/Ink','/Stamp'}
@@ -1486,6 +1527,110 @@ def isolate_native_resets(page, imported):
     return count
 
 
+def normalize_form_quotes(page, imported):
+    """Expand quote text operators on a private right-side Form branch.
+
+    This does not split text objects or infer inherited text state. Only the
+    changed streams and their resource-reference ancestors are cloned.
+    """
+    from io import BytesIO
+    from pypdf.generic import (ContentStream, DecodedStreamObject, DictionaryObject,
+                               IndirectObject, NameObject, read_object)
+    doc = page.parent
+    memo, visiting, changes = {}, set(), []
+
+    class ObjectReader:
+        strict = True
+        def get_object(self, reference):
+            return object_dict(reference.idnum)
+    reader = ObjectReader()
+
+    def dictionary(value):
+        if isinstance(value, IndirectObject):
+            value = read_object(BytesIO(doc.xref_object(value.idnum).encode('utf-8')), reader, forced_encoding='bytes')
+        if not isinstance(value, DictionaryObject):
+            raise ValueError('Expected an explicit PDF resource dictionary')
+        return value
+
+    def object_dict(xref):
+        return dictionary(read_object(BytesIO(doc.xref_object(xref).encode('utf-8')), reader, forced_encoding='bytes'))
+
+    def serialized(value):
+        stream = BytesIO(); value.write_to_stream(stream)
+        return stream.getvalue().decode('ascii')
+
+    def private_resources(obj, replacements):
+        resources = DictionaryObject(dictionary(obj.get('/Resources')))
+        objects = DictionaryObject(dictionary(resources.get('/XObject')))
+        for name, xref in replacements.items():
+            objects[NameObject(name)] = IndirectObject(xref, 0, None)
+        resources[NameObject('/XObject')] = objects
+        obj[NameObject('/Resources')] = resources
+
+    def visit(xref, trail):
+        if xref in memo:
+            return memo[xref]
+        if xref in visiting:
+            raise ValueError('Cyclic Form reference: '+str(trail+[xref]))
+        visiting.add(xref)
+        try:
+            obj = object_dict(xref)
+            stream = DecodedStreamObject(); stream.set_data(doc.xref_stream(xref))
+            parsed = ContentStream(stream, None, forced_encoding='bytes')
+            operations, count, calls = [], 0, []
+            for args, op in parsed.operations:
+                if op == b"'":
+                    if len(args) != 1:
+                        raise ValueError('Invalid quote text operation')
+                    operations.extend([([], b'T*'), (args, b'Tj')]); count += 1
+                else:
+                    operations.append((args, op))
+                if op == b'Do':
+                    calls.append(str(args[0]))
+            replacements = {}
+            if calls:
+                resources = dictionary(obj.get('/Resources'))
+                objects = dictionary(resources.get('/XObject'))
+                for name in dict.fromkeys(calls):
+                    ref = objects.get(name)
+                    if not isinstance(ref, IndirectObject):
+                        raise ValueError('Unresolved XObject: '+name)
+                    child = object_dict(ref.idnum)
+                    if child.get('/Subtype') == '/Form':
+                        changed = visit(ref.idnum, trail+[xref])
+                        if changed != ref.idnum:
+                            replacements[name] = changed
+            result = xref
+            if count or replacements:
+                obj = DictionaryObject(obj)
+                if replacements:
+                    private_resources(obj, replacements)
+                result = doc.get_new_xref()
+                doc.update_object(result, serialized(obj))
+                parsed.operations = operations
+                doc.update_stream(result, parsed.get_data() if count else doc.xref_stream(xref))
+                changes.append({'source_object':xref, 'right_object':result, 'quote_operators':count})
+            memo[xref] = result
+            return result
+        except Exception as exc:
+            raise ValueError(json.dumps({'code':'nested_form_normalization',
+                'form_path':trail+[xref], 'detail':str(exc)})) from exc
+        finally:
+            visiting.remove(xref)
+
+    result = visit(imported, [])
+    if result != imported:
+        references = [(name,parent) for xref,name,parent,_ in page.get_xobjects()
+                      if xref == imported and parent]
+        if len(references) != 1:
+            raise ValueError('Right page Form binding is ambiguous')
+        name, parent = references[0]
+        wrapper = object_dict(parent)
+        private_resources(wrapper, {'/'+name:result})
+        doc.xref_set_key(parent, 'Resources', serialized(wrapper.get('/Resources')))
+    return result, changes
+
+
 class VisibleTrace(list):
     pass
 
@@ -1810,15 +1955,16 @@ def _build(source, state_path, output, pages, overwrite, password, preview,
                 if collisions:build_errors.append({'page':n,'block':'redaction','glyph':gid,'detail':'Redaction mask intersects preserved glyphs: '+','.join(collisions)})
                 page.add_redact_annot(mask+fitz.Rect(w,0,w,0),fill=False,cross_out=False)
             if masks:
-                normalized = isolate_native_resets(page,imported) if catalog is None and native_reset_context_safe(reader.pages[n-1]) else 0
-                if normalized:
-                    pstate['native_text_normalization'] = {'zero_leading_resets':normalized}
                 protected = defaultdict(list)
                 for g in pstate['glyphs']:
                     if (g['id'] not in deleted and g['id'] not in carriers
                             and not g['hidden'] and g['text'].strip() and g['id'] in owners):
                         protected[glyph_location(ord(g['text']), g['origin'])].append((g, owners[g['id']]))
                 before = right_visible_trace(page, w) if protected else None
+                imported, quote_forms = normalize_form_quotes(page, imported)
+                normalized = isolate_native_resets(page,imported) if catalog is None and native_reset_context_safe(reader.pages[n-1]) else 0
+                if normalized or quote_forms:
+                    pstate['native_text_normalization'] = {'zero_leading_resets':normalized, 'forms':quote_forms}
                 page.apply_redactions(images=0,graphics=0,text=0)
                 if before:
                     after = right_visible_trace(page, w)
@@ -1924,6 +2070,7 @@ def _build(source, state_path, output, pages, overwrite, password, preview,
                 state['layout']['runtime_launcher']=relative(resolve(state_path.parent,state['layout']['runtime_launcher']),output.parent)
             state['source']['path']=relative(source,output.parent)
             state['output']={'path':output.name,'sha256':candidate_sha,'vector_forms':vector_report,
+                             'authoring_state':relative(state_path,output.parent),
                              'assignments':relative(destinations[2],output.parent)}
             if preview:state['output']['preview']=True
             for reg in state['layout']['fonts']:

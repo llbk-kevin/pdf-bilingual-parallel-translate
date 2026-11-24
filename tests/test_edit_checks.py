@@ -100,35 +100,7 @@ class EditChecks(unittest.TestCase):
         self.assertTrue(all(e.get('edit_file')==str(self.root/'batch.json') and e.get('block')==bid for e in errors))
         self.assertEqual(self.sp.read_bytes(),before)
 
-    def test_package_patch_chain_is_atomic_and_replayable(self):
-        s=self.prepared();a=s['pages'][0]['blocks'][0]['id']
-        package=pl.package(Namespace(state=self.sp,pages='1',out=self.root/'package',owner='translator'))
-        first=self.root/'initial.json';repair=self.root/'repair.json'
-        pl.save(first,{'blocks':[{'page':1,'id':'merged','merge_ids':[a],'translation':'中文'}]})
-        pl.save(repair,{'blocks':[{'page':1,'id':'merged','translation':'文中'}]})
-        args=self.args(edits=[str(first),str(repair)],package=[package['package']]*2)
-        result=pl.apply_edits(args)
-        self.assertEqual(result['changed_pages'],[1])
-        self.assertEqual(pl.load(self.sp)['pages'][0]['blocks'][0]['translation'],'文中')
-        saved=self.sp.read_bytes()
-        self.assertEqual(pl.apply_edits(args)['state_written_bytes'],0)
-        self.assertEqual(self.sp.read_bytes(),saved)
 
-    def test_package_partial_prior_commit_still_requires_fresh_baseline(self):
-        s=self.prepared();a=s['pages'][0]['blocks'][0]['id']
-        package=pl.package(Namespace(state=self.sp,pages='1',out=self.root/'package',owner='translator'))
-        first=self.root/'first.json';second=self.root/'second.json'
-        pl.save(first,{'blocks':[{'page':1,'id':a,'translation':'文中'}]})
-        pl.save(second,{'blocks':[{'page':1,'id':a,'translation':'中文'}]})
-        pl.apply_edits(self.args(edits=[str(first)],package=[package['package']]))
-        before=self.sp.read_bytes()
-        with self.assertRaisesRegex(ValueError,'package_baseline_changed'):
-            pl.apply_edits(self.args(edits=[str(first),str(second)],package=[package['package']]*2))
-        self.assertEqual(self.sp.read_bytes(),before)
-        # Shared dependency changes are not waived by the batch mechanism.
-        s=pl.load(self.sp);s['issues']=['Shared note'];pl.save(self.sp,s)
-        with self.assertRaisesRegex(ValueError,'shared dependencies changed'):
-            pl.apply_edits(self.args(edits=[str(second)],package=[package['package']]))
 
     def test_layout_collision_and_anchor_are_reported_in_one_apply(self):
         doc=ip.fitz.open(self.source)

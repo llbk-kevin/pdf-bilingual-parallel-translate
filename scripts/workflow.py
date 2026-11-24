@@ -382,6 +382,8 @@ def validate_reviews(state, state_path):
     valid, errors = checked_page_reviews(state, state_path)
     if set(valid) != {p['source_page'] for p in state['pages']}:
         errors.append({'code': 'incomplete_page_review_evidence'})
+    if state.get('qc',{}).get('repair_requests'):
+        errors.append({'code':'outstanding_page_repairs'})
     return errors
 
 
