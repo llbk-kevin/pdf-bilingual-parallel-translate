@@ -910,6 +910,8 @@ class PracticalPipeline(unittest.TestCase):
         with self.assertRaises(ValueError) as failure:
             pl.apply_edits(self.args(edits=str(edits)))
         error = json.loads(str(failure.exception))
+        self.assertEqual(error['code'],'invalid_edit_batch')
+        error=error['edit_errors'][0]
         self.assertEqual((error['code'], error['page'], error['block']), ('invalid_merge_ids', 1, 'merged'))
         self.assertEqual(error['missing_ids'], [first['id']])
         self.assertEqual(self.sp.read_bytes(), before)

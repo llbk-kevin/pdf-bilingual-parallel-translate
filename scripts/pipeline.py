@@ -19,6 +19,7 @@ from pathlib import Path
 import inplace as ip
 import pdf_tools as pt
 import workflow as wf
+import edit_checks as ec
 from resources import worker_request
 
 
@@ -94,7 +95,7 @@ def editing_materials(state):
                 continue
             first = blocks[group['block_ids'][0]]
             edit = {'page':page['page'],'id':first['id'],'method':'replace','translation':'',
-                    'font_size':first.get('font_size',10)}
+                    'font_size':first.get('font_size',10),'font_size_min':None}
             if len(group['block_ids'])>1:
                 edit['merge_ids'] = group['block_ids'][:]
             edits.append(edit)
@@ -134,7 +135,7 @@ def probe_runtime(state, sp):
     return prefix
 
 
-FROZEN_FILES = ('pipeline.py','inplace.py','pdf_tools.py','workflow.py','runtime.py','resources.py','coordination.py','task_runtime.py','vector_forms.py')
+FROZEN_FILES = ('pipeline.py','inplace.py','pdf_tools.py','workflow.py','runtime.py','resources.py','coordination.py','task_runtime.py','vector_forms.py','edit_checks.py')
 
 
 def relocate_state(state, old, new, *, move_internal=False):
@@ -367,7 +368,7 @@ def pixel_edits(changes,state,sp,edits_path):
     return result
 
 
-def apply_package(state, sp, edits_path, changed, location, changes):
+def apply_package(state, sp, edits_path, changed, location, changes, *, validate=True):
 
     top_keys={'blocks','inventory_reviewed_pages','context_pages','link_overrides','link_overrides_patch','glossary','issues','source_render_index'}
     if not isinstance(changes,dict) or not changes or set(changes)-top_keys:
@@ -388,6 +389,8 @@ def apply_package(state, sp, edits_path, changed, location, changes):
             if missing or len(set(merge)) != len(merge):
                 raise ValueError(json.dumps({
                     'code': 'invalid_merge_ids', 'page': n, 'block': bid, 'missing_ids': missing,
+                    'duplicate_ids':sorted({x for x in merge if merge.count(x)>1}),
+                    'current_owner_hints':{x:[b['id'] for b in page['blocks'] if x in b.get('merged_from',[])] for x in missing},
                     'detail': 'Merge requires unique current source IDs. After a successful merge, edit the merged ID without merge_ids.',
                 }, ensure_ascii=False))
             if existing is not None and bid not in merge:raise ValueError('Merged ID collides with another block')
@@ -395,6 +398,7 @@ def apply_package(state, sp, edits_path, changed, location, changes):
             existing=copy.deepcopy(parts[0]);existing['id']=bid
             existing['glyph_ids']=[g for b in parts for g in b['glyph_ids']]
             existing['glyph_ranges']=[[0,len(existing['glyph_ids'])]]
+            existing['merged_from']=sorted({x for b in parts for x in [b['id'],*b.get('merged_from',[])]})
             r=ip.rect(parts[0]['source_bbox'])
             for b in parts[1:]:r|=ip.rect(b['source_bbox'])
             existing.update(source_bbox=ip.box(r),allowed_bbox=ip.box(r),source_text=' '.join(b['source_text'] for b in parts))
@@ -434,7 +438,7 @@ def apply_package(state, sp, edits_path, changed, location, changes):
         page = pages[n]
         page['expected_blocks']=[b['id'] for b in page['blocks']];page['reading_order']=page['expected_blocks'][:]
         if page['blocks']:page['kind']='translated'
-    errors = ip.validate_state(state, source_path(state, sp), pages=changed)
+    errors = ip.validate_state(state, source_path(state, sp), pages=changed) if validate else []
     if errors:
         raise ValueError(json.dumps(errors, ensure_ascii=False))
 
@@ -550,6 +554,7 @@ def apply_edits(args):
         raise ValueError('Pair each --edits file with one --package manifest')
     journal = state.setdefault('applied_packages', []) if packages else []
     replayed = []
+    structure_errors=[];failed_targets=set();origins=[];package_baselines={}
     for i, edits_path in enumerate(paths):
         package_pages = set()
         location = {}
@@ -562,10 +567,22 @@ def apply_edits(args):
                     replayed.append(patch)
                     continue
                 changes = json.loads(raw)
-                item = verify_package(state, meta, changes, patch)
+                # An ordered patch chain from one package is one atomic batch.
+                # Its own earlier edits do not invalidate its starting baseline.
+                key=meta.get('id')
+                if key not in package_baselines:
+                    package_baselines[key]={**state,'pages':[
+                        copy.deepcopy(p) if p['source_page'] in meta.get('pages',[]) else p
+                        for p in state['pages']]}
+                item = verify_package(package_baselines[key], meta, changes, patch)
             else:
                 changes = load(edits_path)
-            apply_package(state, sp, edits_path, package_pages, location, changes)
+            converted=pixel_edits(changes,state,sp,edits_path)
+            origins.extend((str(edits_path),edit) for edit in converted.get('blocks',[]))
+            # Converted coordinates are points; do not convert individual edits again.
+            converted.pop('source_render_index',None)
+            package_pages,errors=ec.structure_check(state,converted,apply_package,sp,edits_path,failed_targets)
+            structure_errors.extend(errors)
             if packages:
                 journal.append(item)
         except (ValueError, KeyError, TypeError, OSError) as exc:
@@ -575,8 +592,18 @@ def apply_edits(args):
                 detail = str(exc)
             if not isinstance(detail, dict):
                 detail = {'detail': detail}
-            raise ValueError(json.dumps({**location, **detail, 'edit_file': str(edits_path)}, ensure_ascii=False)) from exc
+            structure_errors.append({**location, **detail, 'edit_file': str(edits_path)})
         changed.update(package_pages)
+    if changed:
+        for finding in ip.validate_state(state,source_path(state,sp),pages=changed):
+            matching=[(path,edit['id']) for path,edit in origins
+                      if edit.get('page')==finding.get('page') and
+                      edit.get('id') and edit['id'] in finding.get('detail','')]
+            if len(matching)==1:finding.update(edit_file=matching[0][0],block=matching[0][1])
+            else:finding['edit_files']=sorted(set(path for path,edit in origins if edit.get('page')==finding.get('page')))
+            structure_errors.append(finding)
+    if structure_errors:
+        raise ValueError(json.dumps({'code':'invalid_edit_batch','edit_errors':structure_errors},ensure_ascii=False))
     if len(replayed) == len(paths):
         return {'state': str(sp), 'changed_pages': [], 'replayed': replayed,
                 'state_written_bytes': 0, 'preview_argv': None}
@@ -589,16 +616,7 @@ def apply_edits(args):
         save(sp, state)
         inventory.replace(sp.parent / inventory.name)
     # Translation stays saved even when layout still needs work.
-    import copy
-    try:
-        fonts = ip.load_fonts(state, sp)
-        _, layout_report = ip.layout_preflight(
-            copy.deepcopy([p for p in state['pages'] if p['source_page'] in changed]), fonts)
-    except Exception as exc:
-        # Edits are already committed; an unsuccessful diagnostic must suppress
-        # preview rather than report the saved translation as lost.
-        layout_report = {'counts':{}, 'groups':{}, 'findings':[
-            {'code':'layout_check_failed','error_type':type(exc).__name__,'detail':str(exc)}]}
+    layout_report,preflight=ec.run(state,sp,changed)
     layout_path = sp.parent / 'apply-layout.json'
     save(layout_path, layout_report)
     pending_pages = {p['source_page'] for p in state['pages'] if any(b['method']=='unresolved' for b in p['blocks'])}
@@ -609,6 +627,8 @@ def apply_edits(args):
         affected = {finding['page']} if finding.get('page') in changed else changed
         for n in affected:
             blocked.setdefault(n,set()).add(finding.get('code','layout_check_failed'))
+    for n in changed & set(preflight['preflight_unchecked_pages']):
+        if n not in blocked:blocked[n]={'preflight_unchecked'}
     ready_pages = changed - set(blocked)
     preview = runtime_prefix(state, sp) + [str(Path(__file__).resolve()),'build','--state',str(sp),'--pages',ranges(ready_pages)] if ready_pages else None
     unresolved = [
@@ -616,7 +636,7 @@ def apply_edits(args):
         for page in state['pages']
     ]
     unresolved = [row for row in unresolved if row['blocks']]
-    return {'state':str(sp),'changed_pages':sorted(changed),'preview_argv':preview,
+    return {'state':str(sp),'changed_pages':sorted(changed),'preview_argv':preview,**preflight,
             'layout_check':{'counts':layout_report['counts'],'groups':layout_report['groups'],'details':str(layout_path)},
             'state_written_bytes':sp.stat().st_size,'replayed':replayed,
              'preview_skipped_pages':sorted(blocked),
@@ -625,7 +645,9 @@ def apply_edits(args):
             'unresolved_by_page':unresolved,
             'next':('Fix pages '+ranges(blocked)+' using saved layout details or unresolved blocks. ' if blocked else '')
                     +('Preview ready pages '+ranges(ready_pages)+' using preview_argv. ' if ready_pages else 'No preview is ready. ')
-                    +'Build the full selection when all pages are ready; reuse reviews with verify --previous-state.'}
+                    +('Resolve full-document preflight pages '+ranges(set(preflight['preflight_blocked_pages'])|set(preflight['preflight_unchecked_pages']))
+                      if preflight['preflight_blocked_pages'] or preflight['preflight_unchecked_pages'] else 'Build the full selection when all pages are ready')
+                    +'; reuse reviews with verify --previous-state.'}
 
 
 def ranges(numbers):
@@ -696,11 +718,15 @@ def status(args):
     output = state.get('output', {})
     built, reviewed, published, verified, reason = candidate_progress(sp, state, set(pages))
     needs_review = set(pages) - reviewed
+    preflight=ec.summary(state,sp,set(pages)) if not output else {}
     action = ('apply --edits FILE' if pending else 'build --state AUTHORING_STATE' if not output else
               'verify' if not verified else 'review --observations FILE' if needs_review or inventory else
               'build --state AUTHORING_STATE' if output.get('preview') else
               'publish --output FILE (checks final readiness)')
     blockers = [{'state': str(sp), 'reason': reason}] if reason else []
+    if not output and (preflight['preflight_blocked_pages'] or preflight['preflight_unchecked_pages']):
+        action='Inspect preflight_details; apply corrections or recheck affected pages before full build'
+        blockers += preflight['preflight_blocked_by_page']
     for candidate in getattr(args, 'candidate', []) or []:
         other_path = Path(candidate).resolve()
         other = wf.require_state(load(other_path))
@@ -715,7 +741,7 @@ def status(args):
             blockers.append({'state': str(other_path), 'reason': reason})
     details = [package_status(state, Path(p).resolve(), built, reviewed, published)
                for p in getattr(args, 'packages', []) or []]
-    return {'state': str(sp), 'pages': ranges(pages), 'translation_pending': ranges(pending),
+    return {'state': str(sp), 'pages': ranges(pages), 'translation_pending': ranges(pending),**preflight,
             'packages': details, 'built_pages': ranges(built), 'reviewed_pages': ranges(reviewed),
             'published_pages': ranges(published), 'blockers': blockers,
             'inventory_review_needed': ranges(inventory), 'review_needed': ranges(needs_review),
@@ -1284,10 +1310,15 @@ def main(argv=None):
         affected = {x['page'] for x in conflicts}
         if isinstance(detail, dict):
             affected.update(x['page'] for x in detail.get('findings', []) if 'page' in x)
+            for item in detail.get('edit_errors',[]):
+                if type(item.get('page')) is int:affected.add(item['page'])
+                affected.update(x['page'] for x in item.get('validation_errors',[]) if type(x.get('page')) is int)
         if isinstance(detail,dict) and type(detail.get('page')) is int:
             affected.add(detail['page'])
         summary={'ok':False,'command':args.command,'report':str(log),'affected_pages':sorted(affected)}
         summary['error']=str(exc)[:1200] if not conflicts else 'Batch build conflicts: '+str(len(conflicts))
+        if isinstance(detail,dict) and detail.get('code')=='invalid_edit_batch':
+            summary['error']='Batch edit errors: '+str(len(detail['edit_errors']))
         message=json.dumps(summary,ensure_ascii=False)
         print(message);print(message,file=sys.stderr)
         return 2

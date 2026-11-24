@@ -72,16 +72,22 @@ groups.json 按同页连续 source_group 给出候选，包含块 ID、逐块原
 
 从原文渲染图量坐标时，索引路径相对编辑JSON：TASK/work/edits.json引用TASK/work/source/index.json，顶层写 "source_render_index":"source/index.json"，不要再加work/。该批所有source_bbox/cover_bbox/allowed_bbox按原始渲染像素输入，apply核对指纹/图片尺寸并按记录DPI换算。不从缩放查看器猜倍率、不混用点和像素；未提供该字段仍是PDF点。双语图或裁剪图不能作为原文索引。
 
-仅在已核实的对应位置添加浮层。practical 只要求中文可读、原文对应关系清楚，不要求完全擦除英文、边界精确或背景同色；保留小残字，不为此扩大框或重复重建。可选 cover_fill 和 cover_text_color 为 [0,1] RGB 三元组，缺省为白底黑字。选定一种可读样式即可，不做自动配色。照片上的型号、板卡丝印及微小软件界面标签，在已有必要中文图注或解释时可保留。allowed_bbox 扩展必须用 expansion_reason 说明邻接空白，不跨表格格子。apply 也接受按源页键的 context_pages、link_overrides、glossary、issues。逐条更正优先使用 link_overrides_patch，例如 {"link_overrides_patch":{"1":[{"source_link":0,"target_block":"paragraph-1","target_text":"设计","occurrence":2}]}}。按 source_link 新增或替换，保留其他链接；link_overrides 仍替换整页列表（空列表清空），同页不能同时使用两种接口。occurrence 是 target_block 内匹配的从 1 开始序号，重复锚点须明确指定。link_overrides 的 source_link 按原页 /Link 批注从 0 起算，0 是首个链接，不是从 1 开始的页码；对照原始可点击区域检查生成的 page.link_mappings。链接文字翻译后用 target_block 加 target_text 指向相应文本。术语表和布局为共享依赖。practical 默认本页及声明上下文依赖，strict 未确认上下文时使用全书依赖。改 authoring state 不覆盖旧候选和审核史。
+仅在已核实的对应位置添加浮层。practical 只要求中文可读、原文对应关系清楚，不要求完全擦除英文、边界精确或背景同色；保留小残字，不为此扩大框或重复重建。可选 cover_fill 和 cover_text_color 为 [0,1] RGB 三元组，缺省为白底黑字。选定一种可读样式即可，不做自动配色。照片上的型号、板卡丝印及微小软件界面标签，在已有必要中文图注或解释时可保留。allowed_bbox 扩展必须用 expansion_reason 说明邻接空白，不跨表格格子。apply 也接受按源页键的 context_pages、link_overrides、glossary、issues。交付时 issues 须标为 resolved，或用 retained 加非空 note 说明保留理由。逐条更正优先使用 link_overrides_patch，例如 {"link_overrides_patch":{"1":[{"source_link":0,"target_block":"paragraph-1","target_text":"设计","occurrence":2}]}}。按 source_link 新增或替换，保留其他链接；link_overrides 仍替换整页列表（空列表清空），同页不能同时使用两种接口。occurrence 是 target_block 内匹配的从 1 开始序号，重复锚点须明确指定。link_overrides 的 source_link 按原页 /Link 批注从 0 起算，0 是首个链接，不是从 1 开始的页码；对照原始可点击区域检查生成的 page.link_mappings。链接文字翻译后用 target_block 加 target_text 指向相应文本。术语表和布局为共享依赖。practical 默认本页及声明上下文依赖，strict 未确认上下文时使用全书依赖。改 authoring state 不覆盖旧候选和审核史。
 
 ~~~text
 COMMAND_PREFIX recovery/pipeline.py apply --state recovery/state.json --edits edits.json
 COMMAND_PREFIX recovery/pipeline.py build --state recovery/state.json
 ~~~
 
-apply 返回 preview_skipped_pages 和 unresolved_by_page，preview_argv 仅包含已完成处理且无排版阻断的变化页，无就绪页时为 null。preview_skipped_pages 汇总待译及排版阻断页，preview_blocked_by_page 列出原因；字体或整体排版检查失败时，本批均不提供预览。先看 layout_check 再构建，译文仍已保存。preview_argv 参数数组使用当前冻结入口、authoring state 和变化页。直接传给子进程 API，不拼成未转义的 shell 命令。局部调整使用该预览，最终完整候选省略 --pages。build 从当前状态读取原文路径。
+apply 返回 preview_skipped_pages 和 unresolved_by_page，preview_argv 仅包含已完成处理且排版、保留字形和链接锚点预检均通过的变化页，无就绪页时为 null。preview_skipped_pages 汇总待译及排版阻断页，preview_blocked_by_page 列出原因；字体或整体排版检查失败时，本批均不提供预览。先看 layout_check 再构建，译文仍已保存。preview_argv 参数数组使用当前冻结入口、authoring state 和变化页。直接传给子进程 API，不拼成未转义的 shell 命令。局部调整使用该预览，最终完整候选省略 --pages。build 从当前状态读取原文路径。
 
 build 返回 PDF、生成状态及字形运行记录。verify/review/publish 必须用返回的生成状态。使用 --pages 3 局部预览，交付时构建完整声明范围。局部检查在 PDF 写出前解析最终交付范围内的右栏锚点，包括预览外目标，分包保留 final_source_pages。同类冲突从 last-error.json 集中修复后重建。链接映射错误按选定页集中写入 link_conflicts，包含 page、source_link 和 source_bbox，一批修完，不为逐条报错重复全本构建。降低字号时同时检查 font_size 和 font_size_min，下限不能高于指定字号。apply 保存后返回 layout_check 的 passed/adapted/needs_attention/fixed_size 计数、分类受影响页及 apply-layout.json 明细路径；溢出不丢弃已保存译文。代表文字类别先确定可读范围，再复用于同类块，不设统一最小字号。build 去字前使用同一试排。font_size_min 空或缺省为固定字号，不为强制通过不断缩小到不可读。preserved_glyph_removed 会指出缺失字符、原页位置、保留块及相邻替换块。先检查原图局部和相关掩码。无相关掩码时检查全页归并，不猜测附近修改。preserved_duplicate_reduced 表示同位同外观的重复字形减少但仍有完整副本；practical 须实际查看位置并用 retain_right_difference 处置，strict 阻断。原始像素差异照常测量。同一字符及位置重复报错时先诊断，再修复已确认的碰撞并预览完整公式。
+
+apply/status 的 preflight_blocked_pages、preflight_unchecked_pages 和 preflight_details 汇总整个作者状态。状态旁的 edit-checks.json 按页保存绑定页面内容、原文、字体和检查器指纹的技术诊断；修改另一页不抹掉已有问题，失效或缺失结果标为未检查。这些记录不代表实际查看，build 仍执行完整检查。apply-layout.json 是本批明细，其他页通过 preflight_details 查询。字体或排版失败时，后续检查明确未完成。单行高度不足会返回 fit_suggestion，给出建议字号及是否低于已声明下限；确认可读性并显式修改范围后才能采用。
+
+结构错误在写状态前以 invalid_edit_batch/edit_errors 整批返回，依赖失败编辑的项目标为 edit_dependency_blocked。同批前序合并产生的新 ID 可供后续编辑更新；current_owner_hints 只提示已记录的合并归属，不自动改目标。模板的 font_size_min:null 是待确认项，未填写时仍为固定字号。
+
+链接诊断包含原文文字、源区域和候选译文。仅完整的 Figure N 且受影响译文块中存在唯一对应“图 N”时自动定位；不完整或有歧义仍用 link_overrides_patch。原跳转目标保持不变，真正的去字缺字仍在 build 检查。
 
 ## 长文档恢复与分包
 

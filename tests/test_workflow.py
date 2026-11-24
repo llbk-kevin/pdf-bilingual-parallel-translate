@@ -21,7 +21,7 @@ from reportlab.pdfgen import canvas
 
 
 def make_font(dest, symbols=False):
-    chars = set(range(32,127)) | {ord(x) for x in '中文项目数值距离条件页脚'}
+    chars = set(range(32,127)) | {ord(x) for x in '中文项目数值距离条件页脚图'}
     if symbols:
         chars |= {0x2243,0x2095,0x00B1,0x2212,0x03B1}
     names = ['.notdef'] + [f'u{x:04X}' for x in sorted(chars)]

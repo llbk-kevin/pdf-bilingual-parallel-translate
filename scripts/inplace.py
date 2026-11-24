@@ -890,6 +890,13 @@ def right_link_resolver(source_doc, page_states):
             if len(visible)!=len(boxes):raise ValueError('Actual link glyph mapping incomplete: '+block['id'])
             if needle and visible.count(needle)==1:
                 index=visible.index(needle);matches.append(boxes[index:index+len(needle)])
+            elif re.fullmatch(r'Figure\s*([0-9]+)', needle):
+                # Translate only a complete, unambiguous figure anchor. The
+                # original destination is still migrated by RawNavigation.
+                number = re.fullmatch(r'Figure\s*([0-9]+)', needle).group(1)
+                found = list(re.finditer(r'图'+re.escape(number)+r'(?![0-9])', visible))
+                if len(found)==1:
+                    start,end=found[0].span();matches.append(boxes[start:end])
             elif ids.issuperset(g for g in block.get('glyph_ids',[]) if g in glyphs):
                 matches.append(boxes)
         if len(matches)!=1 or not matches[0]:
@@ -1275,6 +1282,14 @@ def layout_preflight(pages, fonts):
                             bounded=block.get('font_size_min') is not None)
                 item.setdefault('code','layout_invalid')
                 item['at_font_minimum'] = isinstance(exc,LayoutFailure) and block.get('font_size_min') is not None
+                if (item.get('code')=='height_overflow' and item.get('line_count')==1
+                        and item.get('needed_height',0)>0):
+                    suggested = math.floor(item['attempted_font_size'] *
+                        item['allowed_height']/item['needed_height']*.98*100)/100
+                    item['fit_suggestion'] = {
+                        'font_size':suggested, 'requires_readability_confirmation':True,
+                        'below_declared_minimum':block.get('font_size_min') is not None and suggested<block['font_size_min'],
+                        'action':'Confirm a readable range for this text class; no edit was applied.'}
                 findings.append(item)
                 counts['needs_attention'] += 1
     groups = {}
@@ -1334,6 +1349,33 @@ def verify_draw_collisions(block,boxes,index):
                          'translation':'Translations overlap','cover':'Translation overlaps another cover'}[kind]
             conflicts.add(description+': '+block['id']+' / '+other)
     return sorted(conflicts)
+
+
+def source_collision_findings(original, page_state, layout_cache):
+    """Check the builder's native-text/cover boundaries without redaction."""
+    n=page_state['source_page'];glyphs=page_state['glyphs']
+    by_id={g['id']:g for g in glyphs}
+    deleted={g['id'] for b in page_state['blocks'] if b['method'] in ('replace','cover')
+             for g in selected_glyphs(b,by_id) if g['text'].strip()}
+    effective=effective_glyph_boxes(original,glyphs)
+    index=CollisionIndex();findings=[]
+    for g in glyphs:
+        if g['id'] not in deleted and not g['hidden'] and g['text'].strip():
+            index.add('preserved',g['id'],effective[g['id']])
+    for b in page_state['blocks']:
+        if b['method']=='cover':
+            cover=rect(b.get('cover_bbox') or b['source_bbox'])
+            protected=[gid for kind,gid in index.intersections(cover,0) if kind=='preserved']
+            if protected:
+                findings.append({'page':n,'block':b['id'],'code':'cover_preserved_collision',
+                                 'glyphs':protected,'detail':'Cover intersects preserved native text'})
+            index.add('cover',b['id'],cover)
+    for b in page_state['blocks']:
+        trial=layout_cache.get((n,b['id']))
+        if trial is None:continue
+        for detail in verify_draw_collisions(b,trial[-1],index):
+            findings.append({'page':n,'block':b['id'],'code':'preserved_or_cover_collision','detail':detail})
+    return findings
 
 
 GLYPH_POSITION_TOLERANCE = .02  # PDF points; allow serialization drift, not a new glyph position.
