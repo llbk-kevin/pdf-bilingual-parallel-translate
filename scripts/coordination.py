@@ -173,6 +173,10 @@ def plan_summary(plan):
             'resume_count': sum(task.get('resume_count', 0) for task in tasks)}
 
 
+def writer_assignment(task):
+    return {key: task.get(key) for key in ('document', 'id', 'model', 'reasoning_effort')}
+
+
 def validate_plan(plan):
     """Validate the current planning/dispatch ledger without changing it or calling a host."""
     errors = []
@@ -257,6 +261,7 @@ def validate_plan(plan):
         return found
     for identifier in by_id:
         dependencies(identifier, set())
+    staffing = {}
     for doc_id, doc in docs.items():
         members = [task for task in by_id.values() if task.get('document') == doc_id]
         writer = by_id.get(doc.get('state_writer'))
@@ -264,6 +269,9 @@ def validate_plan(plan):
             errors.append(doc_id + ': state_writer must identify this document\'s translation/repair owner')
         translators = [task for task in members if task.get('phase') == 'translate' and task.get('owns_edits')]
         reviewers = [task for task in members if task.get('phase') == 'review']
+        merge_only = int(bool(writer and writer not in translators))
+        staffing[doc_id] = {'translators': len(translators), 'reviewers': len(reviewers),
+                            'merge_only': merge_only, 'total': len(translators) + len(reviewers) + merge_only}
         for group, label in ((translators, 'translation'), (reviewers, 'independent review')):
             covered = set().union(*(task_pages[task['id']] for task in group)) if group else set()
             if covered != page_sets[doc_id]:
@@ -297,6 +305,11 @@ def validate_plan(plan):
         if task is None:
             errors.append('Launch references an unknown task')
             continue
+        if 'initial_writer' in launch:
+            doc = docs.get(task.get('document'), {})
+            writer = by_id.get(doc.get('state_writer'), {})
+            if launch['initial_writer'] != writer_assignment(writer):
+                errors.append(task['id'] + ': state writer, model or effort differs from first dispatch')
         agent = launch.get('agent_id')
         if not isinstance(agent, str) or not agent:
             errors.append(task['id'] + ': launch requires actual agent_id')
@@ -333,7 +346,7 @@ def validate_plan(plan):
     summary_plan = {'tasks': [task for task in tasks if type(task.get('resume_count', 0)) is int],
                     'launches': launches, 'model_checks': model_checks}
     return {'ok': not errors, 'errors': list(dict.fromkeys(errors)), 'models': models,
-            'summary': plan_summary(summary_plan),
+            'summary': {**plan_summary(summary_plan), 'staffing_by_document': staffing},
             'note': 'Structure only: user confirmation and a real model/tool probe are separate evidence'}
 
 
@@ -357,6 +370,14 @@ def record_event(plan_path, event):
         launch={key:event[key] for key in ('task','agent_id','requested_model','requested_effort')}
         if any(item.get('agent_id')==launch['agent_id'] for item in updated.get('launches',[])):
             raise ValueError('Agent already launched; record resume instead')
+        document_id = task['document']
+        document_tasks = {item['id']: item for item in updated['tasks'] if item.get('document') == document_id}
+        if not any(item.get('task') in document_tasks for item in updated.get('launches', [])):
+            document = next((doc for doc in updated['documents'] if doc['id'] == document_id), {})
+            writer = document_tasks.get(document.get('state_writer'))
+            if writer is None:
+                raise ValueError(f'{document_id}: first dispatch requires a confirmed state writer')
+            launch['initial_writer'] = writer_assignment(writer)
         updated.setdefault('launches',[]).append(launch)
         task.update(agent_id=launch['agent_id'],status='running')
     elif action=='resume':

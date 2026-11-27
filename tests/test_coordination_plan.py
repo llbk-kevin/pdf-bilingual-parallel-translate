@@ -76,6 +76,79 @@ class WorkPlans(unittest.TestCase):
         value['tasks'][0]['owns_edits']=True
         self.assert_invalid(value,'overlapping editing ownership')
 
+    def test_first_page_worker_freezes_terra_writer_even_with_one_slot(self):
+        for writer_translates in (True, False):
+            with self.subTest(writer_translates=writer_translates), tempfile.TemporaryDirectory() as temp:
+                ledger = Path(temp) / 'plan.json'
+                value = plan()
+                writer, reviewer = value['tasks']
+                writer.update(model='gpt-6.1-terra', reasoning_effort='high', owns_edits=writer_translates)
+                writer['pages'] = [1] if writer_translates else [1, 2]
+                value['tasks'].append(task('other', 'translate', [2]))
+                reviewer['depends_on'].append('other')
+                if not writer_translates:
+                    value['tasks'].append(task('first', 'translate', [1]))
+                    writer['depends_on'] = ['first', 'other']
+                co.write(ledger, value)
+                event = {'type':'launch', 'id':'first-launch', 'task':'other', 'agent_id':'a',
+                         'requested_model':'gpt-6-luna', 'requested_effort':'xhigh'}
+                summary = co.record_event(ledger, event)['summary']
+                extra = int(not writer_translates)
+                self.assertEqual(summary['staffing_by_document']['d01'],
+                                 {'translators':2, 'reviewers':1, 'merge_only':extra, 'total':3 + extra})
+                self.assertEqual(summary['running_agents'], 1)
+                saved = json.loads(ledger.read_text(encoding='utf-8'))
+                self.assertEqual(saved['launches'][0]['initial_writer'],
+                                 {'id':writer['id'], 'document':'d01', 'model':'gpt-6.1-terra',
+                                  'reasoning_effort':'high'})
+                self.assertTrue(co.validate_plan(saved)['ok'])
+                for change in ('state_writer', 'model', 'reasoning_effort'):
+                    bad = copy.deepcopy(saved)
+                    if change == 'state_writer':
+                        bad['documents'][0][change] = 'other'
+                    else:
+                        bad['tasks'][0][change] = 'changed'
+                    self.assert_invalid(bad, 'differs from first dispatch')
+
+    def test_failed_launch_does_not_freeze_writer_and_explicit_choice_is_kept(self):
+        with tempfile.TemporaryDirectory() as temp:
+            ledger = Path(temp) / 'plan.json'
+            value = plan()
+            value['tasks'][0].update(model='gpt-6.1-terra', reasoning_effort='high')
+            co.write(ledger, value)
+            before = ledger.read_bytes()
+            event = {'type':'launch', 'id':'lead', 'task':'d01_translate', 'agent_id':'lead',
+                     'requested_model':'gpt-6-luna', 'requested_effort':'xhigh'}
+            with self.assertRaisesRegex(ValueError, 'differs from confirmed task'):
+                co.record_event(ledger, event)
+            self.assertEqual(ledger.read_bytes(), before)
+            result = co.record_event(ledger, dict(event, requested_model='gpt-6.1-terra',
+                                                 requested_effort='high'))
+            self.assertTrue(result['ok'])
+            saved = json.loads(ledger.read_text(encoding='utf-8'))
+            self.assertEqual(saved['launches'][0]['initial_writer']['model'], 'gpt-6.1-terra')
+
+    def test_single_translator_keeps_writer_assignment_when_help_arrives(self):
+        with tempfile.TemporaryDirectory() as temp:
+            ledger = Path(temp) / 'plan.json'
+            co.write(ledger, plan())
+            first = {'type':'launch', 'id':'lead', 'task':'d01_translate', 'agent_id':'lead',
+                     'requested_model':'gpt-6-luna', 'requested_effort':'xhigh'}
+            co.record_event(ledger, first)
+            saved = json.loads(ledger.read_text(encoding='utf-8'))
+            initial = copy.deepcopy(saved['launches'][0]['initial_writer'])
+            saved['tasks'][0]['pages'] = [1]
+            saved['tasks'].append(task('helper', 'translate', [2]))
+            saved['tasks'][1]['depends_on'].append('helper')
+            co.write(ledger, saved)
+            result = co.record_event(ledger, dict(first, id='second', task='helper', agent_id='helper'))
+            self.assertTrue(result['ok'])
+            self.assertEqual(result['summary']['staffing_by_document']['d01'],
+                             {'translators':2, 'reviewers':1, 'merge_only':0, 'total':3})
+            launches = json.loads(ledger.read_text(encoding='utf-8'))['launches']
+            self.assertEqual(launches[0]['initial_writer'], initial)
+            self.assertNotIn('initial_writer', launches[1])
+
     def test_names_models_context_dependencies_and_page_bounds(self):
         for mutate, error in [
             (lambda p:p['tasks'][1].update(id='d01_translate'),'Task IDs'),
@@ -108,7 +181,8 @@ class WorkPlans(unittest.TestCase):
         self.assertTrue(result['ok'],result)
         self.assertEqual(result['models'][0]['status'],'unverified')
         self.assertEqual(result['summary'],{'created_agents':1,'work_agents':1,'probe_agents':0,'running_agents':1,'queued_tasks':1,
-                                            'blocked_tasks':0,'resume_count':2})
+                                            'blocked_tasks':0,'resume_count':2,
+                                            'staffing_by_document':{'d01':{'translators':1,'reviewers':1,'merge_only':0,'total':2}}})
         value['model_checks']=[{'agent_id':'probe','model':'gpt-6-luna'}]
         summary=co.validate_plan(value)['summary']
         self.assertEqual((summary['created_agents'],summary['work_agents'],summary['probe_agents']),(2,1,1))

@@ -15,7 +15,7 @@ The coordinator first reads [naming.md](references/naming.md) and [coordination.
 
 Before presenting the first plan or confirmation, check the publisher’s official sources for the latest revision and official Chinese editions as described in [naming.md](references/naming.md). Present the findings alongside the naming and agent work tables and ask which PDF to use when there is a verified alternative. Confirming the tables alone keeps the supplied PDF. An explicit local-only instruction takes precedence.
 
-Every PDF that needs translation has a translator/state writer and a fresh-context independent reviewer. Long documents may have several page owners. Keep concurrency dynamic; reuse original workers for repairs. The coordinator diagnoses skill defects and maintains code.
+Before the first plan, inspect the physical page count, contents and representative pages read-only. Give a workload reason per PDF. Summarize planned translators, independent reviewers, merge-only lead, total people and first-wave count. Mark the first starters, provisional ranges and sole state writer on the task rows; give the combined first-wave count across documents. A fully Chinese edition selected for direct use takes zero agents. Use the lead model from the confirmed first dispatch (one translator: Luna xhigh; two or more: Terra high). Keep this lead, model and effort when staffing changes. See [coordination.md](references/coordination.md) for counting and dispatch.
 
 Read only the material for the assigned role:
 
