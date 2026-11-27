@@ -2,7 +2,7 @@
 
 ## Confirm and prepare
 
-Read naming.md and show the exact source/output/task-folder names, agent work table and optional official-version reminder before prepare. Include stable task name, document/physical pages, translator/reviewer/writer duties, explicit model and effort, fresh-context choice, dependencies and handoff path. An accepted plan confirms the tables; resume it without asking again. Each PDF has one current state writer and independent review coverage. The writer may also translate; avoid relay-only agents.
+Follow [naming.md](naming.md) to check official revisions and Chinese editions before the first plan or confirmation. Present the findings and source choices with the exact source/output/task-folder names and agent work table. Include stable task name, document/physical pages, translator/reviewer/writer duties, explicit model and effort, fresh-context choice, dependencies and handoff path. An accepted plan confirms the tables. Apply any explicit source choice and resume confirmed decisions without asking again. Each PDF that needs translation has one current state writer and independent review coverage. The writer may also translate; avoid relay-only agents.
 
 Use the current session model for coordination. Recommend Luna xhigh, subject to the user's choice, explicitly passing model='gpt-6-luna', reasoning_effort='xhigh', fork_turns='none'. Check availability once with a minimal probe and reuse its result for the same host/account. A missing static model entry is unverified, not proof of unavailability. Record request arguments and obtainable host evidence; missing actual-model metadata is unverified and does not create a new gate. On actual failure or mismatch, save the queue and ask before substituting a model.
 
