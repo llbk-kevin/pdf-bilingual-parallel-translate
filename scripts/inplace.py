@@ -775,37 +775,94 @@ def interaction_reader(doc, source=None, password=None):
     return reader
 
 
-def check_interactions(doc, selected, state=None, *, collect=False, preview=False, reader=None):
+CONTENT_STREAM_RETRY_LIMIT = 4_000_000
+CONTENT_TOKEN_LIMIT_MESSAGE = 'Reached maximum number of tokens per stream.'
+
+
+def parsed_content_stream(stream, reader, **kwargs):
+    """Retry only the known content-token limit, in pypdf's local context."""
+    from pypdf.errors import PyPdfError
     from pypdf.generic import ContentStream
 
+    def parse():
+        parsed = ContentStream(stream, reader, **kwargs)
+        # The stream is parsed lazily. Force the operations inside the budget context.
+        _ = parsed.operations
+        return parsed
+
+    try:
+        return parse()
+    except PyPdfError as exc:
+        if str(exc) != CONTENT_TOKEN_LIMIT_MESSAGE:
+            raise
+        from pypdf._configuration import apply_configuration, get_configuration
+        limit = CONTENT_STREAM_RETRY_LIMIT
+        if get_configuration().stream_parsing_work_maximum_count >= limit:
+            raise
+        with apply_configuration(stream_parsing_work_maximum_count=limit):
+            return parse()
+
+
+def check_content_streams(reader, selected):
+    """Inspect page streams and nested Forms before expensive source extraction."""
+    from pypdf.errors import PyPdfError
+
+    def inspect(stream, resources, seen, path):
+        try:
+            if stream is not None:
+                for operands, operator in parsed_content_stream(stream, reader).operations:
+                    if operator == b'Tr' and operands and int(operands[0]) >= 4:
+                        raise ValueError('Text clipping render modes 4-7 are unsupported; refusing to change clipped graphics')
+            if not isinstance(resources, dict):
+                raise ValueError('Expected a resource dictionary')
+            children = raw_object(resources.get('/XObject', {}))
+            if not isinstance(children, dict):
+                raise ValueError('Expected an XObject resource dictionary')
+        except (PyPdfError, ValueError, KeyError, TypeError, RecursionError) as exc:
+            finding = {'code':'interaction_preflight','detail':str(exc),'object_path':path}
+            if str(exc) == CONTENT_TOKEN_LIMIT_MESSAGE:
+                finding.update(code='content_stream_limit', token_limit=CONTENT_STREAM_RETRY_LIMIT)
+            return [finding]
+        findings = []
+        for name, ref in children.items():
+            target = path + [str(name) + (f' ({ref.idnum} {ref.generation} R)' if hasattr(ref,'idnum') else '')]
+            try:
+                obj = raw_object(ref)
+                if obj.get('/Subtype') != '/Form':
+                    continue
+                child_resources = raw_object(obj.get('/Resources', resources))
+                key = (getattr(ref,'idnum',id(obj)), id(child_resources))
+                if key not in seen:
+                    seen.add(key)
+                    errors = inspect(obj, child_resources, seen, target)
+                    if errors:
+                        seen.discard(key)
+                        findings.extend(errors)
+            except (PyPdfError, ValueError, KeyError, TypeError, RecursionError) as exc:
+                findings.append({'code':'interaction_preflight','detail':str(exc),'object_path':target})
+        return findings
+
+    seen = set()
+    for n in selected:
+        page = reader.pages[n-1]
+        try:
+            findings = inspect(page.get_contents(), raw_object(page.get('/Resources',{})), seen, ['/Contents'])
+        except (PyPdfError, ValueError, KeyError, TypeError, RecursionError) as exc:
+            findings = [{'code':'interaction_preflight','detail':str(exc),'object_path':['/Contents']}]
+        yield from ({**finding, 'page':n} for finding in findings)
+
+
+def check_interactions(doc, selected, state=None, *, collect=False, preview=False, reader=None,
+                       stream_findings=None):
     reader = interaction_reader(doc) if reader is None else reader
     nav = RawNavigation(reader)
-    findings = []
+    findings = list(check_content_streams(reader, selected) if stream_findings is None else stream_findings)
 
     def report(code, detail, page=None, **location):
         finding = {'code': code, 'detail': detail, **location}
         if page is not None:
             finding['page'] = page
         findings.append(finding)
-
-    def check_stream(stream, resources, seen):
-        if stream is not None:
-            for operands, operator in ContentStream(stream, reader).operations:
-                if operator == b'Tr' and operands and int(operands[0]) >= 4:
-                    raise ValueError('Text clipping render modes 4-7 are unsupported; refusing to change clipped graphics')
-        for ref in raw_object(resources.get('/XObject', {})).values():
-            obj = raw_object(ref)
-            if obj.get('/Subtype') != '/Form':
-                continue
-            child_resources = raw_object(obj.get('/Resources', resources))
-            key = (getattr(ref, 'idnum', id(obj)), id(child_resources))
-            if key not in seen:
-                seen.add(key)
-                try:
-                    check_stream(obj, child_resources, seen)
-                except Exception:
-                    seen.discard(key)
-                    raise
 
     catalog = None
     try:
@@ -834,13 +891,8 @@ def check_interactions(doc, selected, state=None, *, collect=False, preview=Fals
                 report('bookmark_action', str(exc), bookmark=i, title=str(item.get('/Title', '')))
     except ValueError as exc:
         report('bookmark_tree', str(exc))
-    seen = set()
     for n in selected:
         original, page = reader.pages[n-1], doc[n-1]
-        try:
-            check_stream(original.get_contents(), raw_object(original.get('/Resources', {})), seen)
-        except (ValueError, KeyError, TypeError) as exc:
-            report('interaction_preflight', str(exc), n)
         link_number = -1
         for ref in original.get('/Annots', []):
             annotation = raw_object(ref)
@@ -1435,10 +1487,10 @@ def split_zero_leading_resets(data):
     """
     if b'T*' not in data:
         return data, 0
-    from pypdf.generic import ContentStream, DecodedStreamObject, FloatObject
+    from pypdf.generic import DecodedStreamObject, FloatObject
     stream = DecodedStreamObject()
     stream.set_data(data)
-    content = ContentStream(stream, None, forced_encoding='bytes')
+    content = parsed_content_stream(stream, None, forced_encoding='bytes')
     leading, mode, active, clipped, shown = 0., 0, False, False, False
     matrix = [1.,0.,0.,1.,0.,0.]
     stack, operations = [], []
@@ -1534,7 +1586,7 @@ def normalize_form_quotes(page, imported):
     changed streams and their resource-reference ancestors are cloned.
     """
     from io import BytesIO
-    from pypdf.generic import (ContentStream, DecodedStreamObject, DictionaryObject,
+    from pypdf.generic import (DecodedStreamObject, DictionaryObject,
                                IndirectObject, NameObject, read_object)
     doc = page.parent
     memo, visiting, changes = {}, set(), []
@@ -1576,7 +1628,7 @@ def normalize_form_quotes(page, imported):
         try:
             obj = object_dict(xref)
             stream = DecodedStreamObject(); stream.set_data(doc.xref_stream(xref))
-            parsed = ContentStream(stream, None, forced_encoding='bytes')
+            parsed = parsed_content_stream(stream, None, forced_encoding='bytes')
             operations, count, calls = [], 0, []
             for args, op in parsed.operations:
                 if op == b"'":

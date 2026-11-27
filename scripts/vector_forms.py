@@ -3,7 +3,8 @@ from collections import Counter
 from uuid import uuid4
 from hashlib import sha256
 
-from pypdf.generic import ContentStream, DictionaryObject, NameObject
+from pypdf.generic import DictionaryObject, NameObject
+from inplace import parsed_content_stream
 
 MIN_BYTES = 128 * 1024
 IDENTITY = (1, 0, 0, 1, 0, 0)
@@ -17,7 +18,7 @@ def leaf_reason(obj, reader):
         return 'form_dictionary'
     if set(obj['/Resources']) - {'/ProcSet'}:
         return 'resource_dependencies'
-    if any(op not in PATH_OPS for _, op in ContentStream(obj, reader).operations):
+    if any(op not in PATH_OPS for _, op in parsed_content_stream(obj, reader).operations):
         return 'non_path_operators'
     return None
 
@@ -32,7 +33,7 @@ def calls(stream, pdf):
     state = {'matrix': (), 'stroke': (b'G',0), 'fill': (b'g',0)}
     stack = []
     result = []
-    for args, op in ContentStream(stream, pdf).operations:
+    for args, op in parsed_content_stream(stream, pdf).operations:
         if op == b'q':
             stack.append(state.copy())
         elif op == b'Q':
@@ -145,7 +146,7 @@ class VectorSharing:
         wrapper = target(page, name)
         if set(wrapper) - FORM_KEYS or '/Resources' not in wrapper:
             return None
-        operations = ContentStream(wrapper, pdf).operations
+        operations = parsed_content_stream(wrapper, pdf).operations
         if len(operations) != 1 or operations[0][1] != b'Do':
             return None
         inner_name = operations[0][0][0]

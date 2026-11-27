@@ -13,6 +13,8 @@ Default to **practical**: preserve the original, cover the requested pages, and 
 
 The coordinator first reads [naming.md](references/naming.md) and [coordination.md](references/coordination.md), inspects document identity and presents **both exact filenames and the agent work table** for confirmation. Include source, output, working folder, roles/pages, explicit models/efforts and handoff paths. An accepted plan containing these tables is sufficient. Resume confirmed decisions; reconfirm affected items only when the proposed names, destinations or models change. Approved renames and source hash checks precede prepare and translation.
 
+Include this optional reminder with the two tables: “If you want to switch to an official PDF, choose the latest revision first and prefer the official Chinese edition of that revision. I’ll use the PDFs you provided unless you explicitly ask me to update them.”
+
 Every PDF has a translator/state writer and a fresh-context independent reviewer. Long documents may have several page owners. Keep concurrency dynamic; reuse original workers for repairs. The coordinator diagnoses skill defects and maintains code.
 
 Read only the material for the assigned role:
@@ -35,6 +37,7 @@ Place only the original and accepted bilingual PDF beside their same-stem task f
     交付说明.md
     recovery/                 # authoring state and frozen runtime
     work/                     # packages, candidates, observations and logs
+        delivery-notes.json   # optional delivery remarks
         rebuild/              # optional recovery experiment
 ~~~
 

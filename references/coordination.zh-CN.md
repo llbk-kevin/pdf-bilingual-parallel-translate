@@ -2,7 +2,7 @@
 
 ## 确认与准备
 
-读取 naming.zh-CN.md，在 prepare 前同时展示精确的原文／译本／工作目录名称和代理工作表。工作表包含稳定任务名、文档／物理页、翻译／复核／写入职责、明确模型与强度、新上下文、依赖及交接位置。已接受计划可直接确认同一表格，续跑不重复询问。每份 PDF 有一个当前状态写入者和独立复核覆盖；写入者可以翻译，不额外设置纯传话代理。
+读取 naming.zh-CN.md，在 prepare 前同时展示精确的原文／译本／工作目录名称、代理工作表和可选的官网版本提醒。工作表包含稳定任务名、文档／物理页、翻译／复核／写入职责、明确模型与强度、新上下文、依赖及交接位置。已接受计划可直接确认两张表，续跑不重复询问。每份 PDF 有一个当前状态写入者和独立复核覆盖；写入者可以翻译，不额外设置纯传话代理。
 
 主代理使用当前会话模型。建议 Luna xhigh，以用户选择为准，明确传入 model='gpt-6-luna'、reasoning_effort='xhigh'、fork_turns='none'。同一宿主／账号做一次最小可用性探针后复用结果；静态列表缺项表示未核实，不能据此判定不可用。记录请求参数及能取得的宿主证据，实际模型元数据缺失标为未核实，不增加等待门槛。实际失败或不匹配时保存队列，替换模型前询问。
 
@@ -14,6 +14,8 @@
 python scripts/pipeline.py prepare --source SOURCE.pdf --state TASK/recovery/state.json --font CHINESE_FONT
 ~~~
 
+prepare 先检查页面内容流和嵌套图形，再提取字形。触及已知解析 token 上限时，仅对该流按限定预算重试一次。仍失败时，查看报告中的原文物理页、对象路径和所触发的限制。
+
 按返回动作和产物路径操作。查看原文渲染，依据正文密度、表格、公式和跨页语义分配页段。跨页句子／续表交同一负责人，相邻页作为只读上下文。明确图内标签和参考文献范围：题名及说明翻译，作者、期刊、标准号、网址和年份保留。布局方法先在代表页预览，再批量推广。
 
 ## 派工与合入
@@ -24,12 +26,12 @@ python scripts/pipeline.py prepare --source SOURCE.pdf --state TASK/recovery/sta
 
 ~~~text
 pipeline package --state AUTHOR_STATE --pages RANGE --out TASK/work/packages/NAME --owner TASK_NAME
-pipeline import-package --state AUTHOR_STATE --package TASK/work/packages/NAME
+pipeline import-package --state AUTHOR_STATE --package PACKAGE_A --package PACKAGE_B
 ~~~
 
-采用返回的命令数组。译者在分包内编辑并预览，交付该目录的当前作者状态及简短问题说明。导入检查原文／依赖、分配页、源事实和主状态基线，只导入作者决定；包内 QC、候选字段和运行路径不进入主状态。相同结果重复导入不改写。不拼接补丁链，不手工修改指纹。
+采用返回的命令数组。译者交付当前分包状态，另附问题说明。将已就绪的包一次导入。命令逐包核对原文、分配页、源事实和主状态基线，然后合并，只检查和保存一次主状态。出现冲突时列出包名和受影响页，整批不写入。重复导入相同结果时保留原状态。
 
-冲突会返回受影响页，从当前主状态重新导出并由原译者续修。共享 glossary/issues 由写入者维护。不同文档可以并行写入，同一状态不能同时有多个写入者。
+从当前主状态重新导出冲突页，由原译者续修。写入者维护共享术语，另行汇总交付备注。不同文档可以并行写入，同一状态只能有一个写入者。
 
 动态派发就绪工作，不设固定代理数或角色配额。一份候选就绪即可复核，其他文档继续翻译。槽位满时保存队列，等待完成事件或有界等待。修复／复查优先原代理，仅为独立工作或原代理不可恢复时增派。累计创建数、当前运行数和续作次数分别报告。
 
@@ -37,8 +39,8 @@ pipeline import-package --state AUTHOR_STATE --package TASK/work/packages/NAME
 
 ## 核验、发布与恢复
 
-写入者构建完整声明范围，再核验候选状态。将生成的 review_handoff 和 observations_template 交独立复核者，通过 review 登记 pass/repair；先保存通过页，再修复其余页。verify --previous-state 明确指定旧候选以复用有效观察，局部预览不能发布。
+译者完成局部预览后，构建并核验完整交付候选，安排独立逐页复核。多人复核时，在 verify 中重复传入 `--review-pages`，为每人分配互不重复且合计覆盖待复核页的物理页段。按 review_handoff 提供各自路径及原文页到候选页的对应关系，再用生成的 review 命令一起登记。修复实质问题后，verify 用 `--previous-state` 指定旧候选，只安排仍需复查的页。局部预览不能发布。
 
-只有返回可发布动作后才发布。成品放在原文旁，说明及恢复材料留在工作目录。普通发布核对依赖并保存已验收内容的作者快照，恢复重建按需执行，不再要求构建一遍。
+只有返回可发布动作后才发布。交付备注写入 `work/delivery-notes.json`，每条填写 `description`、`status`（`open`、`resolved` 或 `retained`），保留项填写 `note`。确认修复结果后才关闭实质问题，仍标为 open 的问题阻止发布。只改备注时沿用同一候选和复核记录，按更新后的备注发布。成品放在原文旁；发布核对依赖并保存作者快照以供按需恢复。
 
 重启后读取记录的路径和代理 ID，检查运行中作业，再续跑。不要按文件时间猜测最新状态。技能变更由主代理使用新版 pipeline refreeze --state AUTHOR_STATE --out NEW_RECOVERY_DIR，不原地改活跃冻结脚本；重新导出受影响分包。主代理定位修复技能缺陷，译者提供证据。旧候选及其观察保持原样。

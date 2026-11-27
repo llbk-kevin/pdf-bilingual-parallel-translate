@@ -2,7 +2,7 @@
 
 Read the skill entry, this page and the generated review_handoff. Use a fresh context; the translator's conclusion is not an acceptance result.
 
-verify generates a candidate-bound observations_template with page images, applicable checks and exact retainable findings. Copy it to observations.json beside the template. Leave the generated hashes and finding IDs intact. Fill reviewer with the actual viewer identity.
+Formal review starts with the complete delivery candidate. The generated `review-handoff.json` gives each reviewer the physical-to-output page mapping, template and designated observations path. Copy the assigned template to that path. Leave the generated hashes, page mapping and finding IDs intact. Fill reviewer with the actual viewer identity.
 
 Open every review_needed page at a readable scale. During that view compare source inventory, Chinese, formulas/values, table columns and required overlays. Zoom actual concerns. A rendered image alone is not a viewed record.
 
@@ -14,10 +14,10 @@ For each actually viewed page fill:
 
 pass confirms the listed page checks, including inventory and applicable covers. It does not waive missing pages, damaged original, fonts or missing content. A blank decision is unfinished. Remove unviewed rows before a partial submission; keep their template for later.
 
-Run the returned review action. It saves passing pages and repair requests together, then generates review-summary.json. Use that summary for the handoff. repair pages cannot publish. The coordinator batches substantive fixes and returns a new candidate; follow its remaining review pages. Existing valid observations preserve their original viewer, time and evidence.
+Return your observations file to the coordinator. The generated review action checks the bindings, duplicate pages and repair explanations before saving passing pages and repair requests together. Use review-summary.json for the handoff. Repair pages cannot publish. The coordinator batches substantive fixes and returns a new candidate; only review the pages its handoff calls for. Existing valid observations preserve their original viewer, time and evidence.
 
-Practical accepts harmless English remnants, line breaks, slight color differences and isolated residual marks. Repair wrong table associations, missing formula/value content, major omissions and unreadable prose. Strict does not accept mechanical differences.
+Practical accepts harmless English remnants, line breaks, slight color differences and stray punctuation. Repair black blocks that hide graphic content, wrong table associations, missing formula/value content, major omissions and unreadable prose. Strict does not accept mechanical differences.
 
-Copy the new candidate's generated template for a recheck. The script binds every retained difference to the exact current finding; do not copy old hashes or edit qc. Multiple reviewers use separate observation files for the state writer to submit serially.
+Use the new candidate's template for a recheck. The script binds every retained difference to the exact current finding; do not copy old hashes or edit qc.
 
 Use [tool-runtime.md](tool-runtime.md) only for persistent kernels/background jobs.

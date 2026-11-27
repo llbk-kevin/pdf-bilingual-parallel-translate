@@ -33,10 +33,10 @@ Apply checks layout, protected-text collisions and links together. Read existing
 
 ## Package delivery and repairs
 
-Edit the package's authoring state through ordinary apply. Deliver its directory, remaining substantive issues and any cross-page context to the coordinator. The coordinator imports its current result; do not assemble initial and repair patches into a second delivery file. Shared glossary/issues belong to the coordinator.
+Edit the package's authoring state through ordinary apply. Deliver its directory, plus a separate note of remaining substantive issues and any cross-page context. The coordinator imports its current result, maintains the shared glossary and collects delivery remarks.
 
 After import, further repairs use a newly exported affected page range and the same translator where possible. Source or baseline conflicts go to the coordinator. A successful machine check does not replace independent review.
 
-Translators view representative and problem pages; the independent reviewer covers delivery pages. Once a candidate is handed over, wait for substantive findings before changing it. Preserve harmless practical differences with a brief note.
+Preview representative, complex and repaired pages. The independent reviewer checks the complete delivery candidate. Once a candidate is handed over, wait for substantive findings before changing it. Record harmless practical differences in the handoff.
 
 For persistent Node kernels or background jobs, use [tool-runtime.md](tool-runtime.md); direct CLI work does not require kernel registration.
