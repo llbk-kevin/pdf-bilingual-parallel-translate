@@ -2004,7 +2004,19 @@ def _build(source, state_path, output, pages, overwrite, password, preview,
                 merged.append((gid,mask))
             for gid,mask in merged:
                 collisions=[identifier for kind,identifier in protected_index.intersections(mask,0)]
-                if collisions:build_errors.append({'page':n,'block':'redaction','glyph':gid,'detail':'Redaction mask intersects preserved glyphs: '+','.join(collisions)})
+                if collisions:
+                    block = owners[gid]  # Merged masks have already passed the intersection check.
+                    symbols = ', '.join(f"{by_id[i]['text']!r} ({i}, {owners.get(i, 'unassigned')})" for i in collisions)
+                    build_errors.append({
+                        'page': n, 'block': block, 'glyph': gid, 'code': 'redaction_mask_intersects_preserved',
+                        'detail': (
+                            f"Page {n}, block {block}: removing source glyph {by_id[gid]['text']!r} "
+                            f"intersects preserved glyphs: {symbols}. allowed_bbox controls Chinese placement only. "
+                            "Split separable prose and formula text. For overlapping source glyphs, preserve the "
+                            "short source fragment and translate it nearby. If the formula must be redrawn, "
+                            "check the entire formula against the source, then preview this page."
+                        ),
+                    })
                 page.add_redact_annot(mask+fitz.Rect(w,0,w,0),fill=False,cross_out=False)
             if masks:
                 protected = defaultdict(list)

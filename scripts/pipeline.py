@@ -1689,6 +1689,9 @@ def main(argv=None):
             affected.add(detail['page'])
         summary={'ok':False,'command':args.command,'report':str(log),'affected_pages':sorted(affected)}
         summary['error']=str(exc)[:1200] if not conflicts else 'Batch build conflicts: '+str(len(conflicts))
+        collision = next((c for c in conflicts if c.get('code') == 'redaction_mask_intersects_preserved'), None)
+        if collision:
+            summary['error'] += '. ' + collision['detail']
         if isinstance(detail,dict) and detail.get('code')=='invalid_edit_batch':
             summary['error']='Batch edit errors: '+str(len(detail['edit_errors']))
         if isinstance(detail,dict) and detail.get('action_argv'):

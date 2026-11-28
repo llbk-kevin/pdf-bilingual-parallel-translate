@@ -7,7 +7,7 @@ Read the skill entry and this page. Use the assigned source, authoring state, gr
 1. Inspect the source at a readable scale, including image/outlined labels. groups.json is a source view; edits-template.json contains conservative candidates. Confirm paragraph and cell boundaries before merging. A zero pending-block count does not establish image-text coverage.
 2. Translate representative prose, formula, table or screenshot blocks first. Confirm readable font_size/font_size_min bounds and local blank space. Preserve standalone formulas and identifiers with reasons. Compose inline-variable prose coherently, repeating verified short symbols/values when needed.
 3. Write work/edits.json (package: edits.json beside its state), then run the returned apply action. Read the summary and details for affected pages. Legal translations and merges remain saved even when layout needs repair. Subsequent files contain only incremental edits to current IDs; do not resubmit the whole initial template or its merge_ids.
-4. Run apply’s ready-page build action, then the candidate’s verify action. View the images in the returned render_index; there is no need to construct a separate render command. Batch substantive repairs; when only a few pages change, preview those pages. Complete the requested translation, then build the candidate or hand the completed package to the coordinator.
+4. Batch edits to similar prose once a representative layout is readable. When first trying a complex layout, changing which block owns formula or table text, or repairing a redaction collision, preview the affected pages from the latest authoring state before handoff. Use the returned build and verify actions and view the images in render_index.
 
 Use the returned frozen command arrays, not a reconstructed shell prefix. To read current IDs, use inspect with explicit pages and detail groups/blocks; glyph details also require a block. The result is bounded and supports offset/limit.
 
@@ -37,6 +37,6 @@ Edit the package's authoring state through ordinary apply. Deliver its directory
 
 After import, further repairs use a newly exported affected page range and the same translator where possible. Source or baseline conflicts go to the coordinator. A successful machine check does not replace independent review.
 
-Preview representative, complex and repaired pages. The independent reviewer checks the complete delivery candidate. Once a candidate is handed over, wait for substantive findings before changing it. Record harmless practical differences in the handoff.
+The independent reviewer checks the complete delivery candidate. Once a candidate is handed over, wait for substantive findings before changing it. Record harmless practical differences in the handoff.
 
 For persistent Node kernels or background jobs, use [tool-runtime.md](tool-runtime.md); direct CLI work does not require kernel registration.

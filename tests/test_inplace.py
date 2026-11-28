@@ -416,6 +416,25 @@ class Inplace(unittest.TestCase):
         actual = [(48, 0.009, 0.0), (48, -0.015, 0.0)]
         self.assertEqual(len(ip.match_glyph_locations(expected, actual)), 2)
 
+    def test_redaction_collision_identifies_source_blocks_after_moving_translation(self):
+        doc = fitz.open()
+        page = doc.new_page(width=240, height=180)
+        page.insert_text((30, 60), 'Label')
+        page.insert_text((31, 60), 'Q', fontname='cour')
+        self.save_source(doc)
+        state = self.extract()
+        label, symbol = state['pages'][0]['blocks']
+        symbol.update(method='preserve', reason='Variable', translation='Q')
+        label.update(allowed_bbox=[50, 70, 100, 95], expansion_reason='Adjacent blank space')
+        with self.assertRaises(ValueError) as failure:
+            self.build(state)
+        conflicts = json.loads(str(failure.exception))['layout_conflicts']
+        finding = next(c for c in conflicts if c.get('code') == 'redaction_mask_intersects_preserved')
+        self.assertEqual((finding['page'], finding['block']), (1, label['id']))
+        for evidence in ("'Q'", symbol['id'], 'allowed_bbox', 'preview'):
+            self.assertIn(evidence, finding['detail'])
+        self.assertFalse(list(self.root.glob('output*')))
+
     def test_redaction_blocks_loss_of_preserved_formula_before_saving(self):
         from fontTools.ttLib import TTFont
         tall = self.root/'tall.ttf'
