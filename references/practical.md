@@ -9,7 +9,7 @@ Read the skill entry and this page. Use the assigned source, authoring state, gr
 3. Write work/edits.json (package: edits.json beside its state), then run the returned apply action. Read the summary and details for affected pages. Legal translations and merges remain saved even when layout needs repair. Subsequent files contain only incremental edits to current IDs; do not resubmit the whole initial template or its merge_ids.
 4. Batch edits to similar prose once a representative layout is readable. When first trying a complex layout, changing which block owns formula or table text, or repairing a redaction collision, preview the affected pages from the latest authoring state before handoff. Use the returned build and verify actions and view the images in render_index.
 
-Use the returned frozen command arrays, not a reconstructed shell prefix. To read current IDs, use inspect with explicit pages and detail groups/blocks; glyph details also require a block. The result is bounded and supports offset/limit.
+Execute the complete returned `argv`. For help, use `command_prefix + [runner, "--help"]` or `command_prefix + [runner, subcommand, "--help"]`. The prefix starts Python and the frozen launcher; `runner` is the script path. To read current IDs, use inspect with explicit pages and detail groups/blocks; glyph details also require a block. The result is bounded and supports offset/limit.
 
 ## Edit format
 

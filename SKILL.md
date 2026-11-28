@@ -41,7 +41,7 @@ Place only the original and accepted bilingual PDF beside their same-stem task f
         rebuild/              # optional recovery experiment
 ~~~
 
-Use UTF-8 without BOM. Save edits through apply, import assigned pages through import-package, and submit real observations through review. Generated templates bind paths and evidence; never hand-edit qc or source glyph facts. Local previews remain inside the task folder. Ordinary publication checks recovery dependencies; rebuilding is a maintenance task or an explicit user request.
+Use UTF-8 without BOM. Save edits through apply, import assigned pages through import-package, and submit real observations through review. Generated templates bind paths and evidence; never hand-edit qc or source glyph facts. Save temporary scripts, previews, crops and intermediate files in the PDF’s work/ directory or, for package tasks, in the assigned package directory. Use absolute paths under that directory when creating files or applying patches. Ordinary publication checks recovery dependencies; rebuilding is a maintenance task or an explicit user request.
 
 ## Installation and conditional tools
 

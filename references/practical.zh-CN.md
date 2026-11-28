@@ -9,7 +9,7 @@
 3. 写入 work/edits.json；分包则写入其状态旁的 edits.json。执行返回的 apply 动作，读取受影响页摘要及诊断。合法译文与合并已保存，排版未通过也不会丢失。续修文件只填写当前 ID 的增量编辑，不重交整份初始模板及其 merge_ids。
 4. 代表页排法确认可读后，同类正文编辑可合批提交。首次处理复杂排版、调整公式或表格文字的块归属、修复去字碰撞时，交接前用最新作者状态预览受影响页。执行返回的 build 和 verify 动作，从 render_index 查看页面。
 
-直接使用返回的冻结命令数组。查询当前 ID 时用 inspect，指定页码和 groups/blocks；查询 glyphs 还须指定块。返回内容有大小限制，支持 offset/limit。
+直接执行返回的完整 `argv`。查看总帮助用 `command_prefix + [runner, "--help"]`，查看子命令帮助用 `command_prefix + [runner, subcommand, "--help"]`。前缀包含 Python 解释器和冻结启动入口，`runner` 是脚本路径。查询当前 ID 时用 inspect，指定页码和 groups/blocks；查询 glyphs 还须指定块。返回内容有大小限制，支持 offset/limit。
 
 ## 编辑格式
 
